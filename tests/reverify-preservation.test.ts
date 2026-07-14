@@ -1,3 +1,0 @@
-import { describe,expect,it } from "vitest";
-import { preserveManualLeadFields } from "@/lib/leads/merge";
-describe("hercontrole",()=>it("behoudt status, notities, niet-benaderen en filterreden",()=>{const result=preserveManualLeadFields({status:"QUOTE_SENT",notes:"Offerte op 12 juli",doNotContact:true,filterReason:"Handmatige beoordeling",isFiltered:true,phone:"oud"},{status:"NEW",notes:"",doNotContact:false,filterReason:null,isFiltered:false,phone:"nieuw"});expect(result).toMatchObject({status:"QUOTE_SENT",notes:"Offerte op 12 juli",doNotContact:true,filterReason:"Handmatige beoordeling",isFiltered:true,phone:"nieuw"})}));

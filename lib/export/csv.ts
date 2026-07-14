@@ -1,8 +1,2 @@
-import type { Lead } from "@prisma/client";
-
-const escapeCell = (value: unknown) => `"${String(value ?? "").replace(/"/g, '""')}"`;
-export function leadsToCsv(leads: Lead[]) {
-  const headers = ["Branche","Bedrijfsnaam","Contactpersoon","Telefoonnummer","E-mail","Adres","Postcode","Plaats","Regio","Land","Google Maps","Website","Leadtype","Opportunity Score","Notities","Status","Gevonden","Laatst gecontroleerd"];
-  const rows = leads.map((lead) => [lead.category,lead.companyName,lead.contactPersonName,lead.normalizedPhoneNumber,lead.email,lead.streetAddress,lead.postalCode,lead.city,lead.province,lead.country,lead.googleMapsUrl,lead.websiteUrl,lead.leadType,lead.opportunityScore,lead.notes,lead.status,lead.firstDiscoveredAt.toISOString(),lead.lastVerifiedAt.toISOString()]);
-  return `\uFEFF${[headers, ...rows].map((row) => row.map(escapeCell).join(";")).join("\r\n")}`;
-}
+import type { Lead } from "@/types/lead";const esc=(v:unknown)=>`"${String(v??"").replaceAll('"','""')}"`;
+export function leadsToCsv(leads:Lead[]){const h=["Bedrijfsnaam","Branche","Adres","Postcode","Plaats","Provincie","Telefoon","E-mail","Website","Reviewscore","Aantal reviews","Status","Notities","Bron"];const rows=leads.map(l=>[l.name,l.branch,l.address,l.postalCode,l.city,l.province,l.phone,l.email,l.website,l.rating,l.reviewCount,l.status,l.notes,l.source]);return"\uFEFF"+[h,...rows].map(r=>r.map(esc).join(";")).join("\r\n");}
