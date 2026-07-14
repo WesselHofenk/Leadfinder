@@ -1,0 +1,2 @@
+import type { Lead } from "@/types/lead";const esc=(v:unknown)=>`"${String(v??"").replaceAll('"','""')}"`;
+export function leadsToCsv(leads:Lead[]){const h=["Bedrijfsnaam","Branche","Adres","Postcode","Plaats","Provincie","Telefoon","E-mail","Website","Reviewscore","Aantal reviews","Status","Notities","Bron"];const rows=leads.map(l=>[l.name,l.branch,l.address,l.postalCode,l.city,l.province,l.phone,l.email,l.website,l.rating,l.reviewCount,l.status,l.notes,l.source]);return"\uFEFF"+[h,...rows].map(r=>r.map(esc).join(";")).join("\r\n");}

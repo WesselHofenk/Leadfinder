@@ -1,0 +1,8 @@
+export const LEAD_STATUSES = ["Nieuw", "Interessant", "Benaderd", "Reactie ontvangen", "Klant geworden", "Niet interessant"] as const;
+export type LeadStatus = (typeof LEAD_STATUSES)[number];
+export type Verification = "geverifieerd" | "openbare bron" | "niet geverifieerd";
+export type AvailabilityFilter = "any" | "yes" | "no";
+export interface Lead { id:string;name:string;branch:string;description:string;address:string;postalCode:string;city:string;province:string;phone?:string;email?:string;website?:string;mapsUrl:string;rating:number;reviewCount:number;openingHours:string;latitude:number;longitude:number;source:"demo"|"google_places"|"openstreetmap";foundAt:string;status:LeadStatus;notes:string;tags:string[];websiteScore:number;leadScore:number;scoreReasons:string[];verification:Record<"phone"|"email"|"website",Verification>;contactedAt?:string; }
+export interface SearchInput { query:string;branch:string;companyName:string;city:string;province:string;postalCode:string;radius:number;limit:number;minResults:number;website:AvailabilityFilter;phone:AvailabilityFilter;email:AvailabilityFilter;poorWebsite:boolean;minRating:number;minReviews:number; }
+export interface AuditResult { reachable:boolean;https:boolean;responseTimeMs:number;viewport:boolean;title:boolean;metaDescription:boolean;favicon:boolean;socialLinks:boolean;contactPage:boolean;form:boolean;phone:boolean;email:boolean;copyrightYear?:number;performance:"snel"|"gemiddeld"|"traag";score:number;checkedAt:string; }
+export interface ExportRecord { id:string;format:"csv"|"json"|"xls";count:number;createdAt:string;fileName:string; }

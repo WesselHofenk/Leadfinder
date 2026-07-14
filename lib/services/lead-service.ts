@@ -1,0 +1,2 @@
+import type { Lead,SearchInput } from "@/types/lead";
+export async function searchLeads(input:SearchInput):Promise<{leads:Lead[];provider:string}>{const response=await fetch("/api/search",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(input)});const data=await response.json();if(!response.ok)throw new Error(data.error||"De zoekopdracht kon niet worden uitgevoerd.");return data;}

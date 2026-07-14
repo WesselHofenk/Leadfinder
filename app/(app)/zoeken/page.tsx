@@ -1,0 +1,2 @@
+import { PageHeading } from "@/components/page-heading";import { SearchForm } from "@/components/search/search-form";
+export default function Page(){return <div className="mx-auto max-w-5xl"><PageHeading eyebrow="Leadzoeker" title="Nieuwe leads zoeken" description="Vind openbare bedrijfsinformatie via de actieve provider. Zonder API-sleutel gebruikt Sitora veilige fictieve demo-data."/><SearchForm/></div>}
