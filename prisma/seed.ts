@@ -40,17 +40,17 @@ async function main() {
     const email = `${username}@leadfinder.local`;
     await prisma.user.upsert({ where: { username }, update: {}, create: { username, email, name: "Sitora", role: "ADMIN", passwordHash: await hash(password, 12) } });
   }
-  for (const name of categories) await prisma.category.upsert({ where:{slug:name.replaceAll(" ","-")}, update:{name}, create:{slug:name.replaceAll(" ","-"),name} });
+  await prisma.category.createMany({
+    data: categories.map((name) => ({ slug: name.replaceAll(" ", "-"), name })),
+    skipDuplicates: true,
+  });
   for (const slug of excluded) await prisma.excludedCategory.upsert({ where:{slug}, update:{}, create:{slug,name:slug.replaceAll("_"," "),reason:"Geen relevante commerciële websitelead"} });
-  for (const [country, region, city, latitude, longitude] of centers) {
-    for (const category of categories) {
-      await prisma.coverageArea.upsert({
-        where: { country_city_category_latitude_longitude: { country, city, category, latitude, longitude } },
-        update: {},
-        create: { country, region, city, latitude, longitude, radius: 12000, category },
-      });
-    }
-  }
+  await prisma.coverageArea.createMany({
+    data: centers.flatMap(([country, region, city, latitude, longitude]) =>
+      categories.map((category) => ({ country, region, city, latitude, longitude, radius: 12000, category })),
+    ),
+    skipDuplicates: true,
+  });
 }
 
 main().finally(() => prisma.$disconnect());

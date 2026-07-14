@@ -30,7 +30,8 @@ Stel deze waarden in Vercel in voor Production, Preview en Development waar rele
 
 | Variabele | Vereist | Opmerking |
 |---|---:|---|
-| `DATABASE_URL` | ja | PostgreSQL connection string, inclusief SSL-instelling van de provider |
+| `NEON_POSTGRES_PRISMA_URL` | ja | gepoolde Neon PostgreSQL-verbinding voor de app; automatisch via de Vercel-integratie |
+| `NEON_POSTGRES_URL_NON_POOLING` | ja | directe Neon PostgreSQL-verbinding voor migraties; automatisch via de Vercel-integratie |
 | `AUTH_SECRET` | ja | minimaal 32 willekeurige tekens |
 | `CRON_SECRET` | ja | apart willekeurig secret van minimaal 32 tekens |
 | `INITIAL_ADMIN_USERNAME` | eerste seed | standaard `sitoro` |
