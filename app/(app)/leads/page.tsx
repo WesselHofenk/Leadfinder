@@ -2,6 +2,7 @@ import Link from "next/link";
 import { Download, ExternalLink, Filter, MapPin, Search } from "lucide-react";
 import { parseLeadFilters, leadStatuses } from "@/lib/leads/filters";
 import { listLeads } from "@/lib/leads/service";
+import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
 import { dateFormatter, numberFormatter, statusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
 import { GenerationButton } from "@/components/generation-button";
@@ -237,10 +238,10 @@ export default async function LeadsPage({
                         <div style={{ display: "flex", gap: 5 }}>
                           <a
                             className="button button-secondary"
-                            href={lead.googleMapsUrl}
+                            href={getGoogleBusinessUrl(lead)}
                             target="_blank"
-                            rel="noreferrer"
-                            aria-label="Open Google Maps"
+                            rel="noopener noreferrer"
+                            aria-label={`Open Google-bedrijfspagina van ${lead.companyName}`}
                           >
                             <MapPin size={14} />
                           </a>
