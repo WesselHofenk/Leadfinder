@@ -1,7 +1,3 @@
-import type { Metadata } from "next";
-import "./globals.css";
-
-export const metadata: Metadata = { title: { default: "Leadfinder Sitora", template: "%s · Leadfinder Sitora" }, description: "Geverifieerde bedrijfsleads uit Nederland en België." };
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  return <html lang="nl"><body>{children}</body></html>;
-}
+import type { Metadata } from "next";import "./globals.css";import { Toaster } from "sonner";
+export const metadata:Metadata={title:{default:"LeadfinderSitora.nl",template:"%s | LeadfinderSitora.nl"},description:"Vind Nederlandse bedrijven zonder of met een verouderde website met LeadfinderSitora.nl."};
+export default function RootLayout({children}:{children:React.ReactNode}){return <html lang="nl"><body><a href="#main" className="sr-only focus:not-sr-only focus:fixed focus:z-50 focus:bg-white focus:p-3">Naar inhoud</a>{children}<Toaster richColors position="bottom-right"/></body></html>}
