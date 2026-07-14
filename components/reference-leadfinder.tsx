@@ -150,7 +150,7 @@ export function ReferenceLeadfinder() {
     <div className="vivo-container">
       <header className="vivo-header">
         <div>
-          <h1>AI Lead Finder <span>Nederland</span></h1>
+          <h1>LeadfinderSitora<span>.nl</span></h1>
           <p>Vind bedrijven zonder of met een verouderde website — kansen voor webdesign.</p>
         </div>
         <button onClick={generate} disabled={loading} className="vivo-generate">
