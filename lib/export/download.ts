@@ -1,0 +1,9 @@
+import type { ExportRecord, Lead } from "@/types/lead";
+import { leadsToCsv } from "./csv";
+export type ExportFormat = ExportRecord["format"];
+const date = () => new Date().toISOString().slice(0, 10);
+const xml = (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+const fields: Array<[string, keyof Lead]> = [["Bedrijfsnaam","name"],["Branche","branch"],["Adres","address"],["Postcode","postalCode"],["Plaats","city"],["Telefoon","phone"],["E-mail","email"],["Website","website"],["Reviewscore","rating"],["Aantal reviews","reviewCount"],["Status","status"],["Notities","notes"]];
+function spreadsheet(leads: Lead[]) { const row = (values: unknown[]) => `<Row>${values.map(v => `<Cell><Data ss:Type="String">${xml(v)}</Data></Cell>`).join("")}</Row>`; return `<?xml version="1.0"?><Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet" xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet"><Worksheet ss:Name="Leads"><Table>${row(fields.map(([label]) => label))}${leads.map(lead => row(fields.map(([,key]) => lead[key]))).join("")}</Table></Worksheet></Workbook>`; }
+export function getExportFile(leads: Lead[], format: ExportFormat) { const fileName = `sitora-leads-${date()}.${format}`; const content = format === "csv" ? leadsToCsv(leads) : format === "json" ? JSON.stringify(leads, null, 2) : spreadsheet(leads); const mime = format === "csv" ? "text/csv;charset=utf-8" : format === "json" ? "application/json;charset=utf-8" : "application/vnd.ms-excel;charset=utf-8"; return { fileName, content, mime, href: `data:${mime},${encodeURIComponent(content)}` }; }
+export function downloadLeads(leads: Lead[], format: ExportFormat) { const file = getExportFile(leads, format); const anchor = document.createElement("a"); anchor.href = file.href; anchor.download = file.fileName; anchor.click(); return file.fileName; }

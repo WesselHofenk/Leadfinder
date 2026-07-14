@@ -1,59 +1,49 @@
-# Deployment Leadfinder Sitora
+# Deployment leadfindersitora.nl
 
 ## Hosting en domein
 
+- Hosting: GitHub Pages via `.github/workflows/pages.yml`
 - Repository: `WesselHofenk/Leadfinder`
-- Productiebranch: `main`
-- Hosting: Vercel (Next.js server deployment)
-- Primair domein: `https://leadfindersitora.nl`
-- Redirect: `https://www.leadfindersitora.nl` naar het primaire domein
-- DNS-provider en registrar: Vimexx
+- Productie-URL: `https://leadfindersitora.nl`
+- Canoniek domein: `leadfindersitora.nl`
+- `www.leadfindersitora.nl` verwijst via GitHub Pages door naar het canonieke domein.
+- Dit project staat volledig los van `sitora.nl`; wijzig voor deze deployment geen DNS- of repository-instellingen van `sitora.nl`.
 
-GitHub Pages is niet geschikt voor deze applicatie, omdat de app serverroutes, sessies, PostgreSQL en achtergrondtaken gebruikt. Het oude `public/CNAME`-bestand hoort daarom niet bij de productie-deployment.
+GitHub Pages publiceert een statische Next.js-export. Zoeken gebruikt daarom in productie de lokale demo-provider. Er is geen login en er worden geen accounts of sessies aangemaakt. Leads en voorkeuren blijven in `localStorage` van de browser.
 
-## DNS bij Vimexx
+## Vimexx DNS-records
 
-Vervang uitsluitend de bestaande GitHub Pages-records voor de website. Laat alle MX-, SPF-, DKIM-, DMARC- en overige e-mailrecords ongewijzigd.
+Stel deze records in voor alleen de zone `leadfindersitora.nl`:
 
 | Type | Naam/host | Waarde/doel | TTL |
-|---|---|---|---:|
-| A | `@` | `216.198.79.1` | `3600` |
-| CNAME | `www` | `abe66ddbf4318eaa.vercel-dns-017.com.` | `3600` |
+| --- | --- | --- | --- |
+| A | `@` | `185.199.108.153` | `3600` |
+| A | `@` | `185.199.109.153` | `3600` |
+| A | `@` | `185.199.110.153` | `3600` |
+| A | `@` | `185.199.111.153` | `3600` |
+| CNAME | `www` | `WesselHofenk.github.io` | `3600` |
 
-Verwijder bij de omschakeling de vier oude GitHub Pages A-records (`185.199.108.153` t/m `185.199.111.153`) en vervang de oude `www`-CNAME naar `WesselHofenk.github.io`. De waarden hierboven zijn de project-specifieke records die Vercel voor dit project toont.
+Verwijder geen MX-, SPF-, DKIM-, DMARC- of andere e-mailrecords. Verwijder alleen conflicterende A/AAAA/CNAME-records voor exact `@` of `www` wanneer die nog naar een oude webhost wijzen.
 
-Vercel verstrekt en vernieuwt het TLS-certificaat automatisch zodra beide hostnamen correct naar Vercel wijzen. De redirect van `www` naar het hoofddomein staat ook in `next.config.ts`.
+Het bestand `public/CNAME` bevat `leadfindersitora.nl` en wordt automatisch in de Pages-artifact opgenomen. Nadat GitHub het certificaat heeft uitgegeven, moet in **Repository settings → Pages** de optie **Enforce HTTPS** aanstaan. GitHub verzorgt daarna het TLS-certificaat en de HTTP-naar-HTTPS-redirect.
 
 ## Environment variables
 
-Stel deze waarden in Vercel in voor Production, Preview en Development waar relevant:
+De Pages-buildconfiguratie stelt de publieke productievariabelen in:
 
-| Variabele | Vereist | Opmerking |
-|---|---:|---|
-| `NEON_POSTGRES_PRISMA_URL` | ja | gepoolde Neon PostgreSQL-verbinding voor de app; automatisch via de Vercel-integratie |
-| `NEON_POSTGRES_URL_NON_POOLING` | ja | directe Neon PostgreSQL-verbinding voor migraties; automatisch via de Vercel-integratie |
-| `AUTH_SECRET` | ja | minimaal 32 willekeurige tekens |
-| `CRON_SECRET` | ja | apart willekeurig secret van minimaal 32 tekens |
-| `INITIAL_ADMIN_USERNAME` | eerste seed | standaard `sitoro` |
-| `INITIAL_ADMIN_PASSWORD` | eerste seed | tijdelijk wachtwoord; nooit committen |
-| `GOOGLE_PLACES_API_KEY` | voor scans | uitsluitend server-side Google Places API (New) key |
-| `PAGESPEED_API_KEY` | voor analyse | uitsluitend server-side PageSpeed Insights key |
-| `GOOGLE_PLACES_DAILY_LIMIT` | nee | standaard `250` |
-| `GOOGLE_PLACES_MAX_PAGES_PER_JOB` | nee | standaard `2` |
-| `PAGESPEED_DAILY_LIMIT` | nee | standaard `25` |
-| `WEBSITE_OPPORTUNITY_THRESHOLD` | nee | standaard `55` |
-| `SESSION_TTL_DAYS` | nee | standaard `14` |
-| `NEXT_PUBLIC_APP_URL` | ja | `https://leadfindersitora.nl` |
+- `NEXT_PUBLIC_APP_URL=https://leadfindersitora.nl`
+- `NEXT_PUBLIC_STATIC_EXPORT=true`
+- `GITHUB_PAGES=true`
+- `GITHUB_PAGES_BASE_PATH=`
 
-Geheime waarden horen alleen in Vercel en een lokale, genegeerde `.env.local`; nooit in Git.
+`GOOGLE_PLACES_API_KEY` is server-only en wordt niet gebruikt of gepubliceerd op GitHub Pages. Commit nooit een echte sleutel. `.env.example` bevat uitsluitend veilige placeholders.
 
 ## Volgende deployment
 
-1. Werk op een branch en open een pull request naar `main`.
-2. Laat CI lint, typecheck, tests en de productie-build uitvoeren.
-3. Merge naar `main`; de gekoppelde Vercel-repository start automatisch een productie-deployment.
-4. De build voert `prisma migrate deploy`, de idempotente seed en `next build` uit.
-5. Controleer in Vercel of de deployment Ready is en bekijk de Function Logs.
-6. Test login, dashboard, leads, filters, pipeline, formulieren, mobiele layout, beide domeinen en HTTPS.
+1. Maak wijzigingen op een aparte branch.
+2. Voer `pnpm test`, `pnpm lint`, `pnpm typecheck` en `pnpm build` uit.
+3. Merge de gecontroleerde wijziging naar `main`.
+4. De workflow **Deploy GitHub Pages** bouwt de statische export en publiceert die automatisch.
+5. Controleer de workflow onder **Actions** en daarna `https://leadfindersitora.nl` en `https://www.leadfindersitora.nl`.
 
-De drie Vercel-cronjobs draaien dagelijks en zijn daarmee compatibel met het Hobby-plan. Voor meerdere runs per dag is Vercel Pro nodig; pas dan de schema's in `vercel.json` aan.
+Handmatig opnieuw publiceren kan via **Actions → Deploy GitHub Pages → Run workflow**.

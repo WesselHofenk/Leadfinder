@@ -1,18 +1,21 @@
 import type { NextConfig } from "next";
+const isGitHubPages = process.env.GITHUB_PAGES === "true";
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
-  experimental: { serverActions: { bodySizeLimit: "1mb" } },
-  async headers() {
-    return [{ source: "/(.*)", headers: [
-      { key: "X-Content-Type-Options", value: "nosniff" },
-      { key: "X-Frame-Options", value: "DENY" },
-      { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
-      { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
-    ] }];
+  env: {
+    NEXT_PUBLIC_APP_URL:
+      process.env.NEXT_PUBLIC_APP_URL ||
+      (isGitHubPages ? "https://leadfindersitora.nl" : "http://localhost:3001"),
+    NEXT_PUBLIC_STATIC_EXPORT: isGitHubPages ? "true" : "false",
   },
-  async redirects() {
-    return [{ source: "/:path*", has: [{ type: "host", value: "www.leadfindersitora.nl" }], destination: "https://leadfindersitora.nl/:path*", permanent: true }];
-  },
+  ...(isGitHubPages
+    ? {
+        output: "export",
+        basePath: process.env.GITHUB_PAGES_BASE_PATH || "",
+        trailingSlash: true,
+        images: { unoptimized: true },
+      }
+    : {}),
 };
 export default nextConfig;
