@@ -1,2 +1,0 @@
-import type { AuditResult } from "@/types/lead";
-export function calculateWebsiteScore(a:Omit<AuditResult,"score"|"checkedAt">){if(!a.reachable)return 0;let s=18;s+=a.https?12:0;s+=a.viewport?12:0;s+=a.title?8:0;s+=a.metaDescription?8:0;s+=a.favicon?4:0;s+=a.socialLinks?5:0;s+=a.contactPage?9:0;s+=a.form?7:0;s+=a.phone?5:0;s+=a.email?5:0;s+=a.performance==="snel"?7:a.performance==="gemiddeld"?3:0;return Math.min(100,s);}

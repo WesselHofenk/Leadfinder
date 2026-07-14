@@ -1,2 +1,0 @@
-import type { LeadProvider } from "./types";import { GooglePlacesProvider } from "./google-places";import { OpenStreetMapProvider } from "./openstreetmap";import { MockLeadProvider } from "./mock";
-export function getLeadProvider(env=process.env):LeadProvider{if(env.LEAD_PROVIDER==="google"&&env.GOOGLE_PLACES_API_KEY)return new GooglePlacesProvider(env.GOOGLE_PLACES_API_KEY);if(env.LEAD_PROVIDER==="openstreetmap")return new OpenStreetMapProvider();return new MockLeadProvider();}

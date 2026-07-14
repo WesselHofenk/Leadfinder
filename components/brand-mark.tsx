@@ -1,2 +1,0 @@
-import { Radar } from "lucide-react";
-export function BrandMark({dark=false}:{dark?:boolean}){return <div className="flex items-center gap-3"><span className="grid h-10 w-10 place-items-center rounded-xl bg-[#c26a32] text-white shadow-sm"><Radar size={22}/></span><span><strong className={`block text-lg tracking-[-.02em] ${dark?"text-white":"text-[#0b1830]"}`}>Sitora</strong><small className={`block -mt-1 text-[10px] font-bold uppercase tracking-[.14em] ${dark?"text-slate-400":"text-slate-500"}`}>Leadfinder</small></span></div>}

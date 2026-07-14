@@ -1,0 +1,2 @@
+import Link from "next/link";
+export default function NotFound(){return <main style={{minHeight:"100vh",display:"grid",placeItems:"center",padding:24}}><div className="card empty" style={{maxWidth:520,width:"100%"}}><span className="eyebrow">404</span><strong>Deze pagina bestaat niet</strong><p>De lead is mogelijk niet meer beschikbaar of de link is onjuist.</p><Link className="button button-primary" href="/dashboard">Naar dashboard</Link></div></main>}
