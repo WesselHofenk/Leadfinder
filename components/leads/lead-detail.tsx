@@ -25,6 +25,11 @@ import { LEAD_STATUSES, type AuditResult, type LeadStatus } from "@/types/lead";
 import { websiteQualityLabel } from "@/lib/scoring/lead-score";
 
 const staticExport = process.env.NEXT_PUBLIC_STATIC_EXPORT === "true";
+const formatDateTime = (value: string) => {
+  const [date, time] = new Date(value).toISOString().split("T");
+  const [year, month, day] = date.split("-");
+  return `${day}-${month}-${year} ${time.slice(0, 5)} UTC`;
+};
 export function LeadDetail({ id }: { id: string }) {
   const router = useRouter();
   const {
@@ -257,7 +262,7 @@ export function LeadDetail({ id }: { id: string }) {
                     </p>
                     <p className="text-xs text-slate-500">
                       {audit.responseTimeMs} ms · gecontroleerd{" "}
-                      {new Date(audit.checkedAt).toLocaleString("nl-NL")}
+                      {formatDateTime(audit.checkedAt)}
                     </p>
                   </div>
                 </div>
@@ -424,13 +429,13 @@ export function LeadDetail({ id }: { id: string }) {
             <div className="mt-4 border-l border-slate-200 pl-4">
               <p className="text-sm font-bold">Lead gevonden</p>
               <p className="text-xs text-slate-500">
-                {new Date(lead.foundAt).toLocaleString("nl-NL")}
+                {formatDateTime(lead.foundAt)}
               </p>
               {lead.contactedAt && (
                 <>
                   <p className="mt-4 text-sm font-bold">Benaderd</p>
                   <p className="text-xs text-slate-500">
-                    {new Date(lead.contactedAt).toLocaleString("nl-NL")}
+                    {formatDateTime(lead.contactedAt)}
                   </p>
                 </>
               )}

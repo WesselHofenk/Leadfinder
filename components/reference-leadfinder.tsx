@@ -100,6 +100,7 @@ export function ReferenceLeadfinder() {
   const withoutWebsite = leads.filter(lead => !lead.website).length;
   const stale = leads.filter(lead => lead.staleWebsite).length;
   const average = leads.length ? Math.round(leads.reduce((sum, lead) => sum + lead.websiteScore, 0) / leads.length) : 0;
+  const newestFoundAt = Math.max(...leads.map(lead => new Date(lead.foundAt).getTime()));
 
   function generate() {
     setLoading(true);
@@ -167,7 +168,7 @@ export function ReferenceLeadfinder() {
 
       <section className="stat-grid" aria-label="Leadstatistieken">
         <Stat value={leads.length} label="Totaal gevonden leads" tone="dark" />
-        <Stat value={leads.filter(l => Date.now() - new Date(l.foundAt).getTime() < 86400000).length} label="Nieuwe leads vandaag" tone="blue" />
+        <Stat value={leads.filter(l => newestFoundAt - new Date(l.foundAt).getTime() < 86400000).length} label="Nieuwe leads vandaag" tone="blue" />
         <Stat value={withoutWebsite} label="Zonder website" tone="red" />
         <Stat value={stale} label="Zwakke website" tone="orange" />
         <Stat value={`${average}/100`} label="Gem. websitescore" tone="green" />

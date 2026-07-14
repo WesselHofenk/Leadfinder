@@ -48,13 +48,11 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Prepare static public build
-        run: rm -rf app/api "app/(app)"
-
       - name: Build website
         env:
           GITHUB_PAGES: "true"
           GITHUB_PAGES_BASE_PATH: ""
+          NEXT_PUBLIC_APP_URL: "https://leadfindersitora.nl"
           NEXT_TELEMETRY_DISABLED: "1"
         run: pnpm exec next build
 
