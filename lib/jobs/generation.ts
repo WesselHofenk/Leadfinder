@@ -50,11 +50,12 @@ export async function runLeadGeneration(runId: string) {
   const lock = await acquireJobLock("manual-lead-generation", 15 * 60_000);
   if (!lock) { await updateRun(runId, { status: "CANCELLED", finishedAt: new Date(), apiErrors: ["Er draait al een leadgeneratie"] }); return; }
   const env = serverEnv(); const run = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
+  const placesApiKey = env.GOOGLE_PLACES_API_KEY;
   const stats = { found: 0, checked: 0, withoutWebsite: 0, duplicates: 0, rejected: 0, stored: 0 };
   const errors: string[] = []; const places = new Set<string>(); const branches = new Set<string>(); const pending: Candidate[] = [];
   try {
-    if (!env.GOOGLE_PLACES_API_KEY) throw new Error("GOOGLE_PLACES_API_KEY ontbreekt");
     await updateRun(runId, { status: "RUNNING", startedAt: new Date() });
+    if (!placesApiKey) errors.push("Google Places overgeslagen: GOOGLE_PLACES_API_KEY ontbreekt; Overpass blijft actief");
     const [areasRaw, categories, existingLeads] = await Promise.all([
       prisma.coverageArea.findMany({ where: { status: { not: "PAUSED" } }, orderBy: [{ lastScannedAt: "asc" }, { priority: "asc" }] }),
       prisma.category.findMany({ where: { isActive: true }, orderBy: [{ priority: "asc" }, { name: "asc" }] }),
@@ -90,9 +91,11 @@ export async function runLeadGeneration(runId: string) {
       if (!shouldContinueGeneration({ stored: stats.stored, target: run.targetCount, candidatesFound: stats.found, buffer: env.LEAD_CANDIDATE_BUFFER, tasksRemain: taskIndex < tasks.length })) break;
       const { area, branch, term } = tasks[taskIndex];
       places.add(`${area.city}, ${area.country}`); branches.add(branch); let pageToken: string | undefined;
-      for (let page = 0; page < env.GOOGLE_PLACES_MAX_PAGES_PER_JOB; page += 1) {
-        try { await reserveApiCall(env.GOOGLE_PLACES_DAILY_LIMIT); const result = await searchPlaces({ apiKey: env.GOOGLE_PLACES_API_KEY, query: term, city: area.city, country: area.country, latitude: Number(area.latitude), longitude: Number(area.longitude), radius: area.radius, pageToken }); result.candidates.forEach((candidate) => mergeCandidate(pending, candidate)); stats.found += result.candidates.length; pageToken = result.nextPageToken; } catch (error) { errors.push(`Google ${term} / ${area.city}: ${message(error)}`); break; }
-        if (!pageToken) break;
+      if (placesApiKey) {
+        for (let page = 0; page < env.GOOGLE_PLACES_MAX_PAGES_PER_JOB; page += 1) {
+          try { await reserveApiCall(env.GOOGLE_PLACES_DAILY_LIMIT); const result = await searchPlaces({ apiKey: placesApiKey, query: term, city: area.city, country: area.country, latitude: Number(area.latitude), longitude: Number(area.longitude), radius: area.radius, pageToken }); result.candidates.forEach((candidate) => mergeCandidate(pending, candidate)); stats.found += result.candidates.length; pageToken = result.nextPageToken; } catch (error) { errors.push(`Google ${term} / ${area.city}: ${message(error)}`); break; }
+          if (!pageToken) break;
+        }
       }
       const areaKey = `${area.country}:${area.city}`;
       if (!overpassAreas.has(areaKey)) {
