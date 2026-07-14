@@ -30,7 +30,8 @@ De gewenste eerste gebruikersnaam is `sitoro`. Stel het tijdelijke wachtwoord ui
 
 | Variabele | Vereist | Doel |
 |---|---:|---|
-| `DATABASE_URL` | ja | PostgreSQL connection string |
+| `NEON_POSTGRES_PRISMA_URL` | ja | gepoolde Neon PostgreSQL-verbinding voor de app |
+| `NEON_POSTGRES_URL_NON_POOLING` | ja | directe Neon PostgreSQL-verbinding voor migraties |
 | `AUTH_SECRET` | ja | minimaal 32 willekeurige tekens |
 | `CRON_SECRET` | ja | aparte bearer secret voor cronroutes |
 | `INITIAL_ADMIN_USERNAME` | seed | standaard `sitoro` |
