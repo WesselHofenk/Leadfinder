@@ -17,10 +17,10 @@ Vervang uitsluitend de bestaande GitHub Pages-records voor de website. Laat alle
 
 | Type | Naam/host | Waarde/doel | TTL |
 |---|---|---|---:|
-| A | `@` | `76.76.21.21` | `3600` |
-| CNAME | `www` | `cname.vercel-dns-0.com` | `3600` |
+| A | `@` | `216.198.79.1` | `3600` |
+| CNAME | `www` | `abe66ddbf4318eaa.vercel-dns-017.com.` | `3600` |
 
-Verwijder bij de omschakeling de vier oude GitHub Pages A-records (`185.199.108.153` t/m `185.199.111.153`) en vervang de oude `www`-CNAME naar `WesselHofenk.github.io`. Gebruik altijd de project-specifieke waarden die Vercel onder **Settings → Domains** toont als die afwijken van bovenstaande algemene Vercel-records.
+Verwijder bij de omschakeling de vier oude GitHub Pages A-records (`185.199.108.153` t/m `185.199.111.153`) en vervang de oude `www`-CNAME naar `WesselHofenk.github.io`. De waarden hierboven zijn de project-specifieke records die Vercel voor dit project toont.
 
 Vercel verstrekt en vernieuwt het TLS-certificaat automatisch zodra beide hostnamen correct naar Vercel wijzen. De redirect van `www` naar het hoofddomein staat ook in `next.config.ts`.
 
