@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { secureCompare } from "@/lib/auth/session";
 import { runDiscoveryJob } from "@/lib/jobs/sync";
+export const maxDuration = 300;
 export async function GET(request: NextRequest) {
   const secret = process.env.CRON_SECRET ?? ""; const provided = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
   if (!secret || !secureCompare(secret, provided)) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });

@@ -1,7 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Activity, LoaderCircle, Save } from "lucide-react";
+import { Activity, LoaderCircle, Save, Trash2 } from "lucide-react";
 import { leadStatuses } from "@/lib/leads/filters";
 import { statusLabels } from "@/lib/format";
 
@@ -10,3 +10,5 @@ export function LeadEditor({leadId,status,notes,filterReason}:{leadId:string;sta
 export function AnalyzeButton({leadId,disabled}:{leadId:string;disabled:boolean}){const[pending,setPending]=useState(false);const[message,setMessage]=useState("");async function analyze(){setPending(true);const response=await fetch(`/api/leads/${leadId}/analyze`,{method:"POST"});const data=await response.json();setPending(false);setMessage(response.ok?"Analyse is ingepland":data.error||"Inplannen mislukt")}return <div><button className="button button-secondary" onClick={analyze} disabled={disabled||pending}>{pending?<LoaderCircle className="animate-spin" size={15}/>:<Activity size={15}/>}Website opnieuw analyseren</button>{message&&<p className="small muted" style={{marginTop:8}}>{message}</p>}</div>}
 
 export function QuickStatus({leadId,status}:{leadId:string;status:string}){const router=useRouter();const[pending,setPending]=useState(false);async function change(value:string){setPending(true);await fetch(`/api/leads/${leadId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:value})});setPending(false);router.refresh()}return <select className="select" aria-label="Leadstatus" value={status} onChange={e=>change(e.target.value)} disabled={pending} style={{minWidth:145}}>{leadStatuses.map(item=><option value={item} key={item}>{statusLabels[item]}</option>)}</select>}
+
+export function SuppressLeadButton({leadId}:{leadId:string}){const router=useRouter();const[pending,setPending]=useState(false);async function suppress(){if(!window.confirm("Deze lead verwijderen en blokkeren voor toekomstige imports?"))return;setPending(true);const response=await fetch(`/api/leads/${leadId}`,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:"Handmatig verwijderd; niet opnieuw importeren"})});if(response.ok){router.push("/leads");router.refresh()}else setPending(false)}return <button className="button button-danger" onClick={suppress} disabled={pending}>{pending?<LoaderCircle className="animate-spin" size={15}/>:<Trash2 size={15}/>}Verwijderen en blokkeren</button>}

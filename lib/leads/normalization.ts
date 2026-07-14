@@ -14,3 +14,16 @@ export function normalizePhone(value: string, country: string): string | null {
   if (country.toUpperCase() === "BE" && !/^\+32\d{8,9}$/.test(compact)) return null;
   return compact;
 }
+
+export function normalizeDomain(value?: string | null): string | null {
+  if (!value?.trim()) return null;
+  try {
+    const url = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    return url.hostname.toLowerCase().replace(/^www\./, "").replace(/\.$/, "") || null;
+  } catch { return null; }
+}
+
+export function normalizeEmail(value?: string | null): string | null {
+  const email = value?.trim().toLowerCase() ?? "";
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : null;
+}

@@ -7,7 +7,7 @@ import { backoffDelayMs, isRetryableStatus } from "@/lib/jobs/backoff";
 
 describe("filters en paginering",()=>{
   it("begrensd server-side paginering",()=>expect(parseLeadFilters({page:"2",pageSize:"50"})).toMatchObject({page:2,pageSize:50}));
-  it("bouwt vaste leadvoorwaarden en filters",()=>expect(activeLeadWhere(parseLeadFilters({country:"BE",city:"Gent",leadType:"NO_WEBSITE"}))).toMatchObject({isActive:true,isFiltered:false,businessStatus:"OPERATIONAL",country:"BE",leadType:"NO_WEBSITE"}));
+  it("bouwt vaste leadvoorwaarden en filters",()=>expect(activeLeadWhere(parseLeadFilters({country:"BE",city:"Gent",leadType:"NO_WEBSITE",minConfidence:"70"}))).toMatchObject({isActive:true,isFiltered:false,isSuppressed:false,businessStatus:{in:["OPERATIONAL","UNKNOWN"]},country:"BE",leadType:"NO_WEBSITE",confidenceScore:{gte:70}}));
   it("weigert onbegrensde paginaomvang",()=>expect(()=>parseLeadFilters({pageSize:"1000"})).toThrow());
   it("verbergt gefilterde leads standaard en toont ze in de gefilterde pipeline",()=>{expect(activeLeadWhere(parseLeadFilters({}))).toMatchObject({isActive:true,isFiltered:false});expect(activeLeadWhere(parseLeadFilters({filtered:"yes"}))).toMatchObject({isFiltered:true})});
 });

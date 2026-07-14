@@ -36,7 +36,7 @@ export default async function LeadsPage({
             Nederlandse en Belgische bedrijven met een concrete websitekans.
           </p>
         </div>
-        <div className="actions" style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+        <div className="actions">
           <GenerationButton />
           <a
             className="button button-secondary"
@@ -73,6 +73,7 @@ export default async function LeadsPage({
             options={[
               ["NO_WEBSITE", "Geen website"],
               ["OUTDATED_WEBSITE", "Verouderde website"],
+              ["IMPROVABLE_WEBSITE", "Website verbeterbaar"],
             ]}
           />
           <Select
@@ -105,6 +106,18 @@ export default async function LeadsPage({
               defaultValue={filters.minScore}
             />
           </div>
+          <div className="field">
+            <label htmlFor="maxScore">Max. Opportunity Score</label>
+            <input className="input" type="number" min="0" max="100" id="maxScore" name="maxScore" defaultValue={filters.maxScore}/>
+          </div>
+          <div className="field">
+            <label htmlFor="minConfidence">Min. confidence</label>
+            <input className="input" type="number" min="0" max="100" id="minConfidence" name="minConfidence" defaultValue={filters.minConfidence}/>
+          </div>
+          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_OWN_WEBSITE", "Geen eigen website"], ["OUTDATED", "Sterk verouderd"], ["IMPROVABLE", "Verbeterbaar"], ["OWN_WEBSITE", "Bruikbaar"]]}/>
+          <Select label="Gebeld" name="called" value={filters.called} options={[["yes", "Ja"], ["no", "Nee"]]}/>
+          <div className="field"><label htmlFor="foundAfter">Gevonden vanaf</label><input className="input" type="date" id="foundAfter" name="foundAfter" defaultValue={raw.foundAfter as string | undefined}/></div>
+          <div className="field"><label htmlFor="foundBefore">Gevonden t/m</label><input className="input" type="date" id="foundBefore" name="foundBefore" defaultValue={raw.foundBefore as string | undefined}/></div>
           <Select
             label="Websiteprobleem"
             name="issue"
@@ -160,6 +173,7 @@ export default async function LeadsPage({
                     <th>Locatie</th>
                     <th>Type</th>
                     <th>Score</th>
+                    <th>Confidence</th>
                     <th>Belangrijkste reden</th>
                     <th>Status</th>
                     <th>Gevonden</th>
@@ -209,6 +223,7 @@ export default async function LeadsPage({
                         </strong>
                         /100
                       </td>
+                      <td><strong>{lead.confidenceScore}</strong>/100<div className="small muted">{lead.confidenceLevel.toLowerCase()}</div></td>
                       <td className="small">
                         {lead.leadType === "NO_WEBSITE"
                           ? "Geen website gevonden"

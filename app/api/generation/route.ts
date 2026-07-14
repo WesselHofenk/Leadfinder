@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { after, NextRequest, NextResponse } from "next/server";
 import { currentUser } from "@/lib/auth/session";
 import { prisma } from "@/lib/prisma";
 import { createGenerationRun, runLeadGeneration } from "@/lib/jobs/generation";
@@ -20,6 +20,6 @@ export async function POST(request: NextRequest) {
   const active = await prisma.generationRun.findFirst({ where: { status: { in: ["PENDING", "RUNNING"] } } });
   if (active) return NextResponse.json({ error: "Er draait al een leadgeneratie", run: active }, { status: 409 });
   const run = await createGenerationRun();
-  await runLeadGeneration(run.id);
-  return NextResponse.json({ run: await prisma.generationRun.findUnique({ where: { id: run.id } }) });
+  after(async () => { await runLeadGeneration(run.id); });
+  return NextResponse.json({ run }, { status: 202 });
 }

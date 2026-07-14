@@ -24,6 +24,13 @@ enum LeadStatus {
 enum LeadType {
   NO_WEBSITE
   OUTDATED_WEBSITE
+  IMPROVABLE_WEBSITE
+}
+
+enum ConfidenceLevel {
+  LOW
+  MEDIUM
+  HIGH
 }
 enum BusinessStatus {
   OPERATIONAL
@@ -59,6 +66,8 @@ enum LeadSource {
 enum WebsiteStatus {
   NO_OWN_WEBSITE
   OWN_WEBSITE
+  OUTDATED
+  IMPROVABLE
   UNKNOWN
 }
 
@@ -113,6 +122,7 @@ model Lead {
   googleMapsUrl            String
   website                  String?
   websiteUrl               String?
+  normalizedDomain         String?
   websiteStatus            WebsiteStatus @default(NO_OWN_WEBSITE)
   employeeCount            Int?
   leadType                 LeadType      @default(NO_WEBSITE)
@@ -124,7 +134,10 @@ model Lead {
   lastWebsiteAnalysisAt    DateTime?
   businessStatus           BusinessStatus
   source                   LeadSource     @default(GOOGLE_PLACES)
+  confidenceScore          Int            @default(50)
+  confidenceLevel          ConfidenceLevel @default(MEDIUM)
   isActive                 Boolean        @default(true)
+  isSuppressed             Boolean        @default(false)
   firstDiscoveredAt        DateTime       @default(now())
   lastVerifiedAt           DateTime       @default(now())
   createdAt                DateTime       @default(now())
@@ -142,6 +155,9 @@ model Lead {
   @@index([city])
   @@index([postalCode])
   @@index([category])
+  @@index([normalizedDomain])
+  @@index([email])
+  @@index([confidenceScore])
   @@index([status, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
@@ -157,6 +173,14 @@ model GenerationRun {
   duplicates          Int       @default(0)
   rejected            Int       @default(0)
   stored              Int       @default(0)
+  websitesChecked     Int       @default(0)
+  permanentlyClosed   Int       @default(0)
+  temporarilyClosed   Int       @default(0)
+  noWebsite           Int       @default(0)
+  outdatedWebsite     Int       @default(0)
+  improvableWebsite   Int       @default(0)
+  sourceFailures      Int       @default(0)
+  estimatedCostCents  Int       @default(0)
   placesUsed          Json      @default("[]")
   branchesUsed        Json      @default("[]")
   apiErrors            Json      @default("[]")
@@ -165,6 +189,7 @@ model GenerationRun {
   finishedAt           DateTime?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
+  logs                 SourceLog[]
 
   @@index([status, createdAt])
 }
@@ -187,6 +212,12 @@ model WebsiteAnalysis {
   hasViewportMeta        Boolean?
   hasOutdatedCopyright   Boolean?
   hasPlaceholderContent  Boolean?
+  hasHttps                Boolean?
+  hasInvalidSsl           Boolean?
+  hasBrokenImages         Boolean?
+  brokenImageCount        Int      @default(0)
+  hasLegacyTechnology     Boolean?
+  hasTinyText             Boolean?
   loadTimeMs             Int?
   reasons                Json
   rawSignals             Json?
@@ -304,4 +335,54 @@ model JobLock {
   expiresAt DateTime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model SearchCombination {
+  id              String   @id @default(cuid())
+  country         String
+  city            String
+  category        String
+  source          String
+  useCount        Int      @default(0)
+  candidatesFound Int      @default(0)
+  validLeads      Int      @default(0)
+  lastUsedAt      DateTime?
+  lastError       String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([country, city, category, source])
+  @@index([lastUsedAt, source])
+}
+
+model DuplicateFingerprint {
+  id          String   @id @default(cuid())
+  fingerprint String   @unique
+  leadId      String?
+  kind        String
+  createdAt   DateTime @default(now())
+
+  @@index([leadId])
+}
+
+model SuppressedLead {
+  id          String   @id @default(cuid())
+  fingerprint String   @unique
+  reason      String
+  createdAt   DateTime @default(now())
+}
+
+model SourceLog {
+  id        String         @id @default(cuid())
+  runId     String
+  run       GenerationRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  source    String
+  level     String
+  message   String
+  city      String?
+  category  String?
+  createdAt DateTime       @default(now())
+
+  @@index([runId, createdAt])
+  @@index([source, level, createdAt])
 }

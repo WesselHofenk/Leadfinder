@@ -4,5 +4,7 @@ export const statusLabels: Record<string, string> = {
   NEW: "Nieuw", NOT_CALLED: "Nog niet gebeld", NO_ANSWER: "Geen gehoor", CALLBACK: "Terugbellen", INTERESTED: "Interesse",
   QUOTE_SENT: "Offerte verstuurd", CUSTOMER: "Klant geworden", NOT_INTERESTED: "Geen interesse", DO_NOT_CONTACT: "Niet benaderen", INVALID_NUMBER: "Ongeldig nummer",
   PENDING: "Gepland", RUNNING: "Bezig", COMPLETE: "Voltooid", FAILED: "Mislukt", PAUSED: "Gepauzeerd",
-  CALLED: "Gebeld", INVOICED: "Gefactureerd", FILTERED: "Gefilterd", NO_WEBSITE: "Geen website", OUTDATED_WEBSITE: "Verouderde website",
+  CALLED: "Gebeld", INVOICED: "Gefactureerd", FILTERED: "Gefilterd", NO_WEBSITE: "Geen website", OUTDATED_WEBSITE: "Sterk verouderde website", IMPROVABLE_WEBSITE: "Website verbeterbaar",
+  OPERATIONAL: "Operationeel", UNKNOWN: "Status niet bevestigd", CLOSED_TEMPORARILY: "Tijdelijk gesloten", CLOSED_PERMANENTLY: "Permanent gesloten",
+  GOOGLE_PLACES: "Google Places", OPENSTREETMAP: "OpenStreetMap",
 };

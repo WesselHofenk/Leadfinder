@@ -2,7 +2,7 @@ import { hash } from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
-const categories = ["aannemer","klusbedrijf","schilder","stukadoor","dakdekker","loodgieter","elektricien","hovenier","schoonmaakbedrijf","verhuisbedrijf","garage","rijschool","kapper","schoonheidssalon","nagelstudio","fysiotherapie","personal trainer","restaurant","lunchroom","catering","hotel","bed and breakfast","makelaar","interieurbedrijf","keukenbedrijf","fotograaf","videograaf","drukkerij","boekhouder","consultant","coach","opleidingsbedrijf","kinderopvang","hondentrimmer","dierenpension","speciaalzaak","groothandel","verhuurbedrijf"];
+const categories = ["aannemer","klusbedrijf","schilder","stukadoor","tegelzetter","installatiebedrijf","dakdekker","loodgieter","elektricien","hovenier","schoonmaakbedrijf","verhuisbedrijf","garage","autobedrijf","rijschool","kapper","schoonheidssalon","nagelstudio","fysiotherapie","wellness","personal trainer","restaurant","café","lunchroom","catering","hotel","bed and breakfast","makelaar","interieurbedrijf","keukenbedrijf","fotograaf","videograaf","drukkerij","boekhouder","consultant","coach","opleidingsbedrijf","kinderopvang","hondenuitlaatservice","hondentrimmer","dierenpension","speciaalzaak","groothandel","verhuurbedrijf"];
 const excluded = ["bus_station","parking","public_bathroom","park","monument","street_address","atm","local_government_office","place_of_worship","event_venue"];
 const centers = [
   ["NL", "Noord-Holland", "Amsterdam", 52.3676, 4.9041],
@@ -20,6 +20,15 @@ const centers = [
   ["NL", "Noord-Brabant", "Breda", 51.5719, 4.7683],
   ["NL", "Zuid-Holland", "Gouda", 52.0116, 4.7105],
   ["NL", "Noord-Holland", "Alkmaar", 52.6324, 4.7534],
+  ["NL", "Noord-Holland", "Haarlem", 52.3874, 4.6462],
+  ["NL", "Utrecht", "Amersfoort", 52.1561, 5.3878],
+  ["NL", "Gelderland", "Apeldoorn", 52.2112, 5.9699],
+  ["NL", "Gelderland", "Nijmegen", 51.8126, 5.8372],
+  ["NL", "Overijssel", "Enschede", 52.2215, 6.8937],
+  ["NL", "Noord-Brabant", "Tilburg", 51.5555, 5.0913],
+  ["NL", "Noord-Brabant", "Den Bosch", 51.6978, 5.3037],
+  ["NL", "Zuid-Holland", "Dordrecht", 51.8133, 4.6901],
+  ["NL", "Zuid-Holland", "Zoetermeer", 52.0607, 4.4940],
   ["BE", "Antwerpen", "Antwerpen", 51.2194, 4.4025],
   ["BE", "Brussel", "Brussel", 50.8503, 4.3517],
   ["BE", "Oost-Vlaanderen", "Gent", 51.0543, 3.7174],
@@ -31,6 +40,14 @@ const centers = [
   ["BE", "Henegouwen", "Bergen", 50.4542, 3.9523],
   ["BE", "Namen", "Namen", 50.4674, 4.8718],
   ["BE", "Luxemburg", "Marche-en-Famenne", 50.2268, 5.3442],
+  ["BE", "Antwerpen", "Mechelen", 51.0259, 4.4776],
+  ["BE", "West-Vlaanderen", "Kortrijk", 50.8280, 3.2649],
+  ["BE", "Oost-Vlaanderen", "Aalst", 50.9383, 4.0392],
+  ["BE", "Oost-Vlaanderen", "Sint-Niklaas", 51.1651, 4.1437],
+  ["BE", "Limburg", "Genk", 50.9661, 5.5001],
+  ["BE", "Antwerpen", "Turnhout", 51.3225, 4.9447],
+  ["BE", "West-Vlaanderen", "Oostende", 51.2300, 2.9200],
+  ["BE", "West-Vlaanderen", "Roeselare", 50.9465, 3.1227],
 ] as const;
 
 async function main() {
