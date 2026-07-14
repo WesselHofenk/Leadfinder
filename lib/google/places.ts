@@ -20,7 +20,7 @@ async function requestWithBackoff(url: string, init: RequestInit, attempts = 4) 
   let lastError: Error | null = null;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
-      const response = await fetch(url, init);
+      const response = await fetch(url, { ...init, signal: AbortSignal.timeout(15_000) });
       if (response.ok) return response;
       if (!isRetryableStatus(response.status)) throw new Error(`Google Places weigerde de aanvraag (${response.status})`);
       lastError = new Error(`Tijdelijke Google Places-fout (${response.status})`);
@@ -30,9 +30,9 @@ async function requestWithBackoff(url: string, init: RequestInit, attempts = 4) 
   throw lastError ?? new Error("Google Places is niet bereikbaar");
 }
 
-export async function searchPlaces(params: { apiKey: string; query: string; country: string; latitude: number; longitude: number; radius: number; pageToken?: string }) {
+export async function searchPlaces(params: { apiKey: string; query: string; city?: string; country: string; latitude: number; longitude: number; radius: number; pageToken?: string }) {
   const body: Record<string, unknown> = {
-    textQuery: `${params.query} in ${params.country === "BE" ? "België" : "Nederland"}`,
+    textQuery: `${params.query} in ${params.city || (params.country === "BE" ? "België" : "Nederland")}`,
     languageCode: params.country === "BE" ? "nl" : "nl",
     regionCode: params.country,
     maxResultCount: 20,
@@ -49,7 +49,7 @@ export async function searchPlaces(params: { apiKey: string; query: string; coun
     if (!place.id || !place.displayName?.text || latitude == null || longitude == null) return [];
     const country = component(place.addressComponents, "country", true)?.toUpperCase() || params.country;
     return [{
-      externalPlaceId: place.id, companyName: place.displayName.text, phoneNumber: place.nationalPhoneNumber,
+      externalPlaceId: place.id, source: "GOOGLE_PLACES", companyName: place.displayName.text, phoneNumber: place.nationalPhoneNumber,
       internationalPhoneNumber: place.internationalPhoneNumber, website: place.websiteUri, businessStatus: place.businessStatus,
       country, category: place.primaryType || place.types?.[0] || params.query, subCategory: place.types?.[1],
       province: component(place.addressComponents, "administrative_area_level_1"), municipality: component(place.addressComponents, "administrative_area_level_2"),

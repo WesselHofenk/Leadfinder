@@ -53,6 +53,13 @@ enum JobType {
 }
 enum LeadSource {
   GOOGLE_PLACES
+  OPENSTREETMAP
+}
+
+enum WebsiteStatus {
+  NO_OWN_WEBSITE
+  OWN_WEBSITE
+  UNKNOWN
 }
 
 model User {
@@ -99,12 +106,15 @@ model Lead {
   city                     String
   postalCode               String?
   streetAddress            String
+  houseNumber              String?
   normalizedAddress        String
   latitude                 Decimal        @db.Decimal(10, 7)
   longitude                Decimal        @db.Decimal(10, 7)
   googleMapsUrl            String
   website                  String?
   websiteUrl               String?
+  websiteStatus            WebsiteStatus @default(NO_OWN_WEBSITE)
+  employeeCount            Int?
   leadType                 LeadType      @default(NO_WEBSITE)
   opportunityScore         Int           @default(0)
   conversionQualityScore   Int?
@@ -135,6 +145,28 @@ model Lead {
   @@index([status, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
+}
+
+model GenerationRun {
+  id                  String    @id @default(cuid())
+  status              JobStatus @default(PENDING)
+  targetCount         Int       @default(50)
+  candidatesFound     Int       @default(0)
+  candidatesChecked   Int       @default(0)
+  withoutWebsite      Int       @default(0)
+  duplicates          Int       @default(0)
+  rejected            Int       @default(0)
+  stored              Int       @default(0)
+  placesUsed          Json      @default("[]")
+  branchesUsed        Json      @default("[]")
+  apiErrors            Json      @default("[]")
+  exhausted            Boolean  @default(false)
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([status, createdAt])
 }
 
 model WebsiteAnalysis {

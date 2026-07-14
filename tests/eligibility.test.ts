@@ -5,7 +5,8 @@ import { normalizePhone, normalizeText } from "@/lib/leads/normalization";
 const candidate: Candidate = { externalPlaceId:"place-1",companyName:"De Goede Loodgieter",phoneNumber:"020 123 45 67",businessStatus:"OPERATIONAL",country:"NL",category:"plumber",city:"Amsterdam",streetAddress:"Damrak 1, 1012 LG Amsterdam, Nederland",latitude:52.37,longitude:4.89,googleMapsUrl:"https://maps.google.com/?cid=1" };
 describe("leadkwalificatie",()=>{
   it("accepteert operationeel bedrijf zonder website met geldig nummer",()=>expect(qualifyCandidate(candidate).ok).toBe(true));
-  it("classificeert bedrijf met website voor kwaliteitsanalyse",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"})).toMatchObject({ok:true,lead:{leadType:"OUTDATED_WEBSITE"}}));
+  it("weigert een bedrijf met een eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"})).toMatchObject({ok:false,reason:"eigen_website"}));
+  it("telt een socialmediaprofiel niet als eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://facebook.com/degoodeloodgieter"})).toMatchObject({ok:true,lead:{leadType:"NO_WEBSITE",website:undefined}}));
   it("weigert bedrijf zonder telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined})).toMatchObject({ok:false,reason:"ongeldig_nummer"}));
   it("weigert permanent gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_PERMANENTLY"})).toMatchObject({ok:false,reason:"niet_operationeel"}));
   it("weigert tijdelijk gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_TEMPORARILY"})).toMatchObject({ok:false,reason:"niet_operationeel"}));

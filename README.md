@@ -7,7 +7,7 @@ Interne, beveiligde Leadfinder voor kwalitatieve websitekansen in Nederland en B
 - Next.js 15 App Router, React 19 en strikte TypeScript
 - PostgreSQL met Prisma ORM en een reproduceerbare migratie
 - Opaque databasesessies, bcrypt-wachtwoorden en HttpOnly/SameSite-cookies
-- Google Places API (New), uitsluitend server-side en met expliciete field masks
+- Google Places API (New) als primaire bron en OpenStreetMap Overpass als aanvullende bron, uitsluitend server-side
 - PageSpeed Insights API v5 plus begrensde DNS/HTTP/HTML-controles
 - Vercel Cron voor incrementele Places-scans, hercontrole en websiteanalyse
 - Zod-validatie, origincontrole, rate limiting, quota en transactionele job-locks
@@ -40,6 +40,9 @@ De gewenste eerste gebruikersnaam is `sitoro`. Stel het tijdelijke wachtwoord ui
 | `PAGESPEED_API_KEY` | analyse | server-side PageSpeed Insights key |
 | `GOOGLE_PLACES_DAILY_LIMIT` | nee | standaard 250 calls per dag |
 | `GOOGLE_PLACES_MAX_PAGES_PER_JOB` | nee | standaard 2, maximaal 3 |
+| `LEAD_GENERATION_TARGET` | nee | aantal nieuwe leads per handmatige run, standaard 50 |
+| `LEAD_CANDIDATE_BUFFER` | nee | minimale kandidaatbuffer voor filtering, standaard 200 |
+| `OVERPASS_API_URL` | nee | Overpass-endpoint, standaard publieke hoofdinstantie |
 | `PAGESPEED_DAILY_LIMIT` | nee | standaard 25 calls per dag |
 | `WEBSITE_OPPORTUNITY_THRESHOLD` | nee | standaard 55/100 |
 | `SESSION_TTL_DAYS` | nee | standaard 14 dagen |

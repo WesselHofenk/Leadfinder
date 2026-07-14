@@ -8,6 +8,9 @@ const schema = z.object({
   CRON_SECRET: z.string().min(32),
   GOOGLE_PLACES_DAILY_LIMIT: z.coerce.number().int().positive().default(250),
   GOOGLE_PLACES_MAX_PAGES_PER_JOB: z.coerce.number().int().min(1).max(3).default(2),
+  LEAD_GENERATION_TARGET: z.coerce.number().int().min(1).max(100).default(50),
+  LEAD_CANDIDATE_BUFFER: z.coerce.number().int().min(50).max(1000).default(200),
+  OVERPASS_API_URL: z.string().url().default("https://overpass-api.de/api/interpreter"),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(30).default(14),
   NEXT_PUBLIC_APP_URL: z.string().url().default("http://localhost:3001"),
 });
