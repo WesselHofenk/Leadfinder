@@ -50,7 +50,7 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain("hairdresser");
     expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
     expect(query).toContain('[!"website"][!"contact:website"]');
-    expect(query).toContain("opening_hours|check_date");
+    expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).toContain('["website"~"^(no|none|nee|geen|n\\.v\\.t\\.|nvt)$",i]');
     expect(query).toContain("node(around:");
     expect(query.match(/node\(around:/g)).toHaveLength(3);
