@@ -428,10 +428,11 @@ export async function processGenerationBatch(runId: string) {
       const tileLabel = overpassSearchPlan(tileCursor).id;
       const segment = `${area.country}:${area.city}:${area.category}:${tileLabel}`;
 
+      run.progress = Math.max(run.progress, phaseProgress("source"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: adapter.id, currentRegion: region,
         currentCategory: area.category, currentTile: tileLabel, continuationCursor: segment,
-        progress: Math.max(run.progress, phaseProgress("source")),
+        progress: run.progress,
         message: `Zoektegel ${tileLabel} voor ${area.category} in ${region} wordt met een eigen requesttimeout opgehaald.`, heartbeatAt: new Date(),
       } });
 
@@ -495,6 +496,11 @@ export async function processGenerationBatch(runId: string) {
     }
 
     if (queued.length) {
+      run.progress = Math.max(run.progress, phaseProgress("candidates"));
+      await prisma.generationRun.update({ where: { id: runId }, data: {
+        currentPhase: "Kandidaten valideren", progress: run.progress,
+        message: `${queued.length} kandidaten worden gecontroleerd op status, contactgegevens en duplicaten.`, heartbeatAt: new Date(),
+      } });
       await prisma.generationCandidate.updateMany({
         where: { id: { in: queued.map(({ id }) => id) }, status: CandidateQueueStatus.PENDING },
         data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date() },
@@ -568,9 +574,10 @@ export async function processGenerationBatch(runId: string) {
 
     if (verificationWork.length) {
       stats.websitesChecked += verificationWork.length;
+      run.progress = Math.max(run.progress, phaseProgress("websites"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
         ...runData(stats, places, errors, warnings), currentPhase: "Websitebewijs controleren",
-        message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
+        progress: run.progress, message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
       } });
       const validationStarted = Date.now();
       const verificationResults = await Promise.allSettled(verificationWork.map(({ candidate }) => verifyWebsiteCandidate(candidate)));
@@ -606,7 +613,8 @@ export async function processGenerationBatch(runId: string) {
         }
         const databaseStarted = Date.now();
         try {
-          await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", heartbeatAt: new Date() } });
+          run.progress = Math.max(run.progress, phaseProgress("saving"));
+          await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", progress: run.progress, heartbeatAt: new Date() } });
           const saved = await storeNewLead(candidate, verification);
           if (saved.stored) {
             stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1;
@@ -651,7 +659,7 @@ export async function processGenerationBatch(runId: string) {
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
       pendingCandidates, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
-      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
+      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, candidatesChecked: stats.checked, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
         ? "De huidige batch is vóór de serverless deadline veilig gepauzeerd; de volgende batch wordt automatisch gestart."

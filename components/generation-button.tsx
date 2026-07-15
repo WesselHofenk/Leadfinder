@@ -14,6 +14,7 @@ type Run = {
   candidatesFound: number;
   candidatesChecked: number;
   stored: number;
+  withoutWebsite: number;
   manualReview: number;
   duplicates: number;
   existingLeads: number;
@@ -21,6 +22,7 @@ type Run = {
   websitesChecked: number;
   websitesFound: number;
   permanentlyClosed: number;
+  temporarilyClosed: number;
   sourceFailures: number;
   pendingCandidates: number;
   retriedCandidates: number;
@@ -204,9 +206,10 @@ export function GenerationButton() {
       <div className="generation-metrics">
         <Metric label="Kandidaten" value={run?.candidatesFound ?? 0}/><Metric label="Gecontroleerd" value={run?.candidatesChecked ?? 0}/>
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
-        <Metric label="Website gevonden" value={run?.websitesFound ?? 0}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
+        <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
+        <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
         <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker overgeslagen" value={run?.manualReview ?? 0}/>
-        <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Bronfouten" value={run?.sourceFailures ?? 0}/>
+        <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten veilig in PostgreSQL · onzekere kandidaten worden niet opgeslagen · {run?.sourceFailures ?? 0} bronfouten</p>

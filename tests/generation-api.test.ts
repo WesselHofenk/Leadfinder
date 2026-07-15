@@ -4,7 +4,7 @@ import { NextRequest } from "next/server";
 const runId = "cmrlz4csu0000l6046xanxs8s";
 const pendingRun = { id: runId, status: "PENDING", progress: 2 };
 
-const { generation, findFirst } = vi.hoisted(() => ({
+const { generation, findFirst, acquireJobLock, releaseStartLock } = vi.hoisted(() => ({
   generation: {
     cancelGenerationRun: vi.fn(),
     createGenerationRun: vi.fn(),
@@ -13,10 +13,13 @@ const { generation, findFirst } = vi.hoisted(() => ({
     processGenerationBatch: vi.fn(),
   },
   findFirst: vi.fn(),
+  acquireJobLock: vi.fn(),
+  releaseStartLock: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ currentUser: vi.fn(async () => ({ id: "user-1" })) }));
 vi.mock("@/lib/jobs/generation", () => generation);
+vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock }));
 vi.mock("@/lib/prisma", () => ({ prisma: { generationRun: { findFirst } } }));
 vi.mock("@/lib/security/request", () => ({ hasValidOrigin: vi.fn(() => true), rateLimit: vi.fn(() => true), requestIp: vi.fn(() => "127.0.0.1") }));
 
@@ -34,6 +37,7 @@ describe("serverless generation API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     findFirst.mockResolvedValue(null);
+    acquireJobLock.mockResolvedValue({ release: releaseStartLock });
     generation.createGenerationRun.mockResolvedValue(pendingRun);
     generation.latestGenerationRun.mockResolvedValue(pendingRun);
     generation.processGenerationBatch.mockResolvedValue({ ...pendingRun, status: "RUNNING", progress: 45 });
@@ -43,8 +47,9 @@ describe("serverless generation API", () => {
   it("maakt een queued job zonder een lang open startrequest", async () => {
     const response = await POST(request("POST"));
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual({ run: pendingRun });
+    expect(await response.json()).toEqual(expect.objectContaining({ success: true, jobId: runId, status: "PENDING", requestedCount: 50, savedCount: 0, run: pendingRun }));
     expect(generation.processGenerationBatch).not.toHaveBeenCalled();
+    expect(releaseStartLock).toHaveBeenCalledOnce();
   });
 
   it("voorkomt twee gelijktijdige zoekruns", async () => {
@@ -52,6 +57,14 @@ describe("serverless generation API", () => {
     const response = await POST(request("POST"));
     expect(response.status).toBe(409);
     expect(generation.createGenerationRun).not.toHaveBeenCalled();
+  });
+
+  it("sluit ook het racevenster tussen actieve-runcontrole en jobaanmaak", async () => {
+    acquireJobLock.mockResolvedValue(null);
+    const response = await POST(request("POST"));
+    expect(response.status).toBe(409);
+    expect(generation.createGenerationRun).not.toHaveBeenCalled();
+    expect((await response.json()).success).toBe(false);
   });
 
   it("staat een nieuwe run toe nadat de vorige een eindstatus kreeg", async () => {
@@ -63,6 +76,11 @@ describe("serverless generation API", () => {
     const response = await PATCH(request("PATCH", { runId }));
     expect(response.status).toBe(200);
     expect(generation.processGenerationBatch).toHaveBeenCalledWith(runId);
+    expect(await response.json()).toEqual(expect.objectContaining({
+      success: true, jobId: runId, status: "RUNNING", progress: 45,
+      requestedCount: 50, savedCount: 0, candidatesChecked: 0,
+      rejectedWithWebsite: 0, rejectedClosed: 0, rejectedDuplicate: 0, rejectedInvalid: 0, failedQueries: 0,
+    }));
   });
 
   it("annuleert de job direct en geeft de terminale status terug", async () => {

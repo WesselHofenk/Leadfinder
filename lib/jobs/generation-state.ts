@@ -40,10 +40,14 @@ export function candidateRetryStatus(attemptsAfterClaim: number, maxAttempts = 3
   return attemptsAfterClaim >= maxAttempts ? "FAILED" as const : "PENDING" as const;
 }
 
-export function generationProgress(input: { stored: number; target: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
-  const resultProgress = Math.min(72, Math.round((input.stored / Math.max(1, input.target)) * 72));
+export function generationProgress(input: { stored: number; target: number; candidatesChecked?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
+  const resultProgress = Math.min(20, Math.round((input.stored / Math.max(1, input.target)) * 20));
   const attemptedSegments = input.processedSegments + input.sourceFailures;
-  const searchProgress = Math.min(18, Math.max(attemptedSegments > 0 ? 1 : 0, Math.round((attemptedSegments / Math.max(1, input.maxSegments)) * 18)));
+  const progressHorizon = Math.max(2, Math.min(100, input.maxSegments));
+  const searchProgress = attemptedSegments > 0
+    ? Math.min(55, Math.ceil((Math.log1p(attemptedSegments) / Math.log1p(progressHorizon)) * 55))
+    : 0;
+  const validationProgress = Math.min(9, Math.round(((input.candidatesChecked ?? 0) / Math.max(1, input.target)) * 9));
   const phaseFloor = attemptedSegments > 0 ? phaseProgress("source") : phaseProgress("validate");
-  return Math.min(94, Math.max(phaseFloor, phaseProgress("validate") + resultProgress + searchProgress));
+  return Math.min(94, Math.max(phaseFloor, phaseProgress("source") + resultProgress + searchProgress + validationProgress));
 }

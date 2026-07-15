@@ -40,8 +40,16 @@ describe("persistente generatiejobstatus", () => {
   });
 
   it("beweegt zichtbaar voorbij 5% na een echte maar mislukte bronpoging", () => {
-    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBe(phaseProgress("source"));
+    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
+    expect(generationProgress({ stored: 0, sourceFailures: 2, target: 50, processedSegments: 0, maxSegments: 1000 }))
+      .toBeGreaterThan(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 }));
     expect(generationProgress({ stored: 10, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
+  });
+
+  it("telt echte kandidaatcontroles mee zonder ooit 100% te tonen vóór een eindstatus", () => {
+    const progress = generationProgress({ stored: 5, candidatesChecked: 30, sourceFailures: 2, target: 50, processedSegments: 6, maxSegments: 1000 });
+    expect(progress).toBeGreaterThan(25);
+    expect(progress).toBeLessThanOrEqual(94);
   });
 
   it("stopt een run op de echte totale looptijd", () => {
