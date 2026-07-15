@@ -14,7 +14,7 @@ const schema = z.object({
   GENERATION_BATCH_WEBSITE_CHECKS: z.coerce.number().int().min(1).max(6).default(3),
   GENERATION_WATCHDOG_SECONDS: z.coerce.number().int().min(30).max(180).default(60),
   GENERATION_BATCH_DURATION_SECONDS: z.coerce.number().int().min(20).max(50).default(45),
-  GENERATION_MAX_SOURCE_CALLS: z.coerce.number().int().min(1).max(500).default(200),
+  GENERATION_MAX_SOURCE_CALLS: z.coerce.number().int().min(1).max(2000).default(1000),
   GENERATION_MAX_SOURCE_FAILURES: z.coerce.number().int().min(3).max(50).default(12),
   GENERATION_MAX_RUN_MINUTES: z.coerce.number().int().min(2).max(30).default(15),
   WEBSITE_CHECK_CONCURRENCY: z.coerce.number().int().min(1).max(6).default(3),
