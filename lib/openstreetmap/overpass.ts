@@ -45,14 +45,26 @@ type SearchParams = {
   onEvent?: (event: OverpassEvent) => void | Promise<void>;
 };
 
+export type OverpassElementStrategy = "node" | "way" | "relation";
+
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
+const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
+export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length;
+
+export function overpassSearchPlan(cursor = 0) {
+  const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
+  const strategyIndex = normalized % elementStrategies.length;
+  const tileCursor = Math.floor(normalized / elementStrategies.length);
+  const strategy = elementStrategies[strategyIndex];
+  return { cursor: normalized, tileCursor, strategy, id: `t${tileCursor}-${strategy}` };
+}
 
 export function nextOverpassTileCursor(current: number, sourceSucceeded: boolean) {
-  const normalized = ((current % OSM_TILE_COUNT) + OSM_TILE_COUNT) % OSM_TILE_COUNT;
-  return sourceSucceeded ? (normalized + 1) % OSM_TILE_COUNT : normalized;
+  const normalized = ((current % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
+  return sourceSucceeded ? (normalized + 1) % OSM_SEARCH_CURSOR_COUNT : normalized;
 }
 
 const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
@@ -183,13 +195,15 @@ export function overpassTile(latitude: number, longitude: number, radius: number
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
-export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number }) {
+export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy }) {
   const filters = categoryFilters(params.category);
-  const contactFields = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
-  const statements = filters.flatMap((filter) => contactFields.map((field) =>
-    `nwr(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]["${field}"];`,
-  )).join("");
-  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta center qt;`;
+  const strategy = params.strategy ?? "node";
+  const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
+  const statements = filters.map((filter) =>
+    `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]${contactFilter};`,
+  ).join("");
+  const center = strategy === "node" ? "" : " center";
+  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
 
 function errorType(error: unknown) {
@@ -259,13 +273,14 @@ export async function searchOverpass(params: SearchParams) {
   const configuredEndpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
   const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
-  const timeoutMs = Math.min(8_000, Math.max(4_000, params.timeoutMs ?? 7_000));
-  const totalTimeoutMs = Math.min(24_000, Math.max(8_000, params.totalTimeoutMs ?? 20_000));
+  const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));
+  const totalTimeoutMs = Math.min(40_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 1));
-  const tile = overpassTile(params.latitude, params.longitude, params.radius, params.tileCursor);
-  const queryType = normalizedCategory(params.category) || "alle_bruikbare_bedrijven";
-  const query = buildOverpassQuery({ ...tile, category: params.category, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 2) });
+  const plan = overpassSearchPlan(params.tileCursor);
+  const tile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
+  const queryType = `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}`;
+  const query = buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
   const fetchImpl = params.fetchImpl ?? fetch;
   const sleep = params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const random = params.random ?? Math.random;
@@ -284,7 +299,7 @@ export async function searchOverpass(params: SearchParams) {
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);
           recordEndpointFailure(endpoint, Date.now());
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
           if (!isRetryableStatus(response.status)) break;
         } else {
           const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -293,13 +308,13 @@ export async function searchOverpass(params: SearchParams) {
           if (!Array.isArray(data.elements)) throw new SyntaxError("OpenStreetMap-response bevat geen geldige elementenlijst.");
           const candidates = candidatesFrom(data.elements, params.country);
           recordEndpointSuccess(endpoint);
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
-          return { candidates, endpoint, query, tile, queryType };
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
+          return { candidates, endpoint, query, tile: { ...tile, id: plan.id }, queryType };
         }
       } catch (error) {
         lastError = error instanceof Error ? error : lastError;
         recordEndpointFailure(endpoint, Date.now());
-        await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, errorType: errorType(error), message: lastError.message });
+        await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, errorType: errorType(error), message: lastError.message });
       }
       if (attempt < retries && deadline - Date.now() > 500) await sleep(Math.min(backoffDelayMs(attempt - 1, random() * 250), Math.max(0, deadline - Date.now() - 250)));
     }

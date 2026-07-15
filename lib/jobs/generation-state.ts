@@ -16,6 +16,18 @@ export function isBatchDeadlineNear(deadlineMs: number, nowMs = Date.now(), rese
   return nowMs >= deadlineMs - reserveMs;
 }
 
+export function isGenerationRunExpired(startedAt: Date | null, maxMinutes: number, now = new Date()) {
+  return Boolean(startedAt && now.getTime() - startedAt.getTime() >= maxMinutes * 60_000);
+}
+
+export function sourceAttemptDelta(sourceSucceeded: boolean) {
+  return { processedSegments: sourceSucceeded ? 1 : 0, sourceFailures: sourceSucceeded ? 0 : 1 } as const;
+}
+
+export function shouldStopForSourceFailures(input: { sourceFailures: number; processedSegments: number; maxFailures: number }) {
+  return input.sourceFailures >= input.maxFailures && input.sourceFailures > input.processedSegments;
+}
+
 export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; maxSegments: number; pendingCandidates: number }) {
   if (input.usable >= input.target) return "COMPLETE" as const;
   if (input.processedSegments >= input.maxSegments && input.pendingCandidates === 0) {

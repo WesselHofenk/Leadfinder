@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress } from "@/lib/jobs/generation-state";
+import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -32,6 +32,22 @@ describe("persistente generatiejobstatus", () => {
     expect(generationCompletionStatus({ usable: 18, target: 50, processedSegments: 40, maxSegments: 40, pendingCandidates: 0 })).toBe("PARTIALLY_COMPLETED");
     expect(generationCompletionStatus({ usable: 18, target: 50, processedSegments: 40, maxSegments: 40, pendingCandidates: 2 })).toBeNull();
     expect(generationCompletionStatus({ usable: 0, target: 50, processedSegments: 40, maxSegments: 40, pendingCandidates: 0 })).toBe("COMPLETE");
+  });
+
+  it("telt alleen een werkelijk ontvangen bronresponse als doorzocht segment", () => {
+    expect(sourceAttemptDelta(true)).toEqual({ processedSegments: 1, sourceFailures: 0 });
+    expect(sourceAttemptDelta(false)).toEqual({ processedSegments: 0, sourceFailures: 1 });
+  });
+
+  it("stopt een run op de echte totale looptijd", () => {
+    const now = new Date("2026-07-15T12:15:00Z");
+    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:00Z"), 15, now)).toBe(true);
+    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:01Z"), 15, now)).toBe(false);
+  });
+
+  it("meldt langdurige bronuitval apart en nooit als uitgeputte zoekruimte", () => {
+    expect(shouldStopForSourceFailures({ sourceFailures: 12, processedSegments: 0, maxFailures: 12 })).toBe(true);
+    expect(shouldStopForSourceFailures({ sourceFailures: 12, processedSegments: 30, maxFailures: 12 })).toBe(false);
   });
 
   it("zet een tijdelijke database- of netwerkfout terug in de queue en begrenst retries", () => {

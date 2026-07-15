@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_TILE_COUNT, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
@@ -48,14 +48,11 @@ describe("gerichte Overpass-query", () => {
     expect(tile.radius).toBe(2_400);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
-    expect(query).toContain('["phone"]');
-    expect(query).toContain('["contact:phone"]');
-    expect(query).toContain('["mobile"]');
-    expect(query).toContain('["contact:mobile"]');
-    expect(query).toContain("nwr(around:");
-    expect(query).not.toContain("node(around:");
-    expect(query).not.toContain('[~"^(phone');
-    expect(query).toContain("out meta center qt;");
+    expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
+    expect(query).toContain("node(around:");
+    expect(query.match(/node\(around:/g)).toHaveLength(1);
+    expect(query).not.toContain("nwr(around:");
+    expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
     expect(overpassTile(52.3676, 4.9041, 12_000, 1).id).toBe("t1");
     expect(overpassTile(52.3676, 4.9041, 12_000, 1).latitude).not.toBe(tile.latitude);
@@ -92,7 +89,15 @@ describe("gerichte Overpass-query", () => {
   it("verliest een tegel niet na een tijdelijke bronfout", () => {
     expect(nextOverpassTileCursor(4, false)).toBe(4);
     expect(nextOverpassTileCursor(4, true)).toBe(5);
-    expect(nextOverpassTileCursor(OSM_TILE_COUNT - 1, true)).toBe(0);
+    expect(nextOverpassTileCursor(OSM_SEARCH_CURSOR_COUNT - 1, true)).toBe(0);
+  });
+
+  it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3);
+    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", id: "t0-node" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", id: "t0-way" });
+    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", id: "t0-relation" });
+    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 1, strategy: "node", id: "t1-node" });
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {
