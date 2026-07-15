@@ -8,7 +8,7 @@ import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
 import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
-import type { OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { nextOverpassTileCursor, OSM_TILE_COUNT, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
@@ -59,6 +59,7 @@ function statsFromRun(run: GenerationRun): Stats {
 }
 
 function runData(stats: Stats, places: string[], errors: string[], warnings: string[]): Prisma.GenerationRunUpdateInput {
+  const branches = [...new Set(places.map((segment) => segment.split(":")[2]).filter(Boolean))];
   return {
     candidatesFound: stats.found,
     candidatesChecked: stats.checked,
@@ -78,7 +79,7 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     sourceFailures: stats.sourceFailures,
     estimatedCostCents: 0,
     placesUsed: places,
-    branchesUsed: [],
+    branchesUsed: branches,
     apiErrors: errors.slice(-50),
     warnings: warnings.slice(-50),
     heartbeatAt: new Date(),
@@ -245,6 +246,8 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
 }
 
 export async function storeNewLead(candidate: Candidate, verification: WebsiteVerificationResult) {
+  // Validation applies only to newly discovered leads.
+  // Existing leads must remain untouched.
   const gate = evaluateNewLeadGate(candidate, verification);
   if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
   const basic = validateCandidateBasics(candidate);
@@ -321,7 +324,7 @@ async function nextSearchArea() {
     create: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" },
     update: {},
   });
-  return { area, combination, tileCursor: combination.tileCursor % 9 };
+  return { area, combination, tileCursor: combination.tileCursor % OSM_TILE_COUNT };
 }
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
@@ -444,7 +447,7 @@ export async function processGenerationBatch(runId: string) {
           prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: queuedResult.count } } }),
           prisma.searchCombination.update({ where: { id: combination.id }, data: {
             useCount: { increment: 1 }, candidatesFound: { increment: queuedResult.count }, lastUsedAt: new Date(),
-            tileCursor: (tileCursor + 1) % 9, lastTile: result.tile, lastError: null,
+            tileCursor: nextOverpassTileCursor(tileCursor, true), lastTile: result.tile, lastError: null,
           } }),
           prisma.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: 1 }, lastError: null } }),
         ]);
@@ -458,7 +461,7 @@ export async function processGenerationBatch(runId: string) {
         await Promise.all([
           logSource(runId, adapter.id, "ERROR", JSON.stringify({ jobId: runId, batchNumber: run.batchNumber, step: "source_failed", region, category: area.category, tile: tileLabel, errorCode: "SOURCE_ERROR", message }), area.city, area.category),
           prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date() } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: (tileCursor + 1) % 9, lastTile: tileLabel, lastError: message } }),
+          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor, false), lastTile: tileLabel, lastError: message } }),
           prisma.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: 1 }, lastError: message } }),
         ]);
         run.processedSegments += 1;
@@ -474,6 +477,15 @@ export async function processGenerationBatch(runId: string) {
         where: { id: { in: queued.map(({ id }) => id) }, status: CandidateQueueStatus.PENDING },
         data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date() },
       });
+    }
+
+    const priorCandidates = await prisma.generationCandidate.findMany({
+      where: { runId, status: { in: [CandidateQueueStatus.PROCESSED, CandidateQueueStatus.FAILED] } },
+      select: { payload: true }, take: 1_000,
+    });
+    for (const prior of priorCandidates) {
+      const candidate = prior.payload as unknown as Candidate;
+      if (candidate?.externalPlaceId) dedupe.hasOrAdd(candidateDedupeKeys(candidate));
     }
 
     const verificationWork: Array<{ row: GenerationCandidate; candidate: Candidate }> = [];

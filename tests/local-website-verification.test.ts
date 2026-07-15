@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:dns/promises",()=>({resolveAny:vi.fn()}));
 import { resolveAny } from "node:dns/promises";
-import { candidateDomains, clearDomainProbeCache, isConfirmedNoWebsite, verifyWebsiteCandidate } from "@/lib/leads/website-verification";
+import { candidateDomains, clearDomainProbeCache, hasStrongAutomaticAbsenceEvidence, isConfirmedNoWebsite, verifyWebsiteCandidate } from "@/lib/leads/website-verification";
 import type { Candidate } from "@/lib/leads/eligibility";
 
 const base:Candidate={externalPlaceId:"osm:node/1",source:"OPENSTREETMAP",companyName:"By Yoel",phoneNumber:"0201234567",country:"NL",category:"salon",city:"Abcoude",postalCode:"1391AA",streetAddress:"Kerkstraat 1",latitude:52.2,longitude:4.9,googleMapsUrl:"https://www.openstreetmap.org/node/1"};
@@ -12,11 +12,18 @@ describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();c
   it("herkent een website in geneste ruwe brondata",async()=>expect(await verifyWebsiteCandidate({...base,rawData:{contactInfo:{officialWebsite:"bruna.nl"}}})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://bruna.nl"}));
   it("classificeert alleen social als SOCIAL_ONLY maar nog niet als actieve lead",async()=>expect(await verifyWebsiteCandidate({...base,websiteFields:["https://instagram.com/byyoel"]})).toMatchObject({status:"SOCIAL_ONLY",confidence:60}));
   it("publiceert ontbrekende domeinkandidaten niet zonder Google-controle",async()=>expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"MANUAL_REVIEW_REQUIRED",confidence:55}));
+  it("bevestigt meervoudig negatief bewijs alleen voor een recent record met extra activiteitssignalen",async()=>{
+    const strong={...base,sourceUpdatedAt:new Date().toISOString(),activitySignals:["opening_hours"]};
+    expect(hasStrongAutomaticAbsenceEvidence(strong)).toBe(true);
+    expect(await verifyWebsiteCandidate(strong)).toMatchObject({status:"NO_WEBSITE_CONFIRMED",confidence:84});
+    expect(hasStrongAutomaticAbsenceEvidence({...strong,sourceUpdatedAt:"2020-01-01T00:00:00Z"})).toBe(false);
+  });
+  it("controleert een zakelijk e-maildomein vóór website-afwezigheid",()=>expect(candidateDomains({...base,email:"contact@onverwacht-bedrijf.nl"})[0]).toBe("onverwacht-bedrijf.nl"));
   it("bevestigt alleen een expliciete bronafwezigheid nadat alle domeinkandidaten ontbreken",async()=>expect(await verifyWebsiteCandidate({...base,websiteAbsenceConfirmed:true})).toMatchObject({status:"NO_WEBSITE_CONFIRMED",confidence:90}));
   it("houdt een DNS-netwerkfout onzeker",async()=>{vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("temporary"),{code:"EAI_AGAIN"}));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
   it("maakt van HTTP 403 geen geen-websitelead",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:403})));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
   it("maakt van HTTP 404 geen bevestigde geen-websitelead",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:404})));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
-  it("houdt een SSL-fout onzeker en probeert iedere domeinkandidaat begrensd",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);const fetchImpl=vi.fn().mockRejectedValue(new TypeError("certificate has expired"));vi.stubGlobal("fetch",fetchImpl);expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});expect(fetchImpl.mock.calls.length).toBeGreaterThan(0);expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(8);});
+  it("houdt een SSL-fout onzeker en probeert iedere domeinkandidaat begrensd",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);const fetchImpl=vi.fn().mockRejectedValue(new TypeError("certificate has expired"));vi.stubGlobal("fetch",fetchImpl);expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});expect(fetchImpl.mock.calls.length).toBeGreaterThan(0);expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(20);});
   it("behoudt een eigen domein dat naar een boekingspagina redirect als eigen website",async()=>{
     vi.mocked(resolveAny).mockImplementation(async(domain)=>{if(domain==="byyoel.nl")return [];throw Object.assign(new Error("not found"),{code:"ENOTFOUND"});});
     const fetchImpl=vi.fn().mockResolvedValueOnce(new Response(null,{status:302,headers:{location:"https://booking.example/by-yoel"}})).mockResolvedValueOnce(new Response(null,{status:200}));

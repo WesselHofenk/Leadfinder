@@ -61,4 +61,21 @@ describe("frontend polling en eindstatus", () => {
     expect(await screen.findByText("De zoekrun is door de gebruiker geannuleerd.")).toBeTruthy();
     await waitFor(() => expect((screen.getByRole("button", { name: "Opnieuw genereren" }) as HTMLButtonElement).disabled).toBe(false));
   });
+
+  it("telt onzekere kandidaten niet op bij nieuw bewaard", async () => {
+    let getCalls = 0;
+    const honestRun = { ...baseRun, stored: 2, manualReview: 5 };
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      if (method === "POST") return json({ run: { ...baseRun, status: "PENDING", progress: 2 } }, 202);
+      if (method === "PATCH") return json({ run: honestRun });
+      getCalls += 1;
+      return json({ run: getCalls === 1 ? null : honestRun });
+    }));
+    render(<GenerationButton/>);
+    fireEvent.click(await screen.findByRole("button", { name: "Nieuwe leads genereren" }));
+    expect(await screen.findByText("Onzeker overgeslagen")).toBeTruthy();
+    expect(await screen.findByText("2/50")).toBeTruthy();
+    expect(screen.queryByText("7/50")).toBeNull();
+  });
 });

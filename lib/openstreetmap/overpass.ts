@@ -46,9 +46,14 @@ type SearchParams = {
 };
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
-const tileOffsets = [
-  [0, 0], [0, 1], [1, 0], [0, -1], [-1, 0], [1, 1], [1, -1], [-1, -1], [-1, 1],
-] as const;
+const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
+  .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
+export const OSM_TILE_COUNT = tileOffsets.length;
+
+export function nextOverpassTileCursor(current: number, sourceSucceeded: boolean) {
+  const normalized = ((current % OSM_TILE_COUNT) + OSM_TILE_COUNT) % OSM_TILE_COUNT;
+  return sourceSucceeded ? (normalized + 1) % OSM_TILE_COUNT : normalized;
+}
 
 const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
 const circuitFailureThreshold = 2;
@@ -85,28 +90,37 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
     const latitude = element.lat ?? element.center?.lat;
     const longitude = element.lon ?? element.center?.lon;
     if (!tags.name || latitude == null || longitude == null) return [];
-    const street = [tags["addr:street"], tags["addr:housenumber"]].filter(Boolean).join(" ");
-    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || "Onbekend";
+    const street = tags["addr:full"] || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ");
+    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || "Onbekend";
     const category = tags.shop || tags.craft || tags.office || tags.amenity || tags.tourism || tags.healthcare || "bedrijf";
     const closureSignals = closedSignals(tags);
-    const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"]].filter((value): value is string => Boolean(value));
+    const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"], tags["operator:website"], tags["brand:website"]].filter((value): value is string => Boolean(value));
     const noWebsiteValues = new Set(["no", "none", "nee", "geen", "n.v.t.", "nvt"]);
     const positiveWebsite = rawWebsiteValues.find((value) => !noWebsiteValues.has(value.trim().toLowerCase()));
     const websiteAbsenceConfirmed = !positiveWebsite && rawWebsiteValues.some((value) => noWebsiteValues.has(value.trim().toLowerCase()));
+    const phoneNumbers = [tags.phone, tags["contact:phone"], tags.mobile, tags["contact:mobile"], tags.telephone, tags["contact:telephone"]].filter((value): value is string => Boolean(value));
+    const emailAddresses = [tags.email, tags["contact:email"]].filter((value): value is string => Boolean(value));
+    const sourceDates = [element.timestamp, tags.check_date, tags["contact:check_date"], tags["opening_hours:check_date"], tags["survey:date"]]
+      .filter((value): value is string => Boolean(value)).map((value) => ({ value, time: Date.parse(value) })).filter(({ time }) => Number.isFinite(time)).sort((a, b) => b.time - a.time);
+    const activitySignals = ["opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date", "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram"]
+      .filter((key) => Boolean(tags[key]));
     return [{
       externalPlaceId: `osm:${element.type}/${element.id}`,
       source: "OPENSTREETMAP",
       companyName: tags.name,
-      phoneNumber: tags.phone || tags["contact:phone"],
-      internationalPhoneNumber: tags["contact:mobile"],
-      email: tags.email || tags["contact:email"],
+      phoneNumber: phoneNumbers[0],
+      internationalPhoneNumber: tags["contact:mobile"] || tags.mobile,
+      phoneNumbers,
+      email: emailAddresses[0],
+      emailAddresses,
       website: positiveWebsite,
-      websiteFields: [tags["contact:url"], tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
+      websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
       businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : "UNKNOWN",
       closureSignals,
+      activitySignals,
       rawData: tags,
-      sourceUpdatedAt: element.timestamp,
+      sourceUpdatedAt: sourceDates[0]?.value,
       country: (tags["addr:country"] || country).toUpperCase(),
       category,
       subCategory: tags.brand,
@@ -141,7 +155,21 @@ export function categoryFilters(category?: string) {
   if (/fysio|personal trainer|coach|opleiding|kinderopvang/.test(value)) return ['["healthcare"]', '["amenity"~"^(doctors|clinic|kindergarten|training)$"]'];
   if (/garage|autobedrijf|rijschool/.test(value)) return ['["shop"~"^(car|car_repair|tyres)$"]', '["amenity"="driving_school"]'];
   if (/makelaar|boekhouder|consultant/.test(value)) return ['["office"~"^(estate_agent|accountant|consulting|company)$"]'];
-  if (/aannemer|klus|schilder|stukadoor|tegel|installatie|dakdekker|loodgieter|elektricien|hovenier|schoonmaak|verhuis|interieur|keuken|fotograaf|videograaf|drukkerij|honden|verhuur/.test(value)) return ['["craft"]', '["office"="company"]'];
+  if (/schilder/.test(value)) return ['["craft"="painter"]'];
+  if (/stukadoor/.test(value)) return ['["craft"="plasterer"]'];
+  if (/tegel/.test(value)) return ['["craft"="tiler"]'];
+  if (/dakdekker/.test(value)) return ['["craft"="roofer"]'];
+  if (/loodgieter|installatie/.test(value)) return ['["craft"~"^(plumber|hvac)$"]'];
+  if (/elektricien/.test(value)) return ['["craft"="electrician"]'];
+  if (/hovenier/.test(value)) return ['["craft"~"^(gardener|landscaper)$"]'];
+  if (/fotograaf/.test(value)) return ['["craft"="photographer"]'];
+  if (/aannemer|klus/.test(value)) return ['["craft"~"^(builder|carpenter|handicraft)$"]', '["office"="company"]'];
+  if (/schoonmaak/.test(value)) return ['["craft"="cleaning"]', '["office"="company"]'];
+  if (/verhuis/.test(value)) return ['["office"~"^(moving_company|company)$"]'];
+  if (/interieur|keuken/.test(value)) return ['["craft"~"^(cabinet_maker|interior_decorator)$"]', '["shop"="kitchen"]'];
+  if (/videograaf|drukkerij/.test(value)) return ['["craft"~"^(photographer|printer)$"]', '["office"="company"]'];
+  if (/honden/.test(value)) return ['["shop"="pet_grooming"]', '["amenity"~"^(animal_boarding|animal_breeding)$"]'];
+  if (/verhuur/.test(value)) return ['["shop"="rental"]', '["office"="company"]'];
   if (/speciaalzaak|groothandel/.test(value)) return ['["shop"]', '["office"="wholesale"]'];
   return ['["shop"]', '["craft"]', '["office"]', '["amenity"~"^(restaurant|cafe|clinic|doctors)$"]', '["tourism"~"^(hotel|guest_house)$"]', '["healthcare"]'];
 }
@@ -149,19 +177,19 @@ export function categoryFilters(category?: string) {
 export function overpassTile(latitude: number, longitude: number, radius: number, cursor = 0) {
   const index = Math.abs(cursor) % tileOffsets.length;
   const [row, column] = tileOffsets[index];
-  const tileRadius = Math.min(1_500, Math.max(1_000, Math.round(radius / 6)));
-  const north = (row * tileRadius * 1.7) / 111_320;
-  const east = (column * tileRadius * 1.7) / (111_320 * Math.max(0.2, Math.cos(latitude * Math.PI / 180)));
+  const tileRadius = Math.min(3_000, Math.max(1_500, Math.round(radius / 5)));
+  const north = (row * tileRadius * 1.85) / 111_320;
+  const east = (column * tileRadius * 1.85) / (111_320 * Math.max(0.2, Math.cos(latitude * Math.PI / 180)));
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
 export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number }) {
   const filters = categoryFilters(params.category);
-  const contactFields = ["phone", "contact:phone", "contact:mobile"];
+  const contactFields = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
   const statements = filters.flatMap((filter) => contactFields.map((field) =>
-    `node(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]["${field}"];`,
+    `nwr(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]["${field}"];`,
   )).join("");
-  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out center tags qt 100;`;
+  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta center qt;`;
 }
 
 function errorType(error: unknown) {

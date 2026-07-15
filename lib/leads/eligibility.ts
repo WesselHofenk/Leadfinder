@@ -1,7 +1,7 @@
 import { confidenceLevel, excludedBusinessValues } from "./config";
 import { isPermanentlyClosed, isTemporarilyClosed } from "./company-status";
 import { evaluateNewLeadGate } from "./intake-gate";
-import { normalizeDomain, normalizeEmail, normalizePhone, normalizeText } from "./normalization";
+import { normalizeDomain, normalizeEmails, normalizePhones, normalizePostalCode, normalizeText } from "./normalization";
 import { determineWebsiteStatus, isNonOwnedWebsite } from "./website";
 
 export type Candidate = {
@@ -13,6 +13,7 @@ export type Candidate = {
   latitude: number; longitude: number; googleMapsUrl: string; subCategory?: string;
   source?: "GOOGLE_PLACES" | "OPENSTREETMAP"; houseNumber?: string;
   brand?: string; brandWikidata?: string; operator?: string;
+  phoneNumbers?: Array<string | null | undefined>; emailAddresses?: Array<string | null | undefined>; activitySignals?: string[];
   websiteFields?: Array<string | null | undefined>;
   links?: unknown; contact?: unknown; contactInfo?: unknown; details?: unknown; attributes?: unknown; externalLinks?: unknown; socialLinks?: unknown;
   rawData?: unknown; sourceData?: unknown; websiteAbsenceConfirmed?: boolean;
@@ -26,27 +27,50 @@ export type EligibleBase = Candidate & {
 };
 export type EligibleLead = EligibleBase & { leadType: "NO_WEBSITE" };
 
+const MAX_OSM_SOURCE_AGE_MS = 6 * 365.25 * 24 * 60 * 60 * 1000;
+
+export function hasPlausibleBusinessLocation(candidate: Candidate) {
+  const country = candidate.country.toUpperCase();
+  const postalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, country);
+  const hasHouseNumber = Boolean(candidate.houseNumber?.trim() || /\d/.test(candidate.streetAddress));
+  const bounds = country === "NL"
+    ? candidate.latitude >= 50.7 && candidate.latitude <= 53.7 && candidate.longitude >= 3.2 && candidate.longitude <= 7.3
+    : country === "BE" && candidate.latitude >= 49.4 && candidate.latitude <= 51.6 && candidate.longitude >= 2.4 && candidate.longitude <= 6.5;
+  return Boolean(postalCode && hasHouseNumber && candidate.streetAddress.trim().length >= 6 && bounds);
+}
+
+export function hasRecentSourceEvidence(candidate: Candidate, now = Date.now()) {
+  if (candidate.source !== "OPENSTREETMAP") return true;
+  const timestamp = candidate.sourceUpdatedAt ? Date.parse(candidate.sourceUpdatedAt) : Number.NaN;
+  return Number.isFinite(timestamp) && timestamp <= now + 86_400_000 && now - timestamp <= MAX_OSM_SOURCE_AGE_MS;
+}
+
 export function validateCandidateBasics(candidate: Candidate): { ok: true; lead: EligibleBase } | { ok: false; reason: string } {
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
   if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
-  if (isLikelyChain(candidate.companyName) || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
-  const normalizedPhoneNumber = normalizePhone(candidate.internationalPhoneNumber || candidate.phoneNumber || "", candidate.country);
+  if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
+  if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
+  if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
+  const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
   if (!normalizedPhoneNumber) return { ok: false, reason: "ongeldig_nummer" };
   const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
   if (status === "UNKNOWN" && (!candidate.postalCode || candidate.streetAddress.length < 6)) return { ok: false, reason: "onbetrouwbare_status" };
   let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
   if (status === "UNKNOWN") confidenceScore -= 10;
-  if (candidate.postalCode && candidate.houseNumber) confidenceScore += 5;
-  if (candidate.email) confidenceScore += 3;
+  const normalizedPostalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, candidate.country) ?? undefined;
+  const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
+  if (normalizedPostalCode && (candidate.houseNumber || /\d/.test(candidate.streetAddress))) confidenceScore += 5;
+  if (normalizedEmail) confidenceScore += 3;
+  if (candidate.activitySignals?.length) confidenceScore += Math.min(4, candidate.activitySignals.length);
   if (isNonOwnedWebsite(candidate.website)) confidenceScore += 6;
   confidenceScore = Math.max(0, Math.min(100, confidenceScore));
   const websiteDecision = determineWebsiteStatus(candidate);
   return { ok: true, lead: {
-    ...candidate, country: candidate.country.toUpperCase(), businessStatus: status,
+    ...candidate, country: candidate.country.toUpperCase(), postalCode: normalizedPostalCode, businessStatus: status,
     normalizedPhoneNumber, normalizedCompanyName: normalizeText(candidate.companyName),
     normalizedAddress: normalizeText(candidate.streetAddress), normalizedDomain: normalizeDomain(websiteDecision.normalizedUrl),
-    email: normalizeEmail(candidate.email) ?? undefined, confidenceScore, confidenceLevel: confidenceLevel(confidenceScore),
+    email: normalizedEmail, confidenceScore, confidenceLevel: confidenceLevel(confidenceScore),
   } };
 }
 
@@ -59,4 +83,7 @@ export function qualifyCandidate(candidate: Candidate, verification?: Parameters
 }
 
 const chainNames = ["mcdonalds","burger king","subway","dominos","kfc","starbucks","hema","action","aldi","lidl","jumbo","ah to go","albert heijn","kruidvat","etos","gamma","praxis","kwikfit","basic fit","anytime fitness","van der valk","fletcher hotels","ibis hotel"];
-export function isLikelyChain(name: string) { const normalized = normalizeText(name).replaceAll(" ", ""); return chainNames.some((chain) => normalized.includes(normalizeText(chain).replaceAll(" ", ""))); }
+export function isLikelyChain(...values: Array<string | undefined>) {
+  const normalized = values.map((value) => normalizeText(value ?? "").replaceAll(" ", "")).filter(Boolean);
+  return chainNames.some((chain) => normalized.some((value) => value.includes(normalizeText(chain).replaceAll(" ", ""))));
+}

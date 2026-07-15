@@ -1,13 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_TILE_COUNT, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
   id: 42,
   lat: 52.37,
   lon: 4.9,
+  timestamp: "2026-07-01T10:00:00Z",
   tags: {
     name: "Testbedrijf",
     phone: "+31201234567",
@@ -44,15 +45,20 @@ describe("gerichte Overpass-query", () => {
   it("maakt een kleine geldige tegelquery voor de gekozen branche", () => {
     const tile = overpassTile(52.3676, 4.9041, 12_000, 0);
     const query = buildOverpassQuery({ ...tile, category: "kapper", timeoutSeconds: 10 });
-    expect(tile.radius).toBe(1_500);
+    expect(tile.radius).toBe(2_400);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
     expect(query).toContain('["contact:phone"]');
+    expect(query).toContain('["mobile"]');
+    expect(query).toContain('["contact:mobile"]');
+    expect(query).toContain("nwr(around:");
+    expect(query).not.toContain("node(around:");
     expect(query).not.toContain('[~"^(phone');
-    expect(query).toContain("out center tags qt 100");
+    expect(query).toContain("out meta center qt;");
+    expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
     expect(overpassTile(52.3676, 4.9041, 12_000, 1).id).toBe("t1");
-    expect(overpassTile(52.3676, 4.9041, 12_000, 1).longitude).not.toBe(tile.longitude);
+    expect(overpassTile(52.3676, 4.9041, 12_000, 1).latitude).not.toBe(tile.latitude);
   });
 
   it("verwerkt een geldige locatie en response", async () => {
@@ -60,6 +66,33 @@ describe("gerichte Overpass-query", () => {
     const result = await searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch });
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
+  });
+
+  it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
+    const way = { ...element, type: "way" as const, id: 43, lat: undefined, lon: undefined, center: { lat: 52.38, lon: 4.91 }, tags: {
+      ...element.tags, phone: "ongeldig; +31 20 765 43 21", mobile: "+31 6 12345678", email: "info@voorbeeld.nl; sales@voorbeeld.nl", website: "no",
+    } };
+    const relation = { ...way, type: "relation" as const, id: 44, center: { lat: 52.39, lon: 4.92 } };
+    const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([way, relation])) as typeof fetch });
+    expect(result.candidates.map((candidate) => candidate.externalPlaceId)).toEqual(["osm:way/43", "osm:relation/44"]);
+    expect(result.candidates[0]).toMatchObject({
+      phoneNumbers: ["ongeldig; +31 20 765 43 21", "+31 6 12345678"],
+      emailAddresses: ["info@voorbeeld.nl; sales@voorbeeld.nl"],
+      websiteAbsenceConfirmed: true,
+      sourceUpdatedAt: "2026-07-01T10:00:00Z",
+    });
+  });
+
+  it("gebruikt branchespecifieke OSM-tags in plaats van alle ambachten", () => {
+    expect(categoryFilters("schilder")).toEqual(['["craft"="painter"]']);
+    expect(categoryFilters("elektricien")).toEqual(['["craft"="electrician"]']);
+    expect(categoryFilters("loodgieter")).toEqual(['["craft"~"^(plumber|hvac)$"]']);
+  });
+
+  it("verliest een tegel niet na een tijdelijke bronfout", () => {
+    expect(nextOverpassTileCursor(4, false)).toBe(4);
+    expect(nextOverpassTileCursor(4, true)).toBe(5);
+    expect(nextOverpassTileCursor(OSM_TILE_COUNT - 1, true)).toBe(0);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

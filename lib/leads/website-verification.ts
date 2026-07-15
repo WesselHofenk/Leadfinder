@@ -1,6 +1,6 @@
 import { resolveAny } from "node:dns/promises";
 import type { Candidate } from "./eligibility";
-import { normalizeText } from "./normalization";
+import { normalizeEmails, normalizeText } from "./normalization";
 import { determineWebsiteStatus, extractWebsiteEntries, isNonOwnedWebsite, normalizeWebsite } from "./website";
 
 export type LocalWebsiteStatus =
@@ -28,6 +28,11 @@ const descriptorTokens = new Set([
   "opticien", "opticiens", "kapper", "kapsalon", "salon", "restaurant", "cafe", "winkel", "shop", "store",
   "praktijk", "studio", "centrum", "center", "services", "service", "bedrijf", "bedrijven",
 ]);
+const publicEmailDomains = new Set([
+  "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.nl", "live.com", "live.nl", "yahoo.com",
+  "icloud.com", "proton.me", "protonmail.com", "ziggo.nl", "kpnmail.nl", "planet.nl", "xs4all.nl", "telenet.be", "skynet.be",
+]);
+const strongAbsenceFreshnessMs = 2 * 365.25 * 24 * 60 * 60 * 1000;
 
 function websiteValues(candidate: Candidate) {
   return extractWebsiteEntries(candidate).map(({ rawValue }) => rawValue);
@@ -55,9 +60,18 @@ export function candidateDomains(candidate: Candidate) {
   const roots = [
     words(candidate.brand).join(""), words(candidate.operator).join(""), terms[0], terms.slice(0, 2).join(""),
     companyWords.filter((token) => !weakNameTokens.has(token)).join(""), companyWords.join(""),
+    companyWords.filter((token) => !weakNameTokens.has(token)).join("-"), companyWords.join("-"),
   ].filter((root): root is string => Boolean(root && root.length >= 4 && root.length <= 63 && /[a-z]/.test(root)));
-  const suffixes = countrySuffix === "nl" ? ["nl", "com"] : ["be", "com"];
-  return [...new Set(roots.flatMap((root) => suffixes.map((suffix) => `${root}.${suffix}`)))].slice(0, 4);
+  const emailDomains = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])
+    .map((email) => email.split("@")[1]).filter((domain) => domain && !publicEmailDomains.has(domain));
+  const suffixes = countrySuffix === "nl" ? ["nl", "com", "eu"] : ["be", "com", "eu"];
+  return [...new Set([...emailDomains, ...roots.flatMap((root) => suffixes.map((suffix) => `${root}.${suffix}`))])].slice(0, 10);
+}
+
+export function hasStrongAutomaticAbsenceEvidence(candidate: Candidate, now = Date.now()) {
+  const updatedAt = candidate.sourceUpdatedAt ? Date.parse(candidate.sourceUpdatedAt) : Number.NaN;
+  const recent = Number.isFinite(updatedAt) && updatedAt <= now + 86_400_000 && now - updatedAt <= strongAbsenceFreshnessMs;
+  return candidate.source === "OPENSTREETMAP" && recent && Boolean(candidate.activitySignals?.length);
 }
 
 function dnsAbsent(error: unknown) {
@@ -163,11 +177,16 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
     reason: "Minstens één domeincontrole mislukte of werd geblokkeerd; geen website kan niet betrouwbaar worden vastgesteld.",
     evidence: [...externalEvidence, ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: check.probe.result.toUpperCase(), confidence: 45, evidenceUrl: `https://${check.domain}`, shortExplanation: "Een timeout, blokkade of netwerkfout blijft onzeker." }))],
   };
-  if (candidate.websiteAbsenceConfirmed === true) return {
-    status: "NO_WEBSITE_CONFIRMED", confidence: 90, website: null,
-    reason: "De openbare bron markeert de website expliciet als afwezig en alle begrensde domeincontroles waren negatief.",
-    evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: "ABSENT_CONFIRMED", confidence: 90, shortExplanation: "Expliciete bronwaarde voor geen website." },
-      ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: 90, evidenceUrl: `https://${check.domain}`, shortExplanation: "Plausibele domeinkandidaat bestaat niet." }))],
+  const explicitAbsence = candidate.websiteAbsenceConfirmed === true;
+  const strongAutomaticAbsence = hasStrongAutomaticAbsenceEvidence(candidate);
+  if (explicitAbsence || strongAutomaticAbsence) return {
+    status: "NO_WEBSITE_CONFIRMED", confidence: explicitAbsence ? 90 : 84, website: null,
+    reason: explicitAbsence
+      ? "De openbare bron markeert de website expliciet als afwezig en alle begrensde domeincontroles waren negatief."
+      : "Een recent en contacteerbaar bedrijfsrecord bevat geen website; alle uitgebreide bedrijfs-, merk-, plaats- en e-maildomeincontroles waren negatief.",
+    evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: explicitAbsence ? "ABSENT_CONFIRMED" : "ABSENT_AFTER_STRONG_CHECKS", confidence: explicitAbsence ? 90 : 84,
+      shortExplanation: explicitAbsence ? "Expliciete bronwaarde voor geen website." : "Niet alleen een leeg veld: recente bronmetadata, aanvullende activiteitssignalen en uitgebreide domeincontroles ondersteunen de afwezigheid." },
+      ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: explicitAbsence ? 90 : 84, evidenceUrl: `https://${check.domain}`, shortExplanation: "Plausibele domeinkandidaat bestaat niet." }))],
   };
   if (normalized.length) return {
     status: "SOCIAL_ONLY", confidence: 60, website: null,
