@@ -2,13 +2,12 @@ import { Prisma, type Lead } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { serverEnv } from "@/lib/env";
 import { searchPlaces } from "@/lib/google/places";
-import { searchOverpass } from "@/lib/openstreetmap/overpass";
 import { qualifyCandidate, validateCandidateBasics, type Candidate, type EligibleBase } from "@/lib/leads/eligibility";
 import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, type DedupeKeys } from "@/lib/leads/deduplication";
 import { normalizeText } from "@/lib/leads/normalization";
-import { determineWebsiteStatus, logWebsiteStatusDecision, type WebsiteStatusDecision } from "@/lib/leads/website";
+import { logWebsiteStatusDecision, type WebsiteStatusDecision } from "@/lib/leads/website";
+import { verifyGoogleNoWebsiteCandidate } from "@/lib/leads/google-verification";
 import { searchTerms } from "@/lib/leads/config";
-import { analyzeWebsite, type WebsiteAnalysisResult } from "@/lib/website/analyze";
 import { acquireJobLock } from "./lock";
 import { reserveBudgetedApiCall } from "./quota";
 
@@ -86,6 +85,14 @@ export async function runLeadGeneration(runId: string) {
   let sourceCalls = 0;
   try {
     await updateRun(runId, { status: "RUNNING", startedAt: new Date() });
+    if (!env.PAID_PROVIDERS_ENABLED || !env.GOOGLE_PLACES_API_KEY) {
+      const reason = "Google Places is verplicht voor websitecontrole, maar is niet geconfigureerd. Er zijn geen leads opgeslagen.";
+      errors.push(reason);
+      await updateRun(runId, { ...updateData(stats, places, branches, errors), status: "FAILED", exhausted: true, finishedAt: new Date() });
+      await logSource(runId, "GOOGLE_PLACES", "ERROR", reason);
+      return;
+    }
+
     const [areasRaw, categories, excluded, existingLeads, suppressedRows] = await Promise.all([
       prisma.coverageArea.findMany({ where: { status: { not: "PAUSED" } }, orderBy: [{ lastScannedAt: "asc" }, { priority: "asc" }] }),
       prisma.category.findMany({ where: { isActive: true }, orderBy: [{ priority: "asc" }, { name: "asc" }] }),
@@ -97,12 +104,9 @@ export async function runLeadGeneration(runId: string) {
     const existing = new ExistingLeadIndex(existingLeads); const runDedupe = new RunDeduplicator();
     const suppressed = new Set(suppressedRows.map((row) => row.fingerprint));
 
-    const saveLead = async (base: EligibleBase, keys: DedupeKeys, websiteDecision: WebsiteStatusDecision, analysis?: WebsiteAnalysisResult) => {
-      const noWebsite = websiteDecision.status === "no_website";
-      const leadType = noWebsite ? "NO_WEBSITE" : analysis!.classification === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";
-      const websiteStatus = noWebsite ? "NO_OWN_WEBSITE" : analysis!.classification === "OUTDATED" ? "OUTDATED" : "IMPROVABLE";
-      const siteUrl = noWebsite ? null : websiteDecision.normalizedUrl;
-      const score = noWebsite ? Math.max(70, analysis?.opportunityScore ?? base.confidenceScore) : analysis!.opportunityScore;
+    const saveLead = async (base: EligibleBase, keys: DedupeKeys, websiteDecision: WebsiteStatusDecision) => {
+      const score = Math.max(70, base.confidenceScore);
+      const verifiedAt = new Date();
       const saved = await prisma.$transaction(async (tx) => {
         const lead = await tx.lead.create({ data: {
           externalPlaceId: base.externalPlaceId, companyName: base.companyName, normalizedCompanyName: base.normalizedCompanyName,
@@ -111,30 +115,23 @@ export async function runLeadGeneration(runId: string) {
           category: base.category, subCategory: base.subCategory, country: base.country, province: base.province,
           municipality: base.municipality, city: base.city, postalCode: base.postalCode, streetAddress: base.streetAddress,
           houseNumber: base.houseNumber, normalizedAddress: base.normalizedAddress, latitude: new Prisma.Decimal(base.latitude),
-          longitude: new Prisma.Decimal(base.longitude), googleMapsUrl: base.googleMapsUrl, website: siteUrl, websiteUrl: siteUrl,
-          normalizedDomain: noWebsite ? null : base.normalizedDomain, websiteStatus, websiteStatusReason: websiteDecision.reason,
-          websiteSource: websiteDecision.source, leadType, opportunityScore: score,
-          conversionQualityScore: analysis?.conversionQualityScore ?? 0, businessStatus: base.businessStatus,
-          source: base.source || "OPENSTREETMAP", confidenceScore: base.confidenceScore, confidenceLevel: base.confidenceLevel, status: "NEW",
-          filterReason: analysis?.reasons[0]?.label,
+          longitude: new Prisma.Decimal(base.longitude), googleMapsUrl: base.googleMapsUrl, website: null, websiteUrl: null,
+          normalizedDomain: null, websiteStatus: "NO_OWN_WEBSITE", websiteStatusReason: websiteDecision.reason,
+          websiteSource: "google_places.websiteUri", googlePlaceId: base.externalPlaceId,
+          googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: false,
+          leadType: "NO_WEBSITE", opportunityScore: score, conversionQualityScore: 0, businessStatus: base.businessStatus,
+          source: "GOOGLE_PLACES", confidenceScore: base.confidenceScore, confidenceLevel: base.confidenceLevel, status: "NEW",
         } });
-        await tx.websiteAnalysis.create({ data: analysis ? {
-          leadId: lead.id, websiteUrl: analysis.websiteUrl, opportunityScore: analysis.opportunityScore, mobileScore: analysis.mobileScore,
-          desktopScore: analysis.desktopScore, conversionQualityScore: analysis.conversionQualityScore, isReachable: analysis.isReachable,
-          isMobileFriendly: analysis.isMobileFriendly, hasContactForm: analysis.hasContactForm, hasClearCta: analysis.hasClearCta,
-          hasBrokenLinks: analysis.hasBrokenLinks, brokenLinkCount: analysis.brokenLinkCount, hasViewportMeta: analysis.hasViewportMeta,
-          hasOutdatedCopyright: analysis.hasOutdatedCopyright, hasPlaceholderContent: analysis.hasPlaceholderContent,
-          hasHttps: analysis.hasHttps, hasInvalidSsl: analysis.hasInvalidSsl, hasBrokenImages: analysis.hasBrokenImages,
-          brokenImageCount: analysis.brokenImageCount, hasLegacyTechnology: analysis.hasLegacyTechnology, hasTinyText: analysis.hasTinyText,
-          loadTimeMs: analysis.loadTimeMs, reasons: analysis.reasons, rawSignals: analysis.rawSignals as Prisma.InputJsonValue,
-        } : { leadId: lead.id, websiteUrl: "", opportunityScore: score, conversionQualityScore: 0, isReachable: false, reasons: [{ code: "NO_WEBSITE", label: "Geen eigen website in de toegestane brongegevens", weight: score }], rawSignals: { confidenceScore: base.confidenceScore, source: base.source } } });
+        await tx.websiteAnalysis.create({ data: {
+          leadId: lead.id, websiteUrl: "", opportunityScore: score, conversionQualityScore: 0, isReachable: false,
+          reasons: [{ code: "GOOGLE_NO_WEBSITE", label: "Google Places bevat geen eigen bedrijfswebsite", weight: score }],
+          rawSignals: { confidenceScore: base.confidenceScore, source: "GOOGLE_PLACES", googlePlaceId: base.externalPlaceId, verifiedAt: verifiedAt.toISOString() },
+        } });
         await tx.duplicateFingerprint.createMany({ data: fingerprintValues(keys).map((item) => ({ ...item, leadId: lead.id })), skipDuplicates: true });
         return lead;
       });
       existing.add(keys); stats.stored += 1;
-      if (noWebsite) { stats.withoutWebsite += 1; stats.noWebsite += 1; }
-      else if (analysis?.classification === "OUTDATED") stats.outdatedWebsite += 1;
-      else stats.improvableWebsite += 1;
+      stats.withoutWebsite += 1; stats.noWebsite += 1;
       return saved;
     };
 
@@ -148,28 +145,14 @@ export async function runLeadGeneration(runId: string) {
         if (prints.some(({ fingerprint }) => suppressed.has(fingerprint)) || runDedupe.hasOrAdd(keys) || existing.has(keys)) { stats.duplicates += 1; continue; }
         const basic = validateCandidateBasics(candidate);
         if (!basic.ok) { stats.rejected += 1; continue; }
-        // OSM not publishing a website tag is not proof that the business has no website.
-        // Google Places explicitly returns websiteUri in our field mask, so absence there is a checked source result.
-        const initialWebsiteDecision = determineWebsiteStatus(candidate, {
-          absenceVerified: candidate.source === "GOOGLE_PLACES",
-        });
-        logWebsiteStatusDecision(candidate.companyName, initialWebsiteDecision);
+        stats.websitesChecked += 1;
+        const verification = verifyGoogleNoWebsiteCandidate(candidate);
+        logWebsiteStatusDecision(candidate.companyName, verification.decision);
         try {
-          if (initialWebsiteDecision.status === "no_website") {
-            const qualified = qualifyCandidate(candidate);
-            if (!qualified.ok) { stats.rejected += 1; continue; }
-            await saveLead(qualified.lead, keys, initialWebsiteDecision);
-          } else if (initialWebsiteDecision.status === "unknown" || !initialWebsiteDecision.normalizedUrl) {
-            stats.rejected += 1; continue;
-          } else {
-            if (stats.websitesChecked >= 12 || deadline - Date.now() < 12_000) { stats.rejected += 1; continue; }
-            stats.websitesChecked += 1;
-            const analysis = await analyzeWebsite(initialWebsiteDecision.normalizedUrl, { quick: true });
-            const finalWebsiteDecision = determineWebsiteStatus(candidate, { reachable: analysis.isReachable, httpStatus: analysis.httpStatus, failureKind: analysis.failureKind, auditClassification: analysis.classification });
-            logWebsiteStatusDecision(candidate.companyName, finalWebsiteDecision);
-            if (finalWebsiteDecision.status === "unknown" || finalWebsiteDecision.status === "has_website") { stats.rejected += 1; continue; }
-            await saveLead({ ...basic.lead, website: finalWebsiteDecision.normalizedUrl ?? undefined, normalizedDomain: finalWebsiteDecision.normalizedUrl ? new URL(finalWebsiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null }, keys, finalWebsiteDecision, analysis);
-          }
+          if (!verification.accepted) { stats.rejected += 1; continue; }
+          const qualified = qualifyCandidate(candidate);
+          if (!qualified.ok) { stats.rejected += 1; continue; }
+          await saveLead(qualified.lead, keys, verification.decision);
         } catch (error) {
           if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") stats.duplicates += 1;
           else { stats.rejected += 1; errors.push(`Validatie ${candidate.companyName}: ${message(error)}`); }
@@ -181,27 +164,7 @@ export async function runLeadGeneration(runId: string) {
     const uniqueAreas = [...new Map(areasRaw.map((area) => [`${area.country}:${area.city}`, area])).values()];
     const byCountry = ["NL", "BE"].map((country) => uniqueAreas.filter((area) => area.country === country));
     const areas = Array.from({ length: Math.max(0, ...byCountry.map((items) => items.length)) }, (_, index) => byCountry.flatMap((items) => items[index] ? [items[index]] : [])).flat();
-    const endpoints = env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean);
-
-    for (const area of areas) {
-      if ((stats.stored >= run.targetCount && stats.found >= env.LEAD_CANDIDATE_BUFFER) || Date.now() >= deadline || sourceCalls >= env.GENERATION_MAX_SOURCE_CALLS) break;
-      sourceCalls += 1; places.add(`${area.city}, ${area.country}`); branches.add("OpenStreetMap-bedrijven");
-      const before = stats.stored;
-      try {
-        const result = await searchOverpass({ endpoints, country: area.country, latitude: Number(area.latitude), longitude: Number(area.longitude), radius: area.radius, timeoutMs: env.OVERPASS_TIMEOUT_MS });
-        result.candidates.forEach((candidate) => mergeCandidate(pending, candidate)); stats.found += result.candidates.length;
-        await processPending();
-        await recordCombination({ country: area.country, city: area.city, category: "*", source: "OPENSTREETMAP", found: result.candidates.length, valid: stats.stored - before });
-        await prisma.coverageArea.updateMany({ where: { country: area.country, city: area.city }, data: { lastScannedAt: new Date(), resultsFound: { increment: result.candidates.length }, status: "COMPLETE", errorMessage: null } });
-      } catch (error) {
-        const text = message(error); stats.sourceFailures += 1; errors.push(`Overpass ${area.city}: ${text}`);
-        await Promise.all([recordCombination({ country: area.country, city: area.city, category: "*", source: "OPENSTREETMAP", found: 0, error: text }), logSource(runId, "OPENSTREETMAP", "ERROR", text, area.city)]);
-      }
-      await updateRun(runId, updateData(stats, places, branches, errors));
-    }
-
-    const placesEnabled = Boolean(env.PAID_PROVIDERS_ENABLED && env.GOOGLE_PLACES_API_KEY);
-    if (stats.stored < run.targetCount && placesEnabled && Date.now() < deadline) {
+    if (stats.stored < run.targetCount && Date.now() < deadline) {
       const tasks = areas.flatMap((area) => categories.flatMap((category) => searchTerms(category.name).map((term) => ({ area, branch: category.name, term }))));
       for (const { area, branch, term } of tasks) {
         if ((stats.stored >= run.targetCount && stats.found >= env.LEAD_CANDIDATE_BUFFER) || Date.now() >= deadline || sourceCalls >= env.GENERATION_MAX_SOURCE_CALLS) break;
@@ -217,8 +180,6 @@ export async function runLeadGeneration(runId: string) {
         }
         await recordCombination({ country: area.country, city: area.city, category: branch, source: "GOOGLE_PLACES", found, valid: stats.stored - before });
       }
-    } else if (!placesEnabled) {
-      await logSource(runId, "GOOGLE_PLACES", "INFO", "Betaalde provider uitgeschakeld; gratis bronnen blijven actief");
     }
 
     await processPending();

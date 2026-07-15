@@ -3,6 +3,11 @@ import { prisma } from "@/lib/prisma";
 import type { LeadFilters } from "./filters";
 import { fingerprintValues, type DedupeKeys } from "./deduplication";
 import { normalizeText } from "./normalization";
+import { googleVerifiedNoWebsiteWhere } from "./google-verification";
+
+function requireGoogleNoWebsiteProof(where: Prisma.LeadWhereInput) {
+  Object.assign(where, googleVerifiedNoWebsiteWhere);
+}
 
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   const showFiltered=filters.filtered==="yes"||filters.status==="FILTERED";const where: Prisma.LeadWhereInput = { isActive: showFiltered?undefined:true, isFiltered:showFiltered?true:false, isSuppressed:false, businessStatus: { in: ["OPERATIONAL","UNKNOWN"] }, phoneNumber: { not: "" } };
@@ -14,9 +19,11 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   if (filters.postalCode) where.postalCode = { startsWith: filters.postalCode, mode: "insensitive" };
   if (filters.category) where.category = { contains: filters.category, mode: "insensitive" };
   if (filters.status) where.status=filters.status;
-  if (filters.leadType === "NO_WEBSITE") where.websiteStatus="NO_OWN_WEBSITE";
+  if (filters.leadType === "NO_WEBSITE") requireGoogleNoWebsiteProof(where);
   else if (filters.leadType) where.leadType=filters.leadType;
-  if (filters.websiteStatus) where.websiteStatus=filters.websiteStatus;
+  if (filters.websiteStatus === "NO_OWN_WEBSITE") requireGoogleNoWebsiteProof(where);
+  else if (filters.websiteStatus) where.websiteStatus=filters.websiteStatus;
+  else if (!filters.leadType && !showFiltered) requireGoogleNoWebsiteProof(where);
   if (filters.minScore!==undefined||filters.maxScore!==undefined) where.opportunityScore={...(filters.minScore!==undefined?{gte:filters.minScore}:{}),...(filters.maxScore!==undefined?{lte:filters.maxScore}:{})};
   if (filters.minConfidence!==undefined) where.confidenceScore={gte:filters.minConfidence};
   if (filters.called==="yes") where.status={in:["CALLED","NO_ANSWER","QUOTE_SENT","INVOICED"]};

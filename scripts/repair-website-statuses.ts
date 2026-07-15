@@ -29,11 +29,13 @@ async function main() {
     else if (decision.status === "unknown") unknown += 1;
 
     const hasExistingAuditOpportunity = ["OUTDATED", "IMPROVABLE"].includes(lead.websiteStatus);
+    const hasGoogleNoWebsiteProof = decision.status === "no_website"
+      && Boolean(lead.googlePlaceId && lead.googleWebsiteVerifiedAt && lead.googleWebsitePresent === false);
     const targetStatus = decision.status === "has_website"
       ? hasExistingAuditOpportunity ? lead.websiteStatus : "OWN_WEBSITE"
       : decision.status === "unknown" ? "UNKNOWN"
-      : lead.websiteStatus === "NO_OWN_WEBSITE" || lead.leadType === "NO_WEBSITE" ? "NO_OWN_WEBSITE" : lead.websiteStatus;
-    const mustExclude = targetStatus === "OWN_WEBSITE" || targetStatus === "UNKNOWN";
+      : hasGoogleNoWebsiteProof ? "NO_OWN_WEBSITE" : "UNKNOWN";
+    const mustExclude = targetStatus !== "NO_OWN_WEBSITE";
     const normalizedDomain = decision.normalizedUrl ? new URL(decision.normalizedUrl).hostname.replace(/^www\./, "") : null;
     const nextWebsite = decision.status === "no_website" ? null : decision.normalizedUrl;
     const nextLeadType = targetStatus === "NO_OWN_WEBSITE" ? "NO_WEBSITE" : targetStatus === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";

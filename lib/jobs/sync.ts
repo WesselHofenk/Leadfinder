@@ -1,7 +1,8 @@
 import { prisma } from "@/lib/prisma";
 import { serverEnv } from "@/lib/env";
-import { getPlaceDetails } from "@/lib/google/places";
-import { validateCandidateBasics } from "@/lib/leads/eligibility";
+import { getPlaceDetails, searchPlaces } from "@/lib/google/places";
+import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
+import { GOOGLE_REVIEW_REQUIRED_REASON, selectGoogleBusinessMatch } from "@/lib/leads/google-verification";
 import { determineWebsiteStatus, logWebsiteStatusDecision } from "@/lib/leads/website";
 import { createGenerationRun, runLeadGeneration } from "./generation";
 import { acquireJobLock } from "./lock";
@@ -16,6 +17,29 @@ export async function runDiscoveryJob() {
   return { skipped: false, runId: run.id, status: finished.status, found: finished.candidatesFound, stored: finished.stored, sourceFailures: finished.sourceFailures };
 }
 
+async function findBusinessOnGoogle(apiKey: string, existing: {
+  externalPlaceId: string; googlePlaceId: string | null; source: string; companyName: string; phoneNumber: string;
+  internationalPhoneNumber: string | null; country: string; category: string; city: string; postalCode: string | null;
+  streetAddress: string; latitude: unknown; longitude: unknown; googleMapsUrl: string;
+}) {
+  const knownPlaceId = existing.googlePlaceId || (existing.source === "GOOGLE_PLACES" && !existing.externalPlaceId.startsWith("osm:") ? existing.externalPlaceId : null);
+  if (knownPlaceId) return getPlaceDetails(apiKey, knownPlaceId, existing.country);
+
+  const original: Candidate = {
+    externalPlaceId: existing.externalPlaceId, source: "OPENSTREETMAP", companyName: existing.companyName,
+    phoneNumber: existing.phoneNumber, internationalPhoneNumber: existing.internationalPhoneNumber ?? undefined,
+    country: existing.country, category: existing.category, city: existing.city, postalCode: existing.postalCode ?? undefined,
+    streetAddress: existing.streetAddress, latitude: Number(existing.latitude), longitude: Number(existing.longitude),
+    googleMapsUrl: existing.googleMapsUrl,
+  };
+  const query = [existing.companyName, existing.streetAddress, existing.postalCode, existing.city].filter(Boolean).join(" ");
+  const result = await searchPlaces({
+    apiKey, query, city: existing.city, country: existing.country, latitude: Number(existing.latitude),
+    longitude: Number(existing.longitude), radius: 3_000,
+  });
+  return selectGoogleBusinessMatch(original, result.candidates);
+}
+
 export async function reverifyStaleLeads() {
   const env = serverEnv();
   if (!env.PAID_PROVIDERS_ENABLED || !env.GOOGLE_PLACES_API_KEY) {
@@ -25,7 +49,13 @@ export async function reverifyStaleLeads() {
   if (!lock) return { skipped: true, reason: "Er draait al een herverificatie" };
   try {
     const stale = await prisma.lead.findMany({
-      where: { source: "GOOGLE_PLACES", isSuppressed: false, lastVerifiedAt: { lte: new Date(Date.now() - 30 * 86_400_000) } },
+      where: {
+        isSuppressed: false,
+        OR: [
+          { googleWebsiteVerifiedAt: null },
+          { googleWebsiteVerifiedAt: { lte: new Date(Date.now() - 30 * 86_400_000) } },
+        ],
+      },
       take: 20, orderBy: { lastVerifiedAt: "asc" },
     });
     const job = await prisma.scanJob.create({ data: { type: "REVERIFY", status: "RUNNING", startedAt: new Date(), attempt: 1 } });
@@ -34,8 +64,16 @@ export async function reverifyStaleLeads() {
       try {
         await reserveBudgetedApiCall({ provider: "GOOGLE_PLACES", dailyLimit: env.GOOGLE_PLACES_DAILY_LIMIT, monthlyLimit: env.GOOGLE_PLACES_MONTHLY_LIMIT, estimatedCostCents: env.GOOGLE_PLACES_ESTIMATED_COST_CENTS });
         calls += 1;
-        const candidate = await getPlaceDetails(env.GOOGLE_PLACES_API_KEY, existing.externalPlaceId, existing.country);
-        if (!candidate) { sourceFailures += 1; continue; }
+        const candidate = await findBusinessOnGoogle(env.GOOGLE_PLACES_API_KEY, existing);
+        if (!candidate) {
+          sourceFailures += 1;
+          await prisma.lead.update({ where: { id: existing.id }, data: {
+            websiteStatus: "UNKNOWN", websiteStatusReason: "Geen eenduidige Google Places-match gevonden; lead blijft verborgen",
+            websiteSource: "google_places.no_exact_match", isActive: false, isFiltered: true,
+            filterReason: GOOGLE_REVIEW_REQUIRED_REASON, status: existing.status === "DO_NOT_CONTACT" ? "DO_NOT_CONTACT" : "FILTERED",
+          } });
+          continue;
+        }
         const basic = validateCandidateBasics(candidate);
         if (!basic.ok) {
           const closed = ["CLOSED_PERMANENTLY", "PERMANENTLY_CLOSED"].includes(candidate.businessStatus ?? "") ? "CLOSED_PERMANENTLY" : ["CLOSED_TEMPORARILY", "TEMPORARILY_CLOSED"].includes(candidate.businessStatus ?? "") ? "CLOSED_TEMPORARILY" : null;
@@ -45,19 +83,26 @@ export async function reverifyStaleLeads() {
           ]);
           continue;
         }
-        const websiteDecision = determineWebsiteStatus(candidate);
+        const websiteDecision = determineWebsiteStatus(candidate, { absenceVerified: true });
         logWebsiteStatusDecision(candidate.companyName, websiteDecision);
-        const foundOwnWebsite = websiteDecision.status === "has_website" && existing.websiteStatus === "NO_OWN_WEBSITE";
-        const uncertainWebsite = websiteDecision.status === "unknown";
+        const noWebsite = websiteDecision.status === "no_website";
+        const ownWebsite = websiteDecision.status === "has_website" || websiteDecision.status === "outdated_website";
+        const automaticallyQuarantined = existing.filterReason === GOOGLE_REVIEW_REQUIRED_REASON || existing.websiteSource === "google_reverification_required";
+        const verifiedAt = new Date();
         await prisma.$transaction([
           prisma.lead.update({ where: { id: existing.id }, data: { companyName: basic.lead.companyName, normalizedCompanyName: basic.lead.normalizedCompanyName, phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber, normalizedPhoneNumber: basic.lead.normalizedPhoneNumber, internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber, email: basic.lead.email, businessStatus: basic.lead.businessStatus, confidenceScore: basic.lead.confidenceScore, confidenceLevel: basic.lead.confidenceLevel,
             website: websiteDecision.normalizedUrl, websiteUrl: websiteDecision.normalizedUrl, normalizedDomain: websiteDecision.normalizedUrl ? new URL(websiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null,
-            websiteStatus: foundOwnWebsite ? "OWN_WEBSITE" : uncertainWebsite ? "UNKNOWN" : existing.websiteStatus,
-            websiteStatusReason: websiteDecision.reason, websiteSource: websiteDecision.source,
-            leadType: foundOwnWebsite || uncertainWebsite ? "IMPROVABLE_WEBSITE" : existing.leadType,
-            isActive: foundOwnWebsite || uncertainWebsite ? false : existing.isActive, isFiltered: foundOwnWebsite || uncertainWebsite ? true : existing.isFiltered,
-            filterReason: foundOwnWebsite || uncertainWebsite ? websiteDecision.reason : existing.filterReason, lastVerifiedAt: new Date() } }),
-          prisma.leadHistory.create({ data: { leadId: existing.id, event: "VERIFIED" } }),
+            websiteStatus: noWebsite ? "NO_OWN_WEBSITE" : ownWebsite ? "OWN_WEBSITE" : "UNKNOWN",
+            websiteStatusReason: websiteDecision.reason, websiteSource: "google_places.websiteUri",
+            googlePlaceId: candidate.externalPlaceId, googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: noWebsite ? false : ownWebsite ? true : null,
+            googleMapsUrl: candidate.googleMapsUrl,
+            leadType: noWebsite ? "NO_WEBSITE" : "IMPROVABLE_WEBSITE",
+            isActive: noWebsite ? (automaticallyQuarantined ? true : existing.isActive) : false,
+            isFiltered: noWebsite ? (automaticallyQuarantined ? false : existing.isFiltered) : true,
+            status: noWebsite && automaticallyQuarantined ? "NEW" : noWebsite ? existing.status : existing.status === "DO_NOT_CONTACT" ? "DO_NOT_CONTACT" : "FILTERED",
+            filterReason: noWebsite && automaticallyQuarantined ? null : noWebsite ? existing.filterReason : websiteDecision.reason,
+            lastVerifiedAt: verifiedAt } }),
+          prisma.leadHistory.create({ data: { leadId: existing.id, event: "GOOGLE_WEBSITE_VERIFIED", details: { googlePlaceId: candidate.externalPlaceId, noWebsite } } }),
         ]);
         verified += 1;
       } catch { sourceFailures += 1; }

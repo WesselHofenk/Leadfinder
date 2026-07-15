@@ -64,7 +64,7 @@ export function GenerationButton() {
       {pending ? "Leads controleren…" : message ? "Opnieuw genereren" : "Nieuwe leads genereren"}
     </button>
     {pending && <section className="generation-progress" aria-live="polite" aria-label="Voortgang leadgeneratie">
-      <div className="generation-progress-head"><span>Gratis-first zoekrun</span><strong>{Math.round(progress)}%</strong></div>
+      <div className="generation-progress-head"><span>Google Places-controle</span><strong>{Math.round(progress)}%</strong></div>
       <div className="progress"><span style={{ width: `${progress}%` }}/></div>
       <div className="generation-metrics">
         <Metric label="Kandidaten gevonden" value={run?.candidatesFound ?? 0}/>
@@ -74,7 +74,7 @@ export function GenerationButton() {
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/>
         <Metric label="Opgeslagen" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
-      <p className="generation-source-note">{run?.noWebsite ?? 0} zonder website · {(run?.outdatedWebsite ?? 0) + (run?.improvableWebsite ?? 0)} websitekansen · {run?.sourceFailures ?? 0} bronfouten</p>
+      <p className="generation-source-note">{run?.noWebsite ?? 0} door Google bevestigd zonder website · {run?.rejected ?? 0} kandidaten uitgesloten · {run?.sourceFailures ?? 0} bronfouten</p>
     </section>}
     {message && <p className={message.includes("toegevoegd") ? "success-message" : "alert"} role="status">{message.includes("toegevoegd") && <CheckCircle2 size={15}/>} {message}</p>}
   </div>;
