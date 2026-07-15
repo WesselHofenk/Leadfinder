@@ -1,4 +1,4 @@
-export const terminalGenerationStatuses = ["COMPLETE", "FAILED", "CANCELLED", "TIMED_OUT"] as const;
+export const terminalGenerationStatuses = ["COMPLETE", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"] as const;
 
 export function isTerminalGenerationStatus(status: string) {
   return (terminalGenerationStatuses as readonly string[]).includes(status);
@@ -10,4 +10,20 @@ export function phaseProgress(phase: "queued" | "validate" | "location" | "sourc
 
 export function isStaleGenerationRun(updatedAt: Date, now = new Date(), watchdogSeconds = 60) {
   return now.getTime() - updatedAt.getTime() > watchdogSeconds * 1000;
+}
+
+export function isBatchDeadlineNear(deadlineMs: number, nowMs = Date.now(), reserveMs = 6_000) {
+  return nowMs >= deadlineMs - reserveMs;
+}
+
+export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; maxSegments: number; pendingCandidates: number }) {
+  if (input.usable >= input.target) return "COMPLETE" as const;
+  if (input.processedSegments >= input.maxSegments && input.pendingCandidates === 0) {
+    return input.usable > 0 ? "PARTIALLY_COMPLETED" as const : "COMPLETE" as const;
+  }
+  return null;
+}
+
+export function candidateRetryStatus(attemptsAfterClaim: number, maxAttempts = 3) {
+  return attemptsAfterClaim >= maxAttempts ? "FAILED" as const : "PENDING" as const;
 }

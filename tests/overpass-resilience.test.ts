@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassQuery, categoryFilters, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
@@ -37,7 +37,8 @@ const base = {
   random: () => 0,
 };
 
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+beforeEach(() => clearOverpassCircuitState());
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); clearOverpassCircuitState(); });
 
 describe("gerichte Overpass-query", () => {
   it("maakt een kleine geldige tegelquery voor de gekozen branche", () => {
@@ -50,6 +51,8 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain('["contact:phone"]');
     expect(query).not.toContain('[~"^(phone');
     expect(query).toContain("out center tags qt 100");
+    expect(overpassTile(52.3676, 4.9041, 12_000, 1).id).toBe("t1");
+    expect(overpassTile(52.3676, 4.9041, 12_000, 1).longitude).not.toBe(tile.longitude);
   });
 
   it("verwerkt een geldige locatie en response", async () => {
@@ -120,5 +123,16 @@ describe("timeouts, retries en fallback", () => {
   it("geeft een concrete fout wanneer alle endpoints falen", async () => {
     const fetchImpl = vi.fn(async () => { throw new Error("network unavailable"); });
     await expect(searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers zijn mislukt");
+  });
+
+  it("retryt een permanente 404 niet op hetzelfde endpoint", async () => {
+    const fetchImpl = vi.fn(async () => new Response("not found", { status: 404 }));
+    await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], retriesPerEndpoint: 2, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("HTTP 404");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("breekt een te grote bronresponse af voordat JSON wordt verwerkt", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ elements: [] }), { headers: { "content-type": "application/json", "content-length": "250000" } }));
+    await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], maxResponseBytes: 100_000, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("groter dan");
   });
 });

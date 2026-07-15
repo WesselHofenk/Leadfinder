@@ -35,6 +35,7 @@ type SearchParams = {
   tileCursor?: number;
   timeoutMs?: number;
   totalTimeoutMs?: number;
+  maxResponseBytes?: number;
   retriesPerEndpoint?: number;
   signal?: AbortSignal;
   fetchImpl?: typeof fetch;
@@ -47,6 +48,25 @@ const permanentSignals = ["disused", "abandoned", "demolished", "removed", "raze
 const tileOffsets = [
   [0, 0], [0, 1], [1, 0], [0, -1], [-1, 0], [1, 1], [1, -1], [-1, -1], [-1, 1],
 ] as const;
+
+const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
+const circuitFailureThreshold = 2;
+const circuitCooldownMs = 30_000;
+
+export function clearOverpassCircuitState() { endpointHealth.clear(); }
+
+function healthyEndpoints(endpoints: string[], now: number) {
+  const available = endpoints.filter((endpoint) => (endpointHealth.get(endpoint)?.openUntil ?? 0) <= now);
+  return available.length ? available : endpoints;
+}
+
+function recordEndpointFailure(endpoint: string, now: number) {
+  const current = endpointHealth.get(endpoint) ?? { failures: 0, openUntil: 0 };
+  const failures = current.failures + 1;
+  endpointHealth.set(endpoint, { failures, openUntil: failures >= circuitFailureThreshold ? now + circuitCooldownMs : 0 });
+}
+
+function recordEndpointSuccess(endpoint: string) { endpointHealth.delete(endpoint); }
 
 function closedSignals(tags: Record<string, string>) {
   const signals: string[] = [];
@@ -172,15 +192,42 @@ async function fetchWithTimeout(fetchImpl: typeof fetch, endpoint: string, query
   }
 }
 
+async function readBoundedText(response: Response, maxBytes: number) {
+  const announced = Number(response.headers.get("content-length") || 0);
+  if (announced > maxBytes) throw new Error(`OpenStreetMap-response is groter dan ${maxBytes} bytes.`);
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > maxBytes) {
+        await reader.cancel("response_too_large");
+        throw new Error(`OpenStreetMap-response is groter dan ${maxBytes} bytes.`);
+      }
+      chunks.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const combined = new Uint8Array(received);
+  let offset = 0;
+  for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(combined);
+}
+
 export async function searchOverpass(params: SearchParams) {
   if (!Number.isFinite(params.latitude) || !Number.isFinite(params.longitude) || Math.abs(params.latitude) > 90 || Math.abs(params.longitude) > 180) {
     throw new Error("De locatie kon niet worden gevonden of bevat ongeldige coördinaten.");
   }
-  const endpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
+  const configuredEndpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
+  const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
-  const timeoutMs = Math.min(20_000, Math.max(5_000, params.timeoutMs ?? 12_000));
-  const totalTimeoutMs = Math.min(45_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
-  const retries = Math.min(3, Math.max(1, params.retriesPerEndpoint ?? 1));
+  const timeoutMs = Math.min(8_000, Math.max(4_000, params.timeoutMs ?? 7_000));
+  const totalTimeoutMs = Math.min(24_000, Math.max(8_000, params.totalTimeoutMs ?? 20_000));
+  const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
+  const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 1));
   const tile = overpassTile(params.latitude, params.longitude, params.radius, params.tileCursor);
   const queryType = normalizedCategory(params.category) || "alle_bruikbare_bedrijven";
   const query = buildOverpassQuery({ ...tile, category: params.category, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 2) });
@@ -198,9 +245,10 @@ export async function searchOverpass(params: SearchParams) {
       const started = Date.now();
       try {
         const response = await fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, remaining), params.signal);
-        const raw = await response.text();
+        const raw = await readBoundedText(response, maxResponseBytes);
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);
+          recordEndpointFailure(endpoint, Date.now());
           await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
           if (!isRetryableStatus(response.status)) break;
         } else {
@@ -209,11 +257,13 @@ export async function searchOverpass(params: SearchParams) {
           const data = JSON.parse(raw) as { elements?: OsmElement[] };
           if (!Array.isArray(data.elements)) throw new SyntaxError("OpenStreetMap-response bevat geen geldige elementenlijst.");
           const candidates = candidatesFrom(data.elements, params.country);
+          recordEndpointSuccess(endpoint);
           await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
           return { candidates, endpoint, query, tile, queryType };
         }
       } catch (error) {
         lastError = error instanceof Error ? error : lastError;
+        recordEndpointFailure(endpoint, Date.now());
         await emitEvent(params.onEvent, { endpoint, queryType, tile: tile.id, attempt, durationMs: Date.now() - started, errorType: errorType(error), message: lastError.message });
       }
       if (attempt < retries && deadline - Date.now() > 500) await sleep(Math.min(backoffDelayMs(attempt - 1, random() * 250), Math.max(0, deadline - Date.now() - 250)));

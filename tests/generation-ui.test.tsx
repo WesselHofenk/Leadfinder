@@ -12,6 +12,7 @@ const baseRun = {
   id: runId, status: "RUNNING", targetCount: 50, progress: 15, message: "OpenStreetMap wordt geprobeerd.",
   candidatesFound: 0, candidatesChecked: 0, stored: 0, manualReview: 0, duplicates: 0, existingLeads: 0,
   rejected: 0, websitesChecked: 0, permanentlyClosed: 0, sourceFailures: 0, exhausted: false,
+  websitesFound: 0, pendingCandidates: 0, retriedCandidates: 0, batchNumber: 1,
   apiErrors: [], warnings: [], currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: "OPENSTREETMAP",
   currentRegion: "Amsterdam, NL", currentTile: "t0", updatedAt: new Date().toISOString(),
 };
@@ -24,7 +25,7 @@ describe("frontend polling en eindstatus", () => {
   beforeEach(() => { vi.clearAllMocks(); });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-  it("toont binnen de voorbereidende stap voortgang boven 0% en verlaat running bij timeout", async () => {
+  it("toont voortgang en een eerlijke gedeeltelijk-afgeronde eindstatus", async () => {
     let getCalls = 0;
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       const method = init?.method ?? "GET";
@@ -33,14 +34,14 @@ describe("frontend polling en eindstatus", () => {
       getCalls += 1;
       if (getCalls === 1) return json({ run: null });
       if (getCalls <= 3) return json({ run: baseRun });
-      return json({ run: { ...baseRun, status: "TIMED_OUT", progress: 100, stopReason: "De veilige maximale verwerkingstijd is bereikt." } });
+      return json({ run: { ...baseRun, status: "PARTIALLY_COMPLETED", progress: 100, stopReason: "18 van de gewenste 50 kandidaten gevonden; resultaten zijn veilig opgeslagen." } });
     }));
     render(<GenerationButton/>);
     const start = await screen.findByRole("button", { name: "Nieuwe leads genereren" });
     fireEvent.click(start);
     const progress = await screen.findByRole("region", { name: "Voortgang leadgeneratie" });
     await waitFor(() => expect(progress.textContent).toContain("15%"));
-    expect(await screen.findByText("De veilige maximale verwerkingstijd is bereikt.", {}, { timeout: 3_500 })).toBeTruthy();
+    expect(await screen.findByText("18 van de gewenste 50 kandidaten gevonden; resultaten zijn veilig opgeslagen.", {}, { timeout: 3_500 })).toBeTruthy();
     await waitFor(() => expect((screen.getByRole("button", { name: "Opnieuw genereren" }) as HTMLButtonElement).disabled).toBe(false));
   });
 

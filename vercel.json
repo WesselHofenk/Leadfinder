@@ -4,7 +4,7 @@
   "buildCommand": "pnpm vercel-build",
   "installCommand": "pnpm install --frozen-lockfile",
   "functions": {
-    "app/api/generation/route.ts": { "maxDuration": 300 },
+    "app/api/generation/route.ts": { "maxDuration": 60 },
     "app/api/cron/sync/route.ts": { "maxDuration": 300 },
     "app/api/cron/reverify/route.ts": { "maxDuration": 300 },
     "app/api/cron/analyze/route.ts": { "maxDuration": 300 }

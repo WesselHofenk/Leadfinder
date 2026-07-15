@@ -65,9 +65,17 @@ enum JobStatus {
   PENDING
   RUNNING
   COMPLETE
+  PARTIALLY_COMPLETED
   FAILED
   CANCELLED
   TIMED_OUT
+}
+
+enum CandidateQueueStatus {
+  PENDING
+  PROCESSING
+  PROCESSED
+  FAILED
 }
 
 enum JobType {
@@ -220,48 +228,78 @@ model Lead {
 }
 
 model GenerationRun {
-  id                 String      @id @default(cuid())
-  status             JobStatus   @default(PENDING)
-  targetCount        Int         @default(50)
-  candidatesFound    Int         @default(0)
-  candidatesChecked  Int         @default(0)
-  withoutWebsite     Int         @default(0)
-  duplicates         Int         @default(0)
-  rejected           Int         @default(0)
-  stored             Int         @default(0)
-  manualReview       Int         @default(0)
-  websitesChecked    Int         @default(0)
-  permanentlyClosed  Int         @default(0)
-  temporarilyClosed  Int         @default(0)
-  noWebsite          Int         @default(0)
-  outdatedWebsite    Int         @default(0)
-  improvableWebsite  Int         @default(0)
-  sourceFailures     Int         @default(0)
-  estimatedCostCents Int         @default(0)
-  placesUsed         Json        @default("[]")
-  branchesUsed       Json        @default("[]")
-  apiErrors          Json        @default("[]")
-  exhausted          Boolean     @default(false)
-  cancelRequested    Boolean     @default(false)
-  progress           Int         @default(0)
-  message            String?
-  heartbeatAt        DateTime?
-  processedSegments  Int         @default(0)
-  existingLeads      Int         @default(0)
-  currentPhase       String      @default("Wachten")
-  currentSource      String?
-  currentRegion      String?
-  currentTile        String?
-  stopReason         String?
-  warnings           Json        @default("[]")
-  startedAt          DateTime?
-  finishedAt         DateTime?
-  createdAt          DateTime    @default(now())
-  updatedAt          DateTime    @updatedAt
-  logs               SourceLog[]
+  id                  String                @id @default(cuid())
+  status              JobStatus             @default(PENDING)
+  targetCount         Int                   @default(50)
+  candidatesFound     Int                   @default(0)
+  candidatesChecked   Int                   @default(0)
+  withoutWebsite      Int                   @default(0)
+  duplicates          Int                   @default(0)
+  rejected            Int                   @default(0)
+  stored              Int                   @default(0)
+  manualReview        Int                   @default(0)
+  websitesChecked     Int                   @default(0)
+  websitesFound       Int                   @default(0)
+  permanentlyClosed   Int                   @default(0)
+  temporarilyClosed   Int                   @default(0)
+  noWebsite           Int                   @default(0)
+  outdatedWebsite     Int                   @default(0)
+  improvableWebsite   Int                   @default(0)
+  sourceFailures      Int                   @default(0)
+  estimatedCostCents  Int                   @default(0)
+  placesUsed          Json                  @default("[]")
+  branchesUsed        Json                  @default("[]")
+  apiErrors           Json                  @default("[]")
+  exhausted           Boolean               @default(false)
+  cancelRequested     Boolean               @default(false)
+  progress            Int                   @default(0)
+  message             String?
+  heartbeatAt         DateTime?
+  processedSegments   Int                   @default(0)
+  batchNumber         Int                   @default(0)
+  pendingCandidates   Int                   @default(0)
+  retriedCandidates   Int                   @default(0)
+  lastBatchDurationMs Int?
+  existingLeads       Int                   @default(0)
+  currentPhase        String                @default("Wachten")
+  currentSource       String?
+  currentRegion       String?
+  currentTile         String?
+  currentCategory     String?
+  continuationCursor  String?
+  lastError           String?
+  stopReason          String?
+  warnings            Json                  @default("[]")
+  startedAt           DateTime?
+  finishedAt          DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+  logs                SourceLog[]
+  candidates          GenerationCandidate[]
 
   @@index([status, createdAt])
   @@index([status, updatedAt])
+}
+
+model GenerationCandidate {
+  id             String               @id @default(cuid())
+  runId          String
+  run            GenerationRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+  source         String
+  sourceRecordId String
+  segment        String
+  payload        Json
+  status         CandidateQueueStatus @default(PENDING)
+  attempts       Int                  @default(0)
+  lastError      String?
+  claimedAt      DateTime?
+  processedAt    DateTime?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@unique([runId, source, sourceRecordId])
+  @@index([runId, status, createdAt])
+  @@index([status, claimedAt])
 }
 
 model WebsiteAnalysis {

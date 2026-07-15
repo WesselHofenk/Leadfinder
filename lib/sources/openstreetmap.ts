@@ -10,6 +10,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   private endpoints: string[];
   private timeoutMs: number;
   private totalTimeoutMs: number;
+  private maxResponseBytes: number;
 
   constructor() {
     const env = serverEnv();
@@ -17,6 +18,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     this.endpoints = env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean);
     this.timeoutMs = env.OVERPASS_TIMEOUT_MS;
     this.totalTimeoutMs = env.OVERPASS_TOTAL_TIMEOUT_MS;
+    this.maxResponseBytes = env.OVERPASS_MAX_RESPONSE_BYTES;
   }
 
   async searchBusinesses(input: SourceSearch) {
@@ -30,6 +32,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       tileCursor: input.tileCursor,
       timeoutMs: this.timeoutMs,
       totalTimeoutMs: this.totalTimeoutMs,
+      maxResponseBytes: this.maxResponseBytes,
       signal: input.signal,
       onEvent: input.onEvent,
     });

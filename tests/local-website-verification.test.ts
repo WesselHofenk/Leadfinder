@@ -13,6 +13,14 @@ describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();c
   it("publiceert ontbrekende domeinkandidaten niet zonder Google-controle",async()=>expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"MANUAL_REVIEW_REQUIRED",confidence:55}));
   it("houdt een DNS-netwerkfout onzeker",async()=>{vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("temporary"),{code:"EAI_AGAIN"}));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
   it("maakt van HTTP 403 geen geen-websitelead",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:403})));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
+  it("maakt van HTTP 404 geen bevestigde geen-websitelead",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:404})));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
+  it("houdt een SSL-fout onzeker en probeert iedere domeinkandidaat begrensd",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);const fetchImpl=vi.fn().mockRejectedValue(new TypeError("certificate has expired"));vi.stubGlobal("fetch",fetchImpl);expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});expect(fetchImpl.mock.calls.length).toBeGreaterThan(0);expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(8);});
+  it("behoudt een eigen domein dat naar een boekingspagina redirect als eigen website",async()=>{
+    vi.mocked(resolveAny).mockImplementation(async(domain)=>{if(domain==="byyoel.nl")return [];throw Object.assign(new Error("not found"),{code:"ENOTFOUND"});});
+    const fetchImpl=vi.fn().mockResolvedValueOnce(new Response(null,{status:302,headers:{location:"https://booking.example/by-yoel"}})).mockResolvedValueOnce(new Response(null,{status:200}));
+    vi.stubGlobal("fetch",fetchImpl);
+    expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"WEBSITE_FOUND",website:"https://byyoel.nl"});
+  });
   it("test voor een vestigingsnaam ook het korte merkdomein van Pearle",async()=>{
     const pearle={...base,companyName:"Pearle Opticiens Amstelveen Westwijk",city:"Amstelveen",brand:"Pearle"};
     expect(candidateDomains(pearle)).toContain("pearle.nl");
