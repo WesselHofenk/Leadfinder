@@ -1,6 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { analyzeWebsite } from "@/lib/website/analyze";
+import { determineWebsiteStatus, logWebsiteStatusDecision } from "@/lib/leads/website";
 import { acquireJobLock } from "./lock";
 
 export async function queueWebsiteAnalysis(leadId: string) {
@@ -26,9 +27,11 @@ export async function runWebsiteAnalysisJob() {
     await prisma.scanJob.update({ where: { id: job.id }, data: { status: "RUNNING", startedAt: new Date(), attempt: { increment: 1 }, errorMessage: null } });
     try {
       const result = await analyzeWebsite(job.lead.websiteUrl);
-      const accepted = result.classification !== "USABLE";
+      const decision = determineWebsiteStatus(job.lead, { reachable: result.isReachable, httpStatus: result.httpStatus, failureKind: result.failureKind, auditClassification: result.classification });
+      logWebsiteStatusDecision(job.lead.companyName, decision);
+      const accepted = decision.status === "outdated_website";
       const leadType = result.classification === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";
-      const websiteStatus = result.classification === "OUTDATED" ? "OUTDATED" : result.classification === "IMPROVABLE" ? "IMPROVABLE" : "OWN_WEBSITE";
+      const websiteStatus = decision.status === "unknown" ? "UNKNOWN" : decision.status === "has_website" ? "OWN_WEBSITE" : result.classification === "OUTDATED" ? "OUTDATED" : "IMPROVABLE";
       await prisma.$transaction([
         prisma.websiteAnalysis.create({ data: {
           leadId: job.lead.id, websiteUrl: result.websiteUrl, opportunityScore: result.opportunityScore,
@@ -42,10 +45,11 @@ export async function runWebsiteAnalysisJob() {
           reasons: result.reasons, rawSignals: result.rawSignals as Prisma.InputJsonValue,
         } }),
         prisma.lead.update({ where: { id: job.lead.id }, data: {
-          leadType, websiteStatus, opportunityScore: result.opportunityScore, conversionQualityScore: result.conversionQualityScore,
+          leadType, websiteStatus, websiteStatusReason: decision.reason, websiteSource: decision.source,
+          website: decision.normalizedUrl, websiteUrl: decision.normalizedUrl, opportunityScore: result.opportunityScore, conversionQualityScore: result.conversionQualityScore,
           lastWebsiteAnalysisAt: new Date(), isActive: accepted, isFiltered: !accepted,
-          status: accepted && job.lead.status === "FILTERED" ? "NEW" : job.lead.status,
-          filterReason: accepted ? result.reasons[0]?.label ?? null : "Website scoort 0–29 en lijkt bruikbaar",
+          status: accepted && job.lead.status === "FILTERED" ? "NEW" : !accepted && job.lead.status === "NEW" ? "FILTERED" : job.lead.status,
+          filterReason: accepted ? result.reasons[0]?.label ?? decision.reason : decision.reason,
         } }),
         prisma.scanJob.update({ where: { id: job.id }, data: { status: "COMPLETE", finishedAt: new Date(), recordsFound: 1, recordsStored: accepted ? 1 : 0 } }),
       ]);

@@ -6,7 +6,7 @@ import { searchOverpass } from "@/lib/openstreetmap/overpass";
 import { qualifyCandidate, validateCandidateBasics, type Candidate, type EligibleBase } from "@/lib/leads/eligibility";
 import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, type DedupeKeys } from "@/lib/leads/deduplication";
 import { normalizeText } from "@/lib/leads/normalization";
-import { isNonOwnedWebsite, normalizeWebsite } from "@/lib/leads/website";
+import { determineWebsiteStatus, logWebsiteStatusDecision, type WebsiteStatusDecision } from "@/lib/leads/website";
 import { searchTerms } from "@/lib/leads/config";
 import { analyzeWebsite, type WebsiteAnalysisResult } from "@/lib/website/analyze";
 import { acquireJobLock } from "./lock";
@@ -45,10 +45,6 @@ function mergeCandidate(pool: Candidate[], candidate: Candidate) {
   const websiteFields = [...(current.websiteFields ?? []), current.website, ...(candidate.websiteFields ?? []), candidate.website];
   const preferred = current.source === "GOOGLE_PLACES" ? current : candidate;
   pool[found] = { ...preferred, email: preferred.email || current.email || candidate.email, websiteFields };
-}
-
-function ownWebsite(candidate: Candidate) {
-  return [candidate.website, ...(candidate.websiteFields ?? [])].map(normalizeWebsite).find((value) => value && !isNonOwnedWebsite(value)) ?? null;
 }
 
 function updateData(stats: Stats, places: Set<string>, branches: Set<string>, errors: string[]): Prisma.GenerationRunUpdateInput {
@@ -101,11 +97,11 @@ export async function runLeadGeneration(runId: string) {
     const existing = new ExistingLeadIndex(existingLeads); const runDedupe = new RunDeduplicator();
     const suppressed = new Set(suppressedRows.map((row) => row.fingerprint));
 
-    const saveLead = async (base: EligibleBase, keys: DedupeKeys, analysis?: WebsiteAnalysisResult) => {
-      const noWebsite = !analysis || !analysis.isReachable || analysis.hasPlaceholderContent === true;
-      const leadType = noWebsite ? "NO_WEBSITE" : analysis.classification === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";
-      const websiteStatus = noWebsite ? "NO_OWN_WEBSITE" : analysis.classification === "OUTDATED" ? "OUTDATED" : "IMPROVABLE";
-      const siteUrl = noWebsite ? null : analysis?.websiteUrl ?? null;
+    const saveLead = async (base: EligibleBase, keys: DedupeKeys, websiteDecision: WebsiteStatusDecision, analysis?: WebsiteAnalysisResult) => {
+      const noWebsite = websiteDecision.status === "no_website";
+      const leadType = noWebsite ? "NO_WEBSITE" : analysis!.classification === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";
+      const websiteStatus = noWebsite ? "NO_OWN_WEBSITE" : analysis!.classification === "OUTDATED" ? "OUTDATED" : "IMPROVABLE";
+      const siteUrl = noWebsite ? null : websiteDecision.normalizedUrl;
       const score = noWebsite ? Math.max(70, analysis?.opportunityScore ?? base.confidenceScore) : analysis!.opportunityScore;
       const saved = await prisma.$transaction(async (tx) => {
         const lead = await tx.lead.create({ data: {
@@ -116,7 +112,8 @@ export async function runLeadGeneration(runId: string) {
           municipality: base.municipality, city: base.city, postalCode: base.postalCode, streetAddress: base.streetAddress,
           houseNumber: base.houseNumber, normalizedAddress: base.normalizedAddress, latitude: new Prisma.Decimal(base.latitude),
           longitude: new Prisma.Decimal(base.longitude), googleMapsUrl: base.googleMapsUrl, website: siteUrl, websiteUrl: siteUrl,
-          normalizedDomain: noWebsite ? null : base.normalizedDomain, websiteStatus, leadType, opportunityScore: score,
+          normalizedDomain: noWebsite ? null : base.normalizedDomain, websiteStatus, websiteStatusReason: websiteDecision.reason,
+          websiteSource: websiteDecision.source, leadType, opportunityScore: score,
           conversionQualityScore: analysis?.conversionQualityScore ?? 0, businessStatus: base.businessStatus,
           source: base.source || "OPENSTREETMAP", confidenceScore: base.confidenceScore, confidenceLevel: base.confidenceLevel, status: "NEW",
           filterReason: analysis?.reasons[0]?.label,
@@ -151,18 +148,23 @@ export async function runLeadGeneration(runId: string) {
         if (prints.some(({ fingerprint }) => suppressed.has(fingerprint)) || runDedupe.hasOrAdd(keys) || existing.has(keys)) { stats.duplicates += 1; continue; }
         const basic = validateCandidateBasics(candidate);
         if (!basic.ok) { stats.rejected += 1; continue; }
-        const site = ownWebsite(candidate);
+        const initialWebsiteDecision = determineWebsiteStatus(candidate);
+        logWebsiteStatusDecision(candidate.companyName, initialWebsiteDecision);
         try {
-          if (!site) {
+          if (initialWebsiteDecision.status === "no_website") {
             const qualified = qualifyCandidate(candidate);
             if (!qualified.ok) { stats.rejected += 1; continue; }
-            await saveLead(qualified.lead, keys);
+            await saveLead(qualified.lead, keys, initialWebsiteDecision);
+          } else if (initialWebsiteDecision.status === "unknown" || !initialWebsiteDecision.normalizedUrl) {
+            stats.rejected += 1; continue;
           } else {
             if (stats.websitesChecked >= 12 || deadline - Date.now() < 12_000) { stats.rejected += 1; continue; }
             stats.websitesChecked += 1;
-            const analysis = await analyzeWebsite(site, { quick: true });
-            if (analysis.classification === "USABLE") { stats.rejected += 1; continue; }
-            await saveLead({ ...basic.lead, website: site, normalizedDomain: new URL(/^https?:\/\//i.test(site) ? site : `https://${site}`).hostname.replace(/^www\./, "") }, keys, analysis);
+            const analysis = await analyzeWebsite(initialWebsiteDecision.normalizedUrl, { quick: true });
+            const finalWebsiteDecision = determineWebsiteStatus(candidate, { reachable: analysis.isReachable, httpStatus: analysis.httpStatus, failureKind: analysis.failureKind, auditClassification: analysis.classification });
+            logWebsiteStatusDecision(candidate.companyName, finalWebsiteDecision);
+            if (finalWebsiteDecision.status === "unknown" || finalWebsiteDecision.status === "has_website") { stats.rejected += 1; continue; }
+            await saveLead({ ...basic.lead, website: finalWebsiteDecision.normalizedUrl ?? undefined, normalizedDomain: finalWebsiteDecision.normalizedUrl ? new URL(finalWebsiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null }, keys, finalWebsiteDecision, analysis);
           }
         } catch (error) {
           if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") stats.duplicates += 1;

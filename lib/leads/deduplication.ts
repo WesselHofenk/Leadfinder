@@ -1,12 +1,13 @@
 import type { Candidate } from "./eligibility";
 import { normalizeDomain, normalizeEmail, normalizePhone, normalizeText } from "./normalization";
+import { determineWebsiteStatus } from "./website";
 
 export type DedupeKeys = { externalId: string; phone?: string; email?: string; domain?: string; namePostal?: string; nameCityAddress: string; nameCityCategory: string };
 
 export function candidateDedupeKeys(candidate: Candidate): DedupeKeys {
   const name = normalizeText(candidate.companyName);
   const phone = normalizePhone(candidate.internationalPhoneNumber || candidate.phoneNumber || "", candidate.country) || undefined;
-  const domain = normalizeDomain(candidate.website) || undefined;
+  const domain = normalizeDomain(determineWebsiteStatus(candidate).normalizedUrl) || undefined;
   const email = normalizeEmail(candidate.email) || undefined;
   return {
     externalId: candidate.externalPlaceId,

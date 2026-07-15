@@ -11,8 +11,8 @@ export default async function AdminPage() {
   const [usage, jobs, coverage, categories, excluded, noWebsite, websiteOpportunities, filtered, runs] = await Promise.all([
     prisma.apiUsage.findMany({ where: { dateKey: { startsWith: monthPrefix } } }), prisma.scanJob.findMany({ orderBy: { createdAt: "desc" }, take: 25, include: { coverageArea: true } }),
     prisma.coverageArea.groupBy({ by: ["country", "status"], _count: { id: true }, orderBy: { country: "asc" } }), prisma.category.findMany({ orderBy: [{ isActive: "desc" }, { name: "asc" }] }),
-    prisma.excludedCategory.findMany({ orderBy: [{ isActive: "desc" }, { name: "asc" }] }), prisma.lead.count({ where: { leadType: "NO_WEBSITE", isActive: true } }),
-    prisma.lead.count({ where: { leadType: { in: ["OUTDATED_WEBSITE", "IMPROVABLE_WEBSITE"] }, isActive: true } }), prisma.lead.count({ where: { isFiltered: true } }),
+    prisma.excludedCategory.findMany({ orderBy: [{ isActive: "desc" }, { name: "asc" }] }), prisma.lead.count({ where: { websiteStatus: "NO_OWN_WEBSITE", isActive: true } }),
+    prisma.lead.count({ where: { websiteStatus: { in: ["OUTDATED", "IMPROVABLE"] }, isActive: true } }), prisma.lead.count({ where: { isFiltered: true } }),
     prisma.generationRun.findMany({ orderBy: { createdAt: "desc" }, take: 10, include: { logs: { orderBy: { createdAt: "desc" }, take: 3 } } }),
   ]);
   const calls = (provider: string, onlyToday = false) => usage.filter((row) => row.provider === provider && (!onlyToday || row.dateKey === today)).reduce((sum, row) => sum + row.calls, 0);

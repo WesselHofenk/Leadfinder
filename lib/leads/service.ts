@@ -14,7 +14,8 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   if (filters.postalCode) where.postalCode = { startsWith: filters.postalCode, mode: "insensitive" };
   if (filters.category) where.category = { contains: filters.category, mode: "insensitive" };
   if (filters.status) where.status=filters.status;
-  if (filters.leadType) where.leadType=filters.leadType;
+  if (filters.leadType === "NO_WEBSITE") where.websiteStatus="NO_OWN_WEBSITE";
+  else if (filters.leadType) where.leadType=filters.leadType;
   if (filters.websiteStatus) where.websiteStatus=filters.websiteStatus;
   if (filters.minScore!==undefined||filters.maxScore!==undefined) where.opportunityScore={...(filters.minScore!==undefined?{gte:filters.minScore}:{}),...(filters.maxScore!==undefined?{lte:filters.maxScore}:{})};
   if (filters.minConfidence!==undefined) where.confidenceScore={gte:filters.minConfidence};
@@ -28,9 +29,9 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
 }
 
 export async function listLeads(filters: LeadFilters) {
-  const where = activeLeadWhere(filters); const skip = (filters.page - 1) * filters.pageSize;
+  const { where, skip, take } = buildLeadListQuery(filters);
   const [items, total] = await prisma.$transaction([
-    prisma.lead.findMany({ where, orderBy: [{ firstDiscoveredAt: "desc" }, { id: "asc" }], skip, take: filters.pageSize }),
+    prisma.lead.findMany({ where, orderBy: [{ firstDiscoveredAt: "desc" }, { id: "asc" }], skip, take }),
     prisma.lead.count({ where }),
   ]);
   return { items, total, page: filters.page, pageSize: filters.pageSize, pages: Math.max(1, Math.ceil(total / filters.pageSize)) };
@@ -44,6 +45,10 @@ export async function updateManualLeadFields(leadId: string, userId: string, inp
     if(input.notes?.trim())await tx.leadNote.create({data:{leadId,userId,content:input.notes}});
     return lead;
   });
+}
+
+export function buildLeadListQuery(filters: LeadFilters) {
+  return { where: activeLeadWhere(filters), skip: (filters.page - 1) * filters.pageSize, take: filters.pageSize };
 }
 
 export async function suppressLead(leadId: string, userId: string, reason = "Handmatig verwijderd en geblokkeerd") {

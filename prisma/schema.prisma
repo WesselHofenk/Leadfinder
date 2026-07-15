@@ -124,6 +124,8 @@ model Lead {
   websiteUrl               String?
   normalizedDomain         String?
   websiteStatus            WebsiteStatus @default(NO_OWN_WEBSITE)
+  websiteStatusReason      String?
+  websiteSource            String?
   employeeCount            Int?
   leadType                 LeadType      @default(NO_WEBSITE)
   opportunityScore         Int           @default(0)
@@ -158,6 +160,7 @@ model Lead {
   @@index([normalizedDomain])
   @@index([email])
   @@index([confidenceScore])
+  @@index([websiteStatus, isActive, createdAt])
   @@index([status, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])

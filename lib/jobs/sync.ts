@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { serverEnv } from "@/lib/env";
 import { getPlaceDetails } from "@/lib/google/places";
 import { validateCandidateBasics } from "@/lib/leads/eligibility";
+import { determineWebsiteStatus, logWebsiteStatusDecision } from "@/lib/leads/website";
 import { createGenerationRun, runLeadGeneration } from "./generation";
 import { acquireJobLock } from "./lock";
 import { reserveBudgetedApiCall } from "./quota";
@@ -44,8 +45,18 @@ export async function reverifyStaleLeads() {
           ]);
           continue;
         }
+        const websiteDecision = determineWebsiteStatus(candidate);
+        logWebsiteStatusDecision(candidate.companyName, websiteDecision);
+        const foundOwnWebsite = websiteDecision.status === "has_website" && existing.websiteStatus === "NO_OWN_WEBSITE";
+        const uncertainWebsite = websiteDecision.status === "unknown";
         await prisma.$transaction([
-          prisma.lead.update({ where: { id: existing.id }, data: { companyName: basic.lead.companyName, normalizedCompanyName: basic.lead.normalizedCompanyName, phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber, normalizedPhoneNumber: basic.lead.normalizedPhoneNumber, internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber, email: basic.lead.email, businessStatus: basic.lead.businessStatus, confidenceScore: basic.lead.confidenceScore, confidenceLevel: basic.lead.confidenceLevel, lastVerifiedAt: new Date() } }),
+          prisma.lead.update({ where: { id: existing.id }, data: { companyName: basic.lead.companyName, normalizedCompanyName: basic.lead.normalizedCompanyName, phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber, normalizedPhoneNumber: basic.lead.normalizedPhoneNumber, internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber, email: basic.lead.email, businessStatus: basic.lead.businessStatus, confidenceScore: basic.lead.confidenceScore, confidenceLevel: basic.lead.confidenceLevel,
+            website: websiteDecision.normalizedUrl, websiteUrl: websiteDecision.normalizedUrl, normalizedDomain: websiteDecision.normalizedUrl ? new URL(websiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null,
+            websiteStatus: foundOwnWebsite ? "OWN_WEBSITE" : uncertainWebsite ? "UNKNOWN" : existing.websiteStatus,
+            websiteStatusReason: websiteDecision.reason, websiteSource: websiteDecision.source,
+            leadType: foundOwnWebsite || uncertainWebsite ? "IMPROVABLE_WEBSITE" : existing.leadType,
+            isActive: foundOwnWebsite || uncertainWebsite ? false : existing.isActive, isFiltered: foundOwnWebsite || uncertainWebsite ? true : existing.isFiltered,
+            filterReason: foundOwnWebsite || uncertainWebsite ? websiteDecision.reason : existing.filterReason, lastVerifiedAt: new Date() } }),
           prisma.leadHistory.create({ data: { leadId: existing.id, event: "VERIFIED" } }),
         ]);
         verified += 1;

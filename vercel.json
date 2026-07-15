@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
-  "buildCommand": "pnpm db:migrate && pnpm db:seed && pnpm build",
+  "buildCommand": "pnpm db:migrate && pnpm db:seed && pnpm db:repair-websites && pnpm build",
   "crons": [
     { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
     { "path": "/api/cron/reverify", "schedule": "43 2 * * *" },

@@ -13,6 +13,7 @@ export type WebsiteAnalysisResult = {
   hasOutdatedCopyright: boolean | null; hasPlaceholderContent: boolean | null; loadTimeMs: number | null;
   hasHttps: boolean | null; hasInvalidSsl: boolean | null; hasBrokenImages: boolean | null;
   brokenImageCount: number; hasLegacyTechnology: boolean | null; hasTinyText: boolean | null;
+  httpStatus: number | null; failureKind: "timeout" | "forbidden" | "blocked" | "network" | "invalid_ssl" | "unknown" | null;
   reasons: { code: string; label: string; weight: number }[]; rawSignals: Record<string, unknown>;
 };
 
@@ -81,16 +82,24 @@ async function probe(url: string, timeoutMs = 6_000) {
 export async function analyzeWebsite(websiteUrl: string, options: { quick?: boolean } = {}): Promise<WebsiteAnalysisResult> {
   const parsed = await assertPublicUrl(websiteUrl); const url = parsed.toString();
   const maxBytes = Math.min(2_000_000, Math.max(100_000, Number(process.env.WEBSITE_FETCH_MAX_BYTES ?? 1_000_000)));
-  let html = ""; let reachable = false; let loadTimeMs: number | null = null; let fetchError = "";
+  let html = ""; let reachable = false; let loadTimeMs: number | null = null; let fetchError = ""; let httpStatus: number | null = null; let checkedUrl = url;
   const attempts = options.quick ? 1 : 3; const fetchTimeout = options.quick ? 6_000 : 12_000;
   for (let attempt = 0; attempt < attempts && !reachable; attempt += 1) {
     const started = Date.now();
     try {
-      const response = await safeFetch(url, {}, fetchTimeout); loadTimeMs = Date.now() - started; reachable = response.ok;
+      const response = await safeFetch(url, {}, fetchTimeout); loadTimeMs = Date.now() - started; httpStatus = response.status; checkedUrl = response.url || url; reachable = response.ok;
       if (response.ok) html = await readLimitedBody(response, maxBytes);
       else fetchError = `HTTP ${response.status}`;
     } catch (error) { fetchError = error instanceof Error ? error.message : "Netwerkfout"; }
     if (!reachable && attempt < attempts - 1) await new Promise((resolve) => setTimeout(resolve, backoffDelayMs(attempt)));
+  }
+  if (!reachable && parsed.protocol === "https:") {
+    const httpUrl = new URL(url); httpUrl.protocol = "http:";
+    const started = Date.now();
+    try {
+      const response = await safeFetch(httpUrl.toString(), {}, fetchTimeout); loadTimeMs = Date.now() - started; httpStatus = response.status; checkedUrl = response.url || httpUrl.toString(); reachable = response.ok;
+      if (response.ok) html = await readLimitedBody(response, maxBytes); else fetchError = `HTTP ${response.status}`;
+    } catch (error) { fetchError = error instanceof Error ? error.message : "Netwerkfout"; }
   }
 
   const lower = html.toLowerCase();
@@ -122,13 +131,15 @@ export async function analyzeWebsite(websiteUrl: string, options: { quick?: bool
     } catch { /* Gratis HTML-signalen blijven leidend. */ }
   }
   const invalidSsl = parsed.protocol === "https:" && !reachable && /cert|ssl|tls/i.test(fetchError);
-  const scores = scoreWebsite({ reachable, mobileScore, desktopScore, viewport, cta, form, placeholder, outdatedCopyright, brokenLinks: brokenLinkCount, brokenImages: brokenImageCount, loadTimeMs, https: parsed.protocol === "https:", invalidSsl, legacyTechnology, tinyText });
+  const failureKind = reachable ? null : httpStatus === 403 ? "forbidden" as const : /timeout|timed out|abort/i.test(fetchError) ? "timeout" as const : invalidSsl ? "invalid_ssl" as const : /403|blocked|forbidden/i.test(fetchError) ? "blocked" as const : fetchError ? "network" as const : "unknown" as const;
+  const effectiveHttps = new URL(checkedUrl).protocol === "https:";
+  const scores = scoreWebsite({ reachable, mobileScore, desktopScore, viewport, cta, form, placeholder, outdatedCopyright, brokenLinks: brokenLinkCount, brokenImages: brokenImageCount, loadTimeMs, https: effectiveHttps, invalidSsl, legacyTechnology, tinyText });
   return {
     websiteUrl: url, ...scores, mobileScore, desktopScore, isReachable: reachable, isMobileFriendly: viewport,
     hasContactForm: form, hasClearCta: cta, hasBrokenLinks: html ? brokenLinkCount > 0 : null, brokenLinkCount,
     hasViewportMeta: viewport, hasOutdatedCopyright: outdatedCopyright, hasPlaceholderContent: placeholder, loadTimeMs,
-    hasHttps: parsed.protocol === "https:", hasInvalidSsl: invalidSsl, hasBrokenImages: html ? brokenImageCount > 0 : null,
+    hasHttps: effectiveHttps, hasInvalidSsl: invalidSsl, hasBrokenImages: html ? brokenImageCount > 0 : null,
     brokenImageCount, hasLegacyTechnology: legacyTechnology, hasTinyText: tinyText,
-    reasons: scores.reasons, rawSignals: { fetchError: fetchError || null, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar", lighthouseRuntimeError: psiMobile?.lighthouseResult?.runtimeError ?? null },
+    httpStatus, failureKind, reasons: scores.reasons, rawSignals: { fetchError: fetchError || null, httpStatus, failureKind, finalUrl: checkedUrl, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar", lighthouseRuntimeError: psiMobile?.lighthouseResult?.runtimeError ?? null },
   };
 }

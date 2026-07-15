@@ -3,7 +3,7 @@ import { Download, ExternalLink, Filter, MapPin, Search } from "lucide-react";
 import { parseLeadFilters, leadStatuses } from "@/lib/leads/filters";
 import { listLeads } from "@/lib/leads/service";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
-import { dateFormatter, numberFormatter, statusLabels } from "@/lib/format";
+import { dateFormatter, numberFormatter, statusLabels, websiteStatusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
 import { GenerationButton } from "@/components/generation-button";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -115,7 +115,7 @@ export default async function LeadsPage({
             <label htmlFor="minConfidence">Min. confidence</label>
             <input className="input" type="number" min="0" max="100" id="minConfidence" name="minConfidence" defaultValue={filters.minConfidence}/>
           </div>
-          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_OWN_WEBSITE", "Geen eigen website"], ["OUTDATED", "Sterk verouderd"], ["IMPROVABLE", "Verbeterbaar"], ["OWN_WEBSITE", "Bruikbaar"]]}/>
+          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_OWN_WEBSITE", "Geen eigen website"], ["OUTDATED", "Sterk verouderd"], ["IMPROVABLE", "Verbeterbaar"], ["OWN_WEBSITE", "Eigen website"], ["UNKNOWN", "Handmatige controle"]]}/>
           <Select label="Gebeld" name="called" value={filters.called} options={[["yes", "Ja"], ["no", "Nee"]]}/>
           <div className="field"><label htmlFor="foundAfter">Gevonden vanaf</label><input className="input" type="date" id="foundAfter" name="foundAfter" defaultValue={raw.foundAfter as string | undefined}/></div>
           <div className="field"><label htmlFor="foundBefore">Gevonden t/m</label><input className="input" type="date" id="foundBefore" name="foundBefore" defaultValue={raw.foundBefore as string | undefined}/></div>
@@ -205,9 +205,9 @@ export default async function LeadsPage({
                       </td>
                       <td>
                         <span
-                          className={`badge ${lead.leadType === "NO_WEBSITE" ? "badge-green" : "badge-amber"}`}
+                          className={`badge ${lead.websiteStatus === "NO_OWN_WEBSITE" ? "badge-green" : "badge-amber"}`}
                         >
-                          {statusLabels[lead.leadType]}
+                          {websiteStatusLabels[lead.websiteStatus]}
                         </span>
                       </td>
                       <td>
@@ -226,9 +226,7 @@ export default async function LeadsPage({
                       </td>
                       <td><strong>{lead.confidenceScore}</strong>/100<div className="small muted">{lead.confidenceLevel.toLowerCase()}</div></td>
                       <td className="small">
-                        {lead.leadType === "NO_WEBSITE"
-                          ? "Geen website gevonden"
-                          : lead.filterReason || "Websiteverbetering mogelijk"}
+                        {lead.websiteStatusReason || lead.filterReason || "Handmatige controle nodig"}
                       </td>
                       <td>
                         <QuickStatus leadId={lead.id} status={lead.status} />

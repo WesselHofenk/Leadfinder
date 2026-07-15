@@ -1,10 +1,11 @@
 import { confidenceLevel, excludedBusinessValues } from "./config";
 import { normalizeDomain, normalizeEmail, normalizePhone, normalizeText } from "./normalization";
-import { hasOwnWebsite, isNonOwnedWebsite } from "./website";
+import { determineWebsiteStatus, isNonOwnedWebsite } from "./website";
 
 export type Candidate = {
   externalPlaceId: string; companyName: string; phoneNumber?: string; internationalPhoneNumber?: string;
-  website?: string; businessStatus?: string; country: string; category: string; city: string;
+  website?: string; websiteUrl?: string; website_url?: string; domain?: string; url?: string; businessWebsite?: string;
+  googleMapsWebsite?: string; externalWebsite?: string; businessStatus?: string; country: string; category: string; city: string;
   province?: string; municipality?: string; postalCode?: string; streetAddress: string;
   latitude: number; longitude: number; googleMapsUrl: string; subCategory?: string;
   source?: "GOOGLE_PLACES" | "OPENSTREETMAP"; houseNumber?: string;
@@ -36,10 +37,11 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (candidate.email) confidenceScore += 3;
   if (isNonOwnedWebsite(candidate.website)) confidenceScore += 6;
   confidenceScore = Math.max(0, Math.min(100, confidenceScore));
+  const websiteDecision = determineWebsiteStatus(candidate);
   return { ok: true, lead: {
     ...candidate, country: candidate.country.toUpperCase(), businessStatus: status,
     normalizedPhoneNumber, normalizedCompanyName: normalizeText(candidate.companyName),
-    normalizedAddress: normalizeText(candidate.streetAddress), normalizedDomain: normalizeDomain(candidate.website),
+    normalizedAddress: normalizeText(candidate.streetAddress), normalizedDomain: normalizeDomain(websiteDecision.normalizedUrl),
     email: normalizeEmail(candidate.email) ?? undefined, confidenceScore, confidenceLevel: confidenceLevel(confidenceScore),
   } };
 }
@@ -47,7 +49,9 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
 export function qualifyCandidate(candidate: Candidate): { ok: true; lead: EligibleLead } | { ok: false; reason: string } {
   const basic = validateCandidateBasics(candidate);
   if (!basic.ok) return basic;
-  if (hasOwnWebsite(candidate.website, ...(candidate.websiteFields ?? []))) return { ok: false, reason: "eigen_website" };
+  const websiteDecision = determineWebsiteStatus(candidate);
+  if (websiteDecision.status === "has_website" || websiteDecision.status === "outdated_website") return { ok: false, reason: "eigen_website" };
+  if (websiteDecision.status === "unknown") return { ok: false, reason: "website_onzeker" };
   return { ok: true, lead: { ...basic.lead, website: isNonOwnedWebsite(candidate.website) ? undefined : candidate.website, normalizedDomain: null, leadType: "NO_WEBSITE" } };
 }
 
