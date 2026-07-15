@@ -3,14 +3,16 @@ import { qualifyCandidate, type Candidate } from "@/lib/leads/eligibility";
 import { normalizePhone, normalizeText } from "@/lib/leads/normalization";
 
 const candidate: Candidate = { externalPlaceId:"place-1",companyName:"De Goede Loodgieter",phoneNumber:"020 123 45 67",businessStatus:"OPERATIONAL",country:"NL",category:"plumber",city:"Amsterdam",streetAddress:"Damrak 1, 1012 LG Amsterdam, Nederland",latitude:52.37,longitude:4.89,googleMapsUrl:"https://maps.google.com/?cid=1" };
+const confirmed = { status:"NO_WEBSITE_CONFIRMED" as const,website:null,reason:"Bevestigd" };
 describe("leadkwalificatie",()=>{
-  it("accepteert operationeel bedrijf zonder website met geldig nummer",()=>expect(qualifyCandidate(candidate).ok).toBe(true));
-  it("weigert een bedrijf met een eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"})).toMatchObject({ok:false,reason:"eigen_website"}));
-  it("telt een socialmediaprofiel niet als eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://facebook.com/degoodeloodgieter"})).toMatchObject({ok:true,lead:{leadType:"NO_WEBSITE",website:undefined}}));
-  it("weigert bedrijf zonder telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined})).toMatchObject({ok:false,reason:"ongeldig_nummer"}));
-  it("weigert permanent gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_PERMANENTLY"})).toMatchObject({ok:false,reason:"niet_operationeel"}));
-  it("weigert tijdelijk gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_TEMPORARILY"})).toMatchObject({ok:false,reason:"niet_operationeel"}));
-  it("weigert een privé/onvolledig adres",()=>expect(qualifyCandidate({...candidate,companyName:""})).toMatchObject({ok:false,reason:"onvolledig"}));
+  it("accepteert operationeel bedrijf alleen met bevestigde website-afwezigheid",()=>expect(qualifyCandidate(candidate,confirmed).ok).toBe(true));
+  it("weigert ontbrekende website-afwezigheidsbevestiging",()=>expect(qualifyCandidate(candidate)).toMatchObject({ok:false,reason:"website_onzeker"}));
+  it("weigert een bedrijf met een eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"},confirmed)).toMatchObject({ok:false,reason:"eigen_website"}));
+  it("telt een socialmediaprofiel niet als eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://facebook.com/degoodeloodgieter"},confirmed)).toMatchObject({ok:true,lead:{leadType:"NO_WEBSITE",website:undefined}}));
+  it("weigert bedrijf zonder telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined},confirmed)).toMatchObject({ok:false,reason:"ongeldig_nummer"}));
+  it("weigert permanent gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_PERMANENTLY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
+  it("weigert tijdelijk gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_TEMPORARILY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
+  it("weigert een privé/onvolledig adres",()=>expect(qualifyCandidate({...candidate,companyName:""},confirmed)).toMatchObject({ok:false,reason:"onvolledig"}));
 });
 describe("normalisatie",()=>{
   it("normaliseert Nederlandse nummers naar E.164",()=>expect(normalizePhone("06-12345678","NL")).toBe("+31612345678"));

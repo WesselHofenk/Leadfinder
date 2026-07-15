@@ -62,6 +62,18 @@ describe("gerichte Overpass-query", () => {
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
   });
 
+  it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {
+    const closedWithWebsite = { ...element, tags: { ...element.tags, description: "Définitivement fermé", "contact:website": "bruna.nl" } };
+    const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([closedWithWebsite])) as typeof fetch });
+    expect(result.candidates[0]).toMatchObject({ businessStatus: "CLOSED_PERMANENTLY", website: "bruna.nl", rawData: { description: "Définitivement fermé" } });
+  });
+
+  it("herkent een expliciet website=no-bronveld zonder het als URL te behandelen", async () => {
+    const noWebsite = { ...element, tags: { ...element.tags, website: "no" } };
+    const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([noWebsite])) as typeof fetch });
+    expect(result.candidates[0]).toMatchObject({ website: undefined, websiteAbsenceConfirmed: true });
+  });
+
   it("verwerkt een lege response zonder te blijven wachten", async () => {
     const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([])) as typeof fetch });
     expect(result.candidates).toEqual([]);

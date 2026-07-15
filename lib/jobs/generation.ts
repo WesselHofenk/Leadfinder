@@ -2,8 +2,11 @@ import { CandidateQueueStatus, JobStatus, Prisma, type GenerationCandidate, type
 
 import { serverEnv } from "@/lib/env";
 import { candidateDedupeKeys, fingerprintValues, RunDeduplicator } from "@/lib/leads/deduplication";
+import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
+import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
+import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
 import type { OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
@@ -82,7 +85,7 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   };
 }
 
-function capacity(stats: Stats) { return stats.stored + stats.manualReview; }
+function capacity(stats: Stats) { return stats.stored; }
 
 export async function createGenerationRun() {
   const target = Number(process.env.LEAD_GENERATION_TARGET || 50);
@@ -185,6 +188,9 @@ async function markDecision(candidate: Candidate, decision: string, reasonCode: 
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
     data: { decision, reasonCode, processedAt: new Date(), leadId },
   });
+  if (reasonCode.startsWith("SKIPPED_")) {
+    console.info(JSON.stringify({ step: "candidate_skipped", source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId, companyName: candidate.companyName, reasonCode }));
+  }
 }
 
 async function knownCandidateReasons(candidates: Candidate[]) {
@@ -238,12 +244,11 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
   })));
 }
 
-async function storeLead(candidate: Candidate, verification: WebsiteVerificationResult) {
+export async function storeNewLead(candidate: Candidate, verification: WebsiteVerificationResult) {
+  const gate = evaluateNewLeadGate(candidate, verification);
+  if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
   const basic = validateCandidateBasics(candidate);
   if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
-  const reviewOnly = verification.status !== "NO_WEBSITE_CONFIRMED";
-  const leadType = verification.status === "WEBSITE_OUTDATED" ? "OUTDATED_WEBSITE" : verification.status === "WEBSITE_BROKEN" ? "IMPROVABLE_WEBSITE" : "NO_WEBSITE";
-  const opportunityScore = reviewOnly ? 55 : 90;
   const lead = await prisma.lead.create({ data: {
     externalPlaceId: basic.lead.externalPlaceId,
     companyName: basic.lead.companyName,
@@ -274,17 +279,17 @@ async function storeLead(candidate: Candidate, verification: WebsiteVerification
     websiteSource: "local_verification",
     sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
     sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
-    leadType,
-    opportunityScore,
+    leadType: "NO_WEBSITE",
+    opportunityScore: 90,
     conversionQualityScore: 0,
     businessStatus: basic.lead.businessStatus,
     source: "OPENSTREETMAP",
     confidenceScore: basic.lead.confidenceScore,
     confidenceLevel: basic.lead.confidenceLevel,
     status: "NEW",
-    isActive: !reviewOnly,
-    isFiltered: reviewOnly,
-    filterReason: reviewOnly ? "Handmatige controle van het actuele bedrijfsprofiel is vereist." : null,
+    isActive: true,
+    isFiltered: false,
+    filterReason: null,
     evidence: { create: verification.evidence },
     activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status } } },
     history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status } } },
@@ -298,7 +303,7 @@ async function storeLead(candidate: Candidate, verification: WebsiteVerification
     create: { ...item, leadId: lead.id },
     update: { leadId: lead.id },
   })));
-  return { stored: true, reviewOnly, reason: verification.reason, leadId: lead.id };
+  return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
 }
 
 function rejectionCode(reason: string) {
@@ -401,7 +406,7 @@ export async function processGenerationBatch(runId: string) {
     if (!queued.length) {
       if (run.processedSegments >= env.GENERATION_MAX_SOURCE_CALLS) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
-        return terminalRun(runId, status, stats, places, errors, warnings, `${capacity(stats)} van de gewenste ${run.targetCount} bruikbare kandidaten gevonden; alle configureerbare zoeksegmenten zijn verwerkt.`);
+        return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; alle configureerbare zoeksegmenten zijn verwerkt.`);
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
@@ -482,22 +487,44 @@ export async function processGenerationBatch(runId: string) {
       await prisma.generationCandidate.update({ where: { id: row.id }, data: { attempts: { increment: 1 } } });
       const candidate = candidateFromQueue(row);
       if (row.attempts === 0) stats.checked += 1;
-      const keys = candidateDedupeKeys(candidate);
-      const knownReason = dedupe.hasOrAdd(keys) ? "duplicate_name_address" : knownReasons.get(candidate.externalPlaceId);
       await sourceRecord(candidate);
-      if (knownReason) {
-        stats.duplicates += 1; stats.existing += 1;
-        await markDecision(candidate, "duplicate", knownReason);
+      if (isPermanentlyClosed(candidate)) {
+        stats.permanentlyClosed += 1;
+        await markDecision(candidate, "skipped", "SKIPPED_PERMANENTLY_CLOSED");
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      if (isTemporarilyClosed(candidate)) {
+        stats.temporarilyClosed += 1;
+        await markDecision(candidate, "skipped", "SKIPPED_TEMPORARILY_CLOSED");
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
       const basic = validateCandidateBasics(candidate);
       if (!basic.ok) {
-        const temporary = ["CLOSED_TEMPORARILY", "TEMPORARILY_CLOSED"].includes(candidate.businessStatus ?? "");
-        const permanent = ["CLOSED_PERMANENTLY", "PERMANENTLY_CLOSED"].includes(candidate.businessStatus ?? "") || Boolean(candidate.closureSignals?.length);
-        const code = temporary ? "temporary_closed" : permanent ? "permanently_closed" : rejectionCode(basic.reason);
-        if (temporary) stats.temporarilyClosed += 1; else if (permanent) stats.permanentlyClosed += 1; else stats.rejected += 1;
-        await markDecision(candidate, "rejected", code);
+        stats.rejected += 1;
+        await markDecision(candidate, "rejected", rejectionCode(basic.reason));
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      const sourceWebsite = extractCompanyWebsite(candidate);
+      if (sourceWebsite) {
+        const verification: WebsiteVerificationResult = {
+          status: "WEBSITE_FOUND", confidence: 100, website: sourceWebsite,
+          reason: "Eigen bedrijfswebsite rechtstreeks in de brongegevens gevonden.",
+          evidence: [{ checkType: "SOURCE_WEBSITE", result: "FOUND", confidence: 100, evidenceUrl: sourceWebsite, shortExplanation: "Bronveld bevat een officieel bedrijfsdomein." }],
+        };
+        stats.websitesFound += 1; stats.rejected += 1;
+        await excludeCandidate(candidate, verification);
+        await markDecision(candidate, "skipped", "SKIPPED_HAS_WEBSITE");
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      const keys = candidateDedupeKeys(candidate);
+      const knownReason = dedupe.hasOrAdd(keys) ? "duplicate_name_address" : knownReasons.get(candidate.externalPlaceId);
+      if (knownReason) {
+        stats.duplicates += 1; stats.existing += 1;
+        await markDecision(candidate, "duplicate", knownReason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
@@ -527,26 +554,32 @@ export async function processGenerationBatch(runId: string) {
           continue;
         }
         const verification = result.value;
-        if (verification.status === "WEBSITE_FOUND") {
-          stats.websitesFound += 1; stats.rejected += 1;
-          await excludeCandidate(candidate, verification);
-          await markDecision(candidate, "rejected", "has_official_website");
+        const gate = evaluateNewLeadGate(candidate, verification);
+        if (!gate.allowed) {
+          if (gate.reason === "SKIPPED_HAS_WEBSITE") {
+            stats.websitesFound += 1; stats.rejected += 1;
+            await excludeCandidate(candidate, verification);
+            await markDecision(candidate, "skipped", gate.reason);
+          } else if (gate.reason === "SKIPPED_PERMANENTLY_CLOSED") {
+            stats.permanentlyClosed += 1;
+            await markDecision(candidate, "skipped", gate.reason);
+          } else {
+            stats.manualReview += 1;
+            await markDecision(candidate, "retry", gate.reason);
+          }
           await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
           continue;
         }
         const databaseStarted = Date.now();
         try {
           await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", heartbeatAt: new Date() } });
-          const saved = await storeLead(candidate, verification);
-          if (saved.stored && saved.reviewOnly) {
-            stats.manualReview += 1;
-            await markDecision(candidate, "manual_review", "manual_verification_required", saved.leadId);
-          } else if (saved.stored) {
+          const saved = await storeNewLead(candidate, verification);
+          if (saved.stored) {
             stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1;
             await markDecision(candidate, "stored", "no_website_confirmed", saved.leadId);
           } else {
             stats.rejected += 1;
-            await markDecision(candidate, "rejected", rejectionCode(saved.reason));
+            await markDecision(candidate, "skipped", saved.reason.startsWith("SKIPPED_") ? saved.reason : rejectionCode(saved.reason));
           }
           await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         } catch (error) {
@@ -569,10 +602,10 @@ export async function processGenerationBatch(runId: string) {
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
     const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
     const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
-    if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde leads en ${stats.manualReview} echte kandidaten voor handmatige Google-controle.`);
+    if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten zijn veilig overgeslagen.`);
     if (completionStatus) {
       const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
-      return terminalRun(runId, status, stats, places, errors, warnings, `${capacity(stats)} van de gewenste ${run.targetCount} bruikbare kandidaten gevonden. De openbare zoekruimte voor deze run is uitgeput.`);
+      return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden. De openbare zoekruimte voor deze run is uitgeput; onzekere kandidaten zijn niet opgeslagen.`);
     }
 
     const durationMs = Date.now() - batchStartedAt;

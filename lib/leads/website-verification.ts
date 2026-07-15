@@ -1,7 +1,7 @@
 import { resolveAny } from "node:dns/promises";
 import type { Candidate } from "./eligibility";
 import { normalizeText } from "./normalization";
-import { isNonOwnedWebsite, normalizeWebsite } from "./website";
+import { determineWebsiteStatus, extractWebsiteEntries, isNonOwnedWebsite, normalizeWebsite } from "./website";
 
 export type LocalWebsiteStatus =
   | "NO_WEBSITE_CONFIRMED"
@@ -30,9 +30,7 @@ const descriptorTokens = new Set([
 ]);
 
 function websiteValues(candidate: Candidate) {
-  return [candidate.website, candidate.websiteUrl, candidate.website_url, candidate.domain, candidate.url, candidate.businessWebsite,
-    candidate.googleMapsWebsite, candidate.externalWebsite, ...(candidate.websiteFields ?? [])]
-    .map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean);
+  return extractWebsiteEntries(candidate).map(({ rawValue }) => rawValue);
 }
 
 function words(value?: string) {
@@ -126,11 +124,17 @@ export function isConfirmedNoWebsite(status: LocalWebsiteStatus | string) {
 }
 
 export async function verifyWebsiteCandidate(candidate: Candidate): Promise<WebsiteVerificationResult> {
-  const normalized = websiteValues(candidate).map(normalizeWebsite).filter((value): value is string => Boolean(value));
+  const sourceDecision = determineWebsiteStatus(candidate, { absenceVerified: false });
+  const normalized = websiteValues(candidate).map((value) => normalizeWebsite(value)).filter((value): value is string => Boolean(value));
   const owned = normalized.find((value) => !isNonOwnedWebsite(value));
   if (owned) return {
     status: "WEBSITE_FOUND", confidence: 100, website: owned, reason: "De openbare bron bevat een geldige eigen bedrijfswebsite.",
     evidence: [{ checkType: "SOURCE_WEBSITE", result: "FOUND", confidence: 100, evidenceUrl: owned, shortExplanation: "Eigen domein rechtstreeks in de bron gevonden." }],
+  };
+  if (sourceDecision.status === "unknown" && sourceDecision.rawValue) return {
+    status: "UNKNOWN", confidence: 35, website: null,
+    reason: "De bron bevat een websitewaarde die niet veilig kon worden genormaliseerd; deze kandidaat wordt niet als geen-websitelead opgeslagen.",
+    evidence: [{ checkType: "SOURCE_WEBSITE", result: "INVALID", confidence: 35, shortExplanation: sourceDecision.reason }],
   };
   const externalEvidence: Evidence[] = normalized.map((url) => ({
     checkType: "EXTERNAL_PROFILE", result: "FOUND", confidence: 60, evidenceUrl: url,
@@ -158,6 +162,12 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
     status: "UNKNOWN", confidence: 45, website: null,
     reason: "Minstens één domeincontrole mislukte of werd geblokkeerd; geen website kan niet betrouwbaar worden vastgesteld.",
     evidence: [...externalEvidence, ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: check.probe.result.toUpperCase(), confidence: 45, evidenceUrl: `https://${check.domain}`, shortExplanation: "Een timeout, blokkade of netwerkfout blijft onzeker." }))],
+  };
+  if (candidate.websiteAbsenceConfirmed === true) return {
+    status: "NO_WEBSITE_CONFIRMED", confidence: 90, website: null,
+    reason: "De openbare bron markeert de website expliciet als afwezig en alle begrensde domeincontroles waren negatief.",
+    evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: "ABSENT_CONFIRMED", confidence: 90, shortExplanation: "Expliciete bronwaarde voor geen website." },
+      ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: 90, evidenceUrl: `https://${check.domain}`, shortExplanation: "Plausibele domeinkandidaat bestaat niet." }))],
   };
   if (normalized.length) return {
     status: "SOCIAL_ONLY", confidence: 60, website: null,

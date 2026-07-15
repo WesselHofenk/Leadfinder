@@ -33,12 +33,12 @@ describe("centrale website-status", () => {
     expect(determineWebsiteStatus({ website: "https://byyoel.nl" }, { reachable: true, httpStatus: 200, auditClassification: "USABLE" })).toMatchObject({ status: "has_website", normalizedUrl: "https://byyoel.nl" });
   });
 
-  it("maakt een timeout onbekend en nooit geen website", () => {
-    expect(determineWebsiteStatus({ website: "byyoel.nl" }, { reachable: false, failureKind: "timeout" }).status).toBe("unknown");
+  it("behoudt een expliciet brondomein als website bij een timeout", () => {
+    expect(determineWebsiteStatus({ website: "byyoel.nl" }, { reachable: false, failureKind: "timeout" }).status).toBe("has_website");
   });
 
-  it("maakt een HTTP 403 onbekend en nooit geen website", () => {
-    expect(determineWebsiteStatus({ website: "byyoel.nl" }, { reachable: false, httpStatus: 403, failureKind: "forbidden" }).status).toBe("unknown");
+  it("behoudt een expliciet brondomein als website bij HTTP 403", () => {
+    expect(determineWebsiteStatus({ website: "byyoel.nl" }, { reachable: false, httpStatus: 403, failureKind: "forbidden" }).status).toBe("has_website");
   });
 
   it("normaliseert spaties, protocol, hoofdletters en trackingparameters", () => {

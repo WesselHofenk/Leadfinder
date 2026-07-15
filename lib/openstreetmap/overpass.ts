@@ -2,6 +2,7 @@ import "server-only";
 
 import type { Candidate } from "@/lib/leads/eligibility";
 import { backoffDelayMs, isRetryableStatus } from "@/lib/jobs/backoff";
+import { isPermanentlyClosed } from "@/lib/leads/company-status";
 
 type OsmElement = {
   type: "node" | "way" | "relation";
@@ -88,6 +89,10 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
     const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || "Onbekend";
     const category = tags.shop || tags.craft || tags.office || tags.amenity || tags.tourism || tags.healthcare || "bedrijf";
     const closureSignals = closedSignals(tags);
+    const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"]].filter((value): value is string => Boolean(value));
+    const noWebsiteValues = new Set(["no", "none", "nee", "geen", "n.v.t.", "nvt"]);
+    const positiveWebsite = rawWebsiteValues.find((value) => !noWebsiteValues.has(value.trim().toLowerCase()));
+    const websiteAbsenceConfirmed = !positiveWebsite && rawWebsiteValues.some((value) => noWebsiteValues.has(value.trim().toLowerCase()));
     return [{
       externalPlaceId: `osm:${element.type}/${element.id}`,
       source: "OPENSTREETMAP",
@@ -95,10 +100,12 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       phoneNumber: tags.phone || tags["contact:phone"],
       internationalPhoneNumber: tags["contact:mobile"],
       email: tags.email || tags["contact:email"],
-      website: tags.website || tags["contact:website"],
-      websiteFields: [tags.url, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
-      businessStatus: closureSignals.length ? "CLOSED_PERMANENTLY" : "UNKNOWN",
+      website: positiveWebsite,
+      websiteFields: [tags["contact:url"], tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
+      websiteAbsenceConfirmed,
+      businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : "UNKNOWN",
       closureSignals,
+      rawData: tags,
       sourceUpdatedAt: element.timestamp,
       country: (tags["addr:country"] || country).toUpperCase(),
       category,
