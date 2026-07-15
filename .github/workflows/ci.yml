@@ -28,6 +28,7 @@ jobs:
       - run: pnpm test
       - run: pnpm build
         env:
-          DATABASE_URL: postgresql://build:build@localhost:5432/build
+          NEON_POSTGRES_PRISMA_URL: postgresql://build:build@localhost:5432/build?pgbouncer=true
+          NEON_POSTGRES_URL_NON_POOLING: postgresql://build:build@localhost:5432/build
           AUTH_SECRET: build-only-secret-at-least-32-characters
           CRON_SECRET: build-only-cron-secret-at-least-32-characters

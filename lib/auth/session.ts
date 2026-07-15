@@ -4,9 +4,10 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { UserRole } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { authSecret } from "./local-secret";
 
 const COOKIE_NAME = "leadfinder_session";
-const hashToken = (token: string) => { const secret=process.env.AUTH_SECRET; if(!secret||secret.length<32)throw new Error("AUTH_SECRET moet minimaal 32 tekens bevatten"); return createHmac("sha256",secret).update(token).digest("hex"); };
+const hashToken = (token: string) => createHmac("sha256", authSecret()).update(token).digest("hex");
 
 export async function createSession(userId: string) {
   const token = randomBytes(32).toString("base64url");

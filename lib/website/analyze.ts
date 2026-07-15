@@ -1,7 +1,6 @@
 import "server-only";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { reserveBudgetedApiCall } from "@/lib/jobs/quota";
 import { backoffDelayMs } from "@/lib/jobs/backoff";
 import { scoreWebsite } from "./score";
 
@@ -64,16 +63,6 @@ async function readLimitedBody(response: Response, maxBytes: number) {
   return result;
 }
 
-type Psi = { lighthouseResult?: { categories?: { performance?: { score?: number } }; runtimeError?: unknown } };
-async function pagespeed(url: string, strategy: "mobile" | "desktop", apiKey: string, dailyLimit: number, monthlyLimit: number) {
-  await reserveBudgetedApiCall({ provider: "PAGESPEED", dailyLimit, monthlyLimit });
-  const endpoint = new URL("https://pagespeedonline.googleapis.com/pagespeedonline/v5/runPagespeed");
-  endpoint.searchParams.set("url", url); endpoint.searchParams.set("strategy", strategy); endpoint.searchParams.set("category", "performance"); endpoint.searchParams.set("key", apiKey);
-  const response = await fetch(endpoint, { signal: AbortSignal.timeout(90_000), cache: "no-store" });
-  if (!response.ok) throw new Error(`PageSpeed-fout (${response.status})`);
-  return response.json() as Promise<Psi>;
-}
-
 async function probe(url: string, timeoutMs = 6_000) {
   try { const response = await safeFetch(url, { method: "HEAD" }, timeoutMs); return response.status < 400 || response.status === 405; }
   catch { return false; }
@@ -121,15 +110,7 @@ export async function analyzeWebsite(websiteUrl: string, options: { quick?: bool
     brokenLinkCount = linkChecks.filter((ok) => !ok).length; brokenImageCount = imageChecks.filter((ok) => !ok).length;
   }
 
-  let mobileScore: number | null = null; let desktopScore: number | null = null; let psiMobile: Psi | null = null;
-  const key = process.env.PAGESPEED_API_KEY; const pagespeedEnabled = process.env.PAGESPEED_ENABLED === "true";
-  if (key && pagespeedEnabled && reachable) {
-    try {
-      const daily = Number(process.env.PAGESPEED_DAILY_LIMIT ?? 25); const monthly = Number(process.env.PAGESPEED_MONTHLY_LIMIT ?? 100);
-      const [mobile, desktop] = await Promise.all([pagespeed(url, "mobile", key, daily, monthly), pagespeed(url, "desktop", key, daily, monthly)]);
-      psiMobile = mobile; mobileScore = Math.round((mobile.lighthouseResult?.categories?.performance?.score ?? 0) * 100); desktopScore = Math.round((desktop.lighthouseResult?.categories?.performance?.score ?? 0) * 100);
-    } catch { /* Gratis HTML-signalen blijven leidend. */ }
-  }
+  const mobileScore: number | null = null; const desktopScore: number | null = null;
   const invalidSsl = parsed.protocol === "https:" && !reachable && /cert|ssl|tls/i.test(fetchError);
   const failureKind = reachable ? null : httpStatus === 403 ? "forbidden" as const : /timeout|timed out|abort/i.test(fetchError) ? "timeout" as const : invalidSsl ? "invalid_ssl" as const : /403|blocked|forbidden/i.test(fetchError) ? "blocked" as const : fetchError ? "network" as const : "unknown" as const;
   const effectiveHttps = new URL(checkedUrl).protocol === "https:";
@@ -140,6 +121,6 @@ export async function analyzeWebsite(websiteUrl: string, options: { quick?: bool
     hasViewportMeta: viewport, hasOutdatedCopyright: outdatedCopyright, hasPlaceholderContent: placeholder, loadTimeMs,
     hasHttps: effectiveHttps, hasInvalidSsl: invalidSsl, hasBrokenImages: html ? brokenImageCount > 0 : null,
     brokenImageCount, hasLegacyTechnology: legacyTechnology, hasTinyText: tinyText,
-    httpStatus, failureKind, reasons: scores.reasons, rawSignals: { fetchError: fetchError || null, httpStatus, failureKind, finalUrl: checkedUrl, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar", lighthouseRuntimeError: psiMobile?.lighthouseResult?.runtimeError ?? null },
+    httpStatus, failureKind, reasons: scores.reasons, rawSignals: { fetchError: fetchError || null, httpStatus, failureKind, finalUrl: checkedUrl, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar" },
   };
 }

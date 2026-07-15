@@ -3,32 +3,6 @@ import { ExternalLink } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { statusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
-import { googleVerifiedNoWebsiteWhere } from "@/lib/leads/google-verification";
 
-const columns = ["NEW", "CALLED", "NO_ANSWER", "QUOTE_SENT", "INVOICED"] as const;
-
-export default async function PipelinePage() {
-  const groups = await Promise.all(columns.map((status) => prisma.lead.findMany({
-    where: { status, isActive: true, isFiltered: false, ...googleVerifiedNoWebsiteWhere },
-    orderBy: { updatedAt: "desc" },
-    take: 50,
-  })));
-  const [filtered, blocked] = await Promise.all([
-    prisma.lead.count({ where: { status: "FILTERED" } }),
-    prisma.lead.count({ where: { status: "DO_NOT_CONTACT" } }),
-  ]);
-
-  return <div className="content">
-    <header className="page-head">
-      <div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Alle benaderde leads blijven zichtbaar en eenvoudig verplaatsbaar.</p></div>
-      <div className="actions" style={{ display: "flex", gap: 8 }}><Link className="button button-secondary" href="/leads?filtered=yes">Gefilterd ({filtered})</Link><Link className="button button-secondary" href="/leads?status=DO_NOT_CONTACT">Niet benaderen ({blocked})</Link></div>
-    </header>
-    <div className="pipeline-grid">{columns.map((status, index) => <section className="pipeline-column" key={status}>
-      <div className="pipeline-title"><strong>{statusLabels[status]}</strong><span className="badge">{groups[index].length}</span></div>
-      <div className="pipeline-list">{groups[index].map((lead) => <article className="pipeline-card" key={lead.id}>
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_", " ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label="Open lead"><ExternalLink size={14}/></Link></div>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}><span className="small"><b>{lead.opportunityScore}</b>/100</span><QuickStatus leadId={lead.id} status={lead.status}/></div>
-      </article>)}{!groups[index].length && <div className="empty small">Geen leads in deze fase.</div>}</div>
-    </section>)}</div>
-  </div>;
-}
+const columns=["NEW","NEEDS_REVIEW","VERIFIED","CALLED","NO_ANSWER","CALL_BACK","INTERESTED","APPOINTMENT","QUOTE_SENT","WON"] as const;
+export default async function PipelinePage(){const groups=await Promise.all(columns.map((status)=>prisma.lead.findMany({where:{status,isSuppressed:false},orderBy:{updatedAt:"desc"},take:50})));return <div className="content"><header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Iedere statuswijziging wordt lokaal als activiteit vastgelegd.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header><div className="pipeline-grid">{columns.map((status,index)=><section className="pipeline-column" key={status}><div className="pipeline-title"><strong>{statusLabels[status]}</strong><span className="badge">{groups[index].length}</span></div><div className="pipeline-list">{groups[index].map((lead)=><article className="pipeline-card" key={lead.id}><div className="pipeline-card-head"><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_"," ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label={`Open ${lead.companyName}`}><ExternalLink size={15}/></Link></div><span className="small"><b>{lead.opportunityScore}</b>/100 · confidence {lead.websiteConfidence}</span><QuickStatus leadId={lead.id} status={lead.status}/></article>)}{!groups[index].length&&<div className="empty small">Geen leads in deze fase.</div>}</div></section>)}</div></div>;}

@@ -9,8 +9,9 @@ export type Candidate = {
   province?: string; municipality?: string; postalCode?: string; streetAddress: string;
   latitude: number; longitude: number; googleMapsUrl: string; subCategory?: string;
   source?: "GOOGLE_PLACES" | "OPENSTREETMAP"; houseNumber?: string;
+  brand?: string; brandWikidata?: string; operator?: string;
   websiteFields?: Array<string | null | undefined>;
-  email?: string; closureSignals?: string[]; sourceUpdatedAt?: string;
+  email?: string; closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
 };
 
 export type EligibleBase = Candidate & {
@@ -31,7 +32,7 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (!normalizedPhoneNumber) return { ok: false, reason: "ongeldig_nummer" };
   const status = candidate.businessStatus === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
   if (status === "UNKNOWN" && (!candidate.postalCode || candidate.streetAddress.length < 6)) return { ok: false, reason: "onbetrouwbare_status" };
-  let confidenceScore = candidate.source === "GOOGLE_PLACES" ? 90 : 74;
+  let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
   if (status === "UNKNOWN") confidenceScore -= 10;
   if (candidate.postalCode && candidate.houseNumber) confidenceScore += 5;
   if (candidate.email) confidenceScore += 3;

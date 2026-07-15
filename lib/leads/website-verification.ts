@@ -1,0 +1,137 @@
+import { resolveAny } from "node:dns/promises";
+import type { Candidate } from "./eligibility";
+import { normalizeText } from "./normalization";
+import { isNonOwnedWebsite, normalizeWebsite } from "./website";
+
+export type LocalWebsiteStatus =
+  | "NO_WEBSITE_CONFIRMED"
+  | "NO_WEBSITE_LIKELY"
+  | "SOCIAL_ONLY"
+  | "WEBSITE_FOUND"
+  | "WEBSITE_OUTDATED"
+  | "WEBSITE_BROKEN"
+  | "MANUAL_REVIEW_REQUIRED"
+  | "UNKNOWN";
+
+export type Evidence = { checkType: string; result: string; confidence: number; evidenceUrl?: string; shortExplanation: string };
+export type WebsiteVerificationResult = {
+  status: LocalWebsiteStatus;
+  confidence: number;
+  website: string | null;
+  reason: string;
+  evidence: Evidence[];
+};
+
+const legalForms = /\b(bv|b\.v\.?|vof|v\.o\.f\.?|nv|n\.v\.?|eenmanszaak|cv|maatschap)\b/gi;
+const weakNameTokens = new Set(["de", "den", "der", "het", "the", "van", "voor", "en", "and", "bij", "by"]);
+const descriptorTokens = new Set([
+  "opticien", "opticiens", "kapper", "kapsalon", "salon", "restaurant", "cafe", "winkel", "shop", "store",
+  "praktijk", "studio", "centrum", "center", "services", "service", "bedrijf", "bedrijven",
+]);
+
+function websiteValues(candidate: Candidate) {
+  return [candidate.website, candidate.websiteUrl, candidate.website_url, candidate.domain, candidate.url, candidate.businessWebsite,
+    candidate.googleMapsWebsite, candidate.externalWebsite, ...(candidate.websiteFields ?? [])]
+    .map((value) => typeof value === "string" ? value.trim() : "").filter(Boolean);
+}
+
+function words(value?: string) {
+  return normalizeText(value ?? "").split(" ").filter(Boolean);
+}
+
+function identityTerms(candidate: Candidate) {
+  const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
+  const company = words(candidate.companyName.replace(legalForms, ""));
+  const brand = [...words(candidate.brand), ...words(candidate.operator)];
+  return [...new Set([...brand, ...company].filter((token) =>
+    token.length >= 4 && !weakNameTokens.has(token) && !descriptorTokens.has(token) && !locations.has(token),
+  ))];
+}
+
+/** Domain candidates are intentionally broad: short brand domains such as pearle.nl must be checked too. */
+export function candidateDomains(candidate: Candidate) {
+  const countrySuffix = candidate.country.toUpperCase() === "BE" ? "be" : "nl";
+  const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
+  const companyWords = words(candidate.companyName.replace(legalForms, "")).filter((token) => !locations.has(token));
+  const terms = identityTerms(candidate);
+  const roots = [
+    words(candidate.brand).join(""), words(candidate.operator).join(""), terms[0], terms.slice(0, 2).join(""),
+    companyWords.filter((token) => !weakNameTokens.has(token)).join(""), companyWords.join(""),
+  ].filter((root): root is string => Boolean(root && root.length >= 4 && root.length <= 63 && /[a-z]/.test(root)));
+  const suffixes = countrySuffix === "nl" ? ["nl", "com"] : ["be", "com"];
+  return [...new Set(roots.flatMap((root) => suffixes.map((suffix) => `${root}.${suffix}`)))].slice(0, 8);
+}
+
+function dnsAbsent(error: unknown) {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  return code === "ENOTFOUND" || code === "ENODATA";
+}
+
+type DomainProbe = { result: "found" | "absent" | "unknown"; website?: string };
+
+async function probeDomain(domain: string): Promise<DomainProbe> {
+  try { await resolveAny(domain); }
+  catch (error) { return { result: dnsAbsent(error) ? "absent" : "unknown" }; }
+  for (const protocol of ["https", "http"] as const) {
+    try {
+      const response = await fetch(`${protocol}://${domain}`, {
+        method: "GET", redirect: "follow", signal: AbortSignal.timeout(6_000),
+        headers: { "User-Agent": "LeadfinderSitora/3.1 local-website-verification" },
+      });
+      if (response.status === 403 || response.status === 429 || response.status >= 500) continue;
+      // A plausible company domain that resolves and answers must stay out of the no-website list.
+      return { result: "found", website: normalizeWebsite(response.url) ?? `${protocol}://${domain}` };
+    } catch { /* Try the other protocol. */ }
+  }
+  return { result: "unknown" };
+}
+
+export function isConfirmedNoWebsite(status: LocalWebsiteStatus | string) {
+  return status === "NO_WEBSITE_CONFIRMED";
+}
+
+export async function verifyWebsiteCandidate(candidate: Candidate): Promise<WebsiteVerificationResult> {
+  const normalized = websiteValues(candidate).map(normalizeWebsite).filter((value): value is string => Boolean(value));
+  const owned = normalized.find((value) => !isNonOwnedWebsite(value));
+  if (owned) return {
+    status: "WEBSITE_FOUND", confidence: 100, website: owned, reason: "De openbare bron bevat een geldige eigen bedrijfswebsite.",
+    evidence: [{ checkType: "SOURCE_WEBSITE", result: "FOUND", confidence: 100, evidenceUrl: owned, shortExplanation: "Eigen domein rechtstreeks in de bron gevonden." }],
+  };
+  const externalEvidence: Evidence[] = normalized.map((url) => ({
+    checkType: "EXTERNAL_PROFILE", result: "FOUND", confidence: 60, evidenceUrl: url,
+    shortExplanation: "Extern profiel gevonden; dit sluit een eigen website niet uit.",
+  }));
+  if (process.env.WEBSITE_CANDIDATE_DNS_CHECK === "false") return {
+    status: "MANUAL_REVIEW_REQUIRED", confidence: 40, website: null,
+    reason: "Automatische domeincontrole is uitgeschakeld; controleer het actuele Google-bedrijfsprofiel handmatig.",
+    evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: "UNVERIFIED", confidence: 40, shortExplanation: "Ontbrekende brondata is geen bewijs dat een website niet bestaat." }],
+  };
+  const domains = candidateDomains(candidate);
+  if (!domains.length) return {
+    status: "MANUAL_REVIEW_REQUIRED", confidence: 40, website: null,
+    reason: "Er kon geen verantwoord domeinvoorstel worden opgebouwd; controleer Google handmatig.",
+    evidence: [...externalEvidence, { checkType: "DOMAIN_CANDIDATES", result: "UNAVAILABLE", confidence: 40, shortExplanation: "Google-bedrijfsprofiel moet handmatig worden gecontroleerd." }],
+  };
+  const checks = await Promise.all(domains.map(async (domain) => ({ domain, probe: await probeDomain(domain) })));
+  const found = checks.find((check) => check.probe.result === "found");
+  if (found) return {
+    status: "WEBSITE_FOUND", confidence: 92, website: found.probe.website ?? `https://${found.domain}`,
+    reason: "Een plausibel merk- of bedrijfsdomein reageert; dit bedrijf hoort niet in de geen-website-lijst.",
+    evidence: checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: check.probe.result.toUpperCase(), confidence: 92, evidenceUrl: check.probe.website ?? `https://${check.domain}`, shortExplanation: `DNS/HTTP-controle van ${check.domain}.` })),
+  };
+  if (checks.some((check) => check.probe.result === "unknown")) return {
+    status: "UNKNOWN", confidence: 45, website: null,
+    reason: "Minstens één domeincontrole mislukte of werd geblokkeerd; geen website kan niet betrouwbaar worden vastgesteld.",
+    evidence: [...externalEvidence, ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: check.probe.result.toUpperCase(), confidence: 45, evidenceUrl: `https://${check.domain}`, shortExplanation: "Een timeout, blokkade of netwerkfout blijft onzeker." }))],
+  };
+  if (normalized.length) return {
+    status: "SOCIAL_ONLY", confidence: 60, website: null,
+    reason: "Alleen een extern profiel gevonden; Google moet nog handmatig bevestigen dat er geen eigen website is.",
+    evidence: [...externalEvidence, ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: 60, evidenceUrl: `https://${check.domain}`, shortExplanation: "Deze domeinkandidaat bestaat niet, maar andere domeinen kunnen nog bestaan." }))],
+  };
+  return {
+    status: "MANUAL_REVIEW_REQUIRED", confidence: 55, website: null,
+    reason: "Geen plausibel domein gevonden, maar alleen een actuele handmatige Google-controle mag dit als geen website bevestigen.",
+    evidence: checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: 55, evidenceUrl: `https://${check.domain}`, shortExplanation: "Deze domeinkandidaat bestaat niet; dit bewijst niet dat elk mogelijk domein ontbreekt." })),
+  };
+}

@@ -27,6 +27,12 @@ export default async function LeadsPage({
     return `/leads?${p}`;
   };
   const exportQs = new URLSearchParams(qs);
+  const activeFilters = [...qs.entries()].filter(([key]) => !["sort", "pageSize"].includes(key));
+  const removeFilterHref = (key: string) => {
+    const next = new URLSearchParams(qs);
+    next.delete(key);
+    return `/leads${next.size ? `?${next}` : ""}`;
+  };
   return (
     <div className="content">
       <header className="page-head">
@@ -34,11 +40,12 @@ export default async function LeadsPage({
           <span className="eyebrow">Kansenbestand</span>
           <h1>{filters.filtered ? "Gefilterde leads" : "Actieve leads"}</h1>
           <p className="muted">
-            Nederlandse en Belgische bedrijven met een concrete websitekans.
+            Alleen bedrijven waarvan Google handmatig is gecontroleerd en geen website toont.
           </p>
         </div>
         <div className="actions">
           <GenerationButton />
+          <Link className="button button-secondary" href="/leads?filtered=yes&status=NEEDS_REVIEW">Google-controle nodig</Link>
           <a
             className="button button-secondary"
             href={`/api/export?${exportQs}`}
@@ -53,6 +60,7 @@ export default async function LeadsPage({
             <Download size={15} />
             Excel
           </a>
+          <a className="button button-secondary" href={`/api/export?${exportQs}&format=json`}><Download size={15}/>JSON</a>
         </div>
       </header>
       <form className="card filters" method="get">
@@ -71,11 +79,7 @@ export default async function LeadsPage({
             label="Leadtype"
             name="leadType"
             value={filters.leadType}
-            options={[
-              ["NO_WEBSITE", "Geen website"],
-              ["OUTDATED_WEBSITE", "Verouderde website"],
-              ["IMPROVABLE_WEBSITE", "Website verbeterbaar"],
-            ]}
+            options={[["NO_WEBSITE", "Geen website (Google bevestigd)"],["OUTDATED_WEBSITE", "Verouderde website"],["IMPROVABLE_WEBSITE", "Website kapot / controle nodig"]]}
           />
           <Select
             label="Status"
@@ -90,6 +94,7 @@ export default async function LeadsPage({
             value={filters.category}
           />
           <TextFilter label="Regio" name="region" value={filters.region} />
+          <TextFilter label="Gemeente" name="municipality" value={filters.municipality} />
           <TextFilter
             label="Postcode"
             name="postalCode"
@@ -115,7 +120,12 @@ export default async function LeadsPage({
             <label htmlFor="minConfidence">Min. confidence</label>
             <input className="input" type="number" min="0" max="100" id="minConfidence" name="minConfidence" defaultValue={filters.minConfidence}/>
           </div>
-          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_OWN_WEBSITE", "Geen eigen website"], ["OUTDATED", "Sterk verouderd"], ["IMPROVABLE", "Verbeterbaar"], ["OWN_WEBSITE", "Eigen website"], ["UNKNOWN", "Handmatige controle"]]}/>
+          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_WEBSITE_CONFIRMED","Geen website bevestigd"],["NO_WEBSITE_LIKELY","Waarschijnlijk geen website"],["SOCIAL_ONLY","Alleen extern profiel"],["WEBSITE_FOUND","Website gevonden"],["WEBSITE_OUTDATED","Website verouderd"],["WEBSITE_BROKEN","Website kapot"],["MANUAL_REVIEW_REQUIRED","Handmatige controle"],["UNKNOWN","Onbekend"]]}/>
+          <Select label="Databron" name="source" value={filters.source} options={[["OPENSTREETMAP","OpenStreetMap"],["OPEN_DATA","Open data"],["PUBLIC_WEBSITE","Openbare website"],["MANUAL","Handmatig"]]}/>
+          <Select label="Bedrijfsstatus" name="businessStatus" value={filters.businessStatus} options={[["OPERATIONAL","Operationeel"],["CLOSED_TEMPORARILY","Tijdelijk gesloten"],["CLOSED_PERMANENTLY","Permanent gesloten"],["FUTURE_OPENING","Toekomstige opening"],["UNKNOWN","Onbekend"]]}/>
+          <Select label="Telefoon" name="hasPhone" value={filters.hasPhone} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
+          <Select label="E-mail" name="hasEmail" value={filters.hasEmail} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
+          <Select label="Sorteren" name="sort" value={filters.sort} options={[["newest","Nieuwste lead"],["confidence_desc","Hoogste website-confidence"],["opportunity_desc","Hoogste opportunity"],["oldest","Oudste lead"],["checked_desc","Laatst gecontroleerd"],["city","Plaats"],["category","Branche"],["status","Pipelinestatus"],["contacts_desc","Meeste contactmogelijkheden"]]}/>
           <Select label="Gebeld" name="called" value={filters.called} options={[["yes", "Ja"], ["no", "Nee"]]}/>
           <div className="field"><label htmlFor="foundAfter">Gevonden vanaf</label><input className="input" type="date" id="foundAfter" name="foundAfter" defaultValue={raw.foundAfter as string | undefined}/></div>
           <div className="field"><label htmlFor="foundBefore">Gevonden t/m</label><input className="input" type="date" id="foundBefore" name="foundBefore" defaultValue={raw.foundBefore as string | undefined}/></div>
@@ -160,6 +170,17 @@ export default async function LeadsPage({
             Filters toepassen
           </button>
         </div>
+        {activeFilters.length ? (
+          <div className="active-filters" aria-label="Actieve filters">
+            <span className="small muted">Actief:</span>
+            {activeFilters.map(([key, value]) => (
+              <Link className="filter-chip" href={removeFilterHref(key)} key={key} aria-label={`Verwijder filter ${filterLabel(key)}`}>
+                {filterLabel(key)}: {value} <span aria-hidden="true">×</span>
+              </Link>
+            ))}
+            <Link href="/leads" className="filter-clear">Alles wissen</Link>
+          </div>
+        ) : null}
       </form>
       <section className="card table-card">
         {items.length ? (
@@ -205,7 +226,7 @@ export default async function LeadsPage({
                       </td>
                       <td>
                         <span
-                          className={`badge ${lead.websiteStatus === "NO_OWN_WEBSITE" ? "badge-green" : "badge-amber"}`}
+                          className={`badge ${lead.websiteStatus === "NO_WEBSITE_CONFIRMED" ? "badge-green" : "badge-amber"}`}
                         >
                           {websiteStatusLabels[lead.websiteStatus]}
                         </span>
@@ -224,7 +245,7 @@ export default async function LeadsPage({
                         </strong>
                         /100
                       </td>
-                      <td><strong>{lead.confidenceScore}</strong>/100<div className="small muted">{lead.confidenceLevel.toLowerCase()}</div></td>
+                      <td><strong>{lead.websiteConfidence}</strong>/100<div className="small muted">websitebewijs</div></td>
                       <td className="small">
                         {lead.websiteStatusReason || lead.filterReason || "Handmatige controle nodig"}
                       </td>
@@ -285,7 +306,7 @@ export default async function LeadsPage({
             <Search size={30} />
             <strong>Geen leads gevonden</strong>
             <span>
-              Pas de filters aan of wacht op de volgende automatische scan.
+              Pas de filters aan of start een lokale zoekrun.
             </span>
           </div>
         )}
@@ -359,4 +380,15 @@ function Select({
       </select>
     </div>
   );
+}
+
+const filterLabels: Record<string, string> = {
+  q: "Zoeken", country: "Land", region: "Regio", municipality: "Gemeente", city: "Plaats", postalCode: "Postcode",
+  category: "Branche", status: "Status", leadType: "Leadtype", websiteStatus: "Website-status", source: "Bron",
+  businessStatus: "Bedrijfsstatus", filtered: "Pipeline", hasPhone: "Telefoon", hasEmail: "E-mail", minScore: "Min. score",
+  maxScore: "Max. score", minConfidence: "Min. confidence", called: "Gebeld", issue: "Websiteprobleem", foundAfter: "Vanaf", foundBefore: "Tot",
+};
+
+function filterLabel(key: string) {
+  return filterLabels[key] ?? key;
 }

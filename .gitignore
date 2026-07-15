@@ -8,4 +8,6 @@ coverage
 *.log
 *.tsbuildinfo
 /prisma/*.db
+.data/
+backups/
 .vercel

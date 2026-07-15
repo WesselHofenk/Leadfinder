@@ -15,10 +15,20 @@ enum UserRole {
 
 enum LeadStatus {
   NEW
+  NEEDS_REVIEW
+  VERIFIED
   CALLED
   NO_ANSWER
+  CALL_BACK
+  INTERESTED
+  APPOINTMENT
   QUOTE_SENT
+  WON
   INVOICED
+  LOST
+  REJECTED
+  HAS_WEBSITE
+  PERMANENTLY_CLOSED
   DO_NOT_CONTACT
   FILTERED
 }
@@ -40,6 +50,7 @@ enum BusinessStatus {
   CLOSED_TEMPORARILY
   CLOSED_PERMANENTLY
   UNKNOWN
+  FUTURE_OPENING
 }
 
 enum CoverageStatus {
@@ -68,9 +79,19 @@ enum JobType {
 enum LeadSource {
   GOOGLE_PLACES
   OPENSTREETMAP
+  OPEN_DATA
+  PUBLIC_WEBSITE
+  MANUAL
 }
 
 enum WebsiteStatus {
+  NO_WEBSITE_CONFIRMED
+  NO_WEBSITE_LIKELY
+  SOCIAL_ONLY
+  WEBSITE_FOUND
+  WEBSITE_OUTDATED
+  WEBSITE_BROKEN
+  MANUAL_REVIEW_REQUIRED
   NO_OWN_WEBSITE
   OWN_WEBSITE
   OUTDATED
@@ -106,62 +127,76 @@ model Session {
 }
 
 model Lead {
-  id                       String            @id @default(cuid())
-  externalPlaceId          String            @unique
-  companyName              String
-  normalizedCompanyName    String
-  contactPersonName        String?
-  email                    String?
-  phoneNumber              String
-  normalizedPhoneNumber    String            @unique
-  internationalPhoneNumber String?
-  category                 String
-  subCategory              String?
-  country                  String
-  province                 String?
-  municipality             String?
-  city                     String
-  postalCode               String?
-  streetAddress            String
-  houseNumber              String?
-  normalizedAddress        String
-  latitude                 Decimal           @db.Decimal(10, 7)
-  longitude                Decimal           @db.Decimal(10, 7)
-  googleMapsUrl            String
-  website                  String?
-  websiteUrl               String?
-  normalizedDomain         String?
-  websiteStatus            WebsiteStatus     @default(UNKNOWN)
-  websiteStatusReason      String?
-  websiteSource            String?
-  googlePlaceId            String?           @unique
+  id                            String                 @id @default(cuid())
+  externalPlaceId               String                 @unique
+  companyName                   String
+  normalizedCompanyName         String
+  contactPersonName             String?
+  email                         String?
+  phoneNumber                   String
+  normalizedPhoneNumber         String                 @unique
+  internationalPhoneNumber      String?
+  category                      String
+  subCategory                   String?
+  country                       String
+  province                      String?
+  municipality                  String?
+  city                          String
+  postalCode                    String?
+  streetAddress                 String
+  houseNumber                   String?
+  normalizedAddress             String
+  latitude                      Decimal                @db.Decimal(10, 7)
+  longitude                     Decimal                @db.Decimal(10, 7)
+  googleMapsUrl                 String
+  website                       String?
+  websiteUrl                    String?
+  normalizedDomain              String?
+  websiteStatus                 WebsiteStatus          @default(UNKNOWN)
+  websiteStatusReason           String?
+  websiteConfidence             Int                    @default(0)
+  websiteSource                 String?
+  sourceUrl                     String?
+  sourceFetchedAt               DateTime?
+  googlePlaceId                 String?                @unique
   googleWebsiteCheckAttemptedAt DateTime?
-  googleWebsiteVerifiedAt  DateTime?
-  googleWebsitePresent     Boolean?
-  employeeCount            Int?
-  leadType                 LeadType          @default(NO_WEBSITE)
-  opportunityScore         Int               @default(0)
-  conversionQualityScore   Int?
-  isFiltered               Boolean           @default(false)
-  filterReason             String?
-  doNotContact             Boolean           @default(false)
-  lastWebsiteAnalysisAt    DateTime?
-  businessStatus           BusinessStatus
-  source                   LeadSource        @default(GOOGLE_PLACES)
-  confidenceScore          Int               @default(50)
-  confidenceLevel          ConfidenceLevel   @default(MEDIUM)
-  isActive                 Boolean           @default(true)
-  isSuppressed             Boolean           @default(false)
-  firstDiscoveredAt        DateTime          @default(now())
-  lastVerifiedAt           DateTime          @default(now())
-  createdAt                DateTime          @default(now())
-  updatedAt                DateTime          @updatedAt
-  status                   LeadStatus        @default(NEW)
-  notes                    String            @default("")
-  history                  LeadHistory[]
-  websiteAnalyses          WebsiteAnalysis[]
-  leadNotes                LeadNote[]
-  scanJobs                 ScanJob[]
+  googleWebsiteVerifiedAt       DateTime?
+  googleWebsitePresent          Boolean?
+  employeeCount                 Int?
+  leadType                      LeadType               @default(NO_WEBSITE)
+  opportunityScore              Int                    @default(0)
+  conversionQualityScore        Int?
+  isFiltered                    Boolean                @default(false)
+  filterReason                  String?
+  doNotContact                  Boolean                @default(false)
+  lastWebsiteAnalysisAt         DateTime?
+  businessStatus                BusinessStatus
+  source                        LeadSource             @default(OPENSTREETMAP)
+  confidenceScore               Int                    @default(50)
+  confidenceLevel               ConfidenceLevel        @default(MEDIUM)
+  isActive                      Boolean                @default(true)
+  isSuppressed                  Boolean                @default(false)
+  firstDiscoveredAt             DateTime               @default(now())
+  lastVerifiedAt                DateTime               @default(now())
+  createdAt                     DateTime               @default(now())
+  updatedAt                     DateTime               @updatedAt
+  status                        LeadStatus             @default(NEW)
+  notes                         String                 @default("")
+  lastContactAt                 DateTime?
+  nextFollowUpAt                DateTime?
+  contactPerson                 String?
+  conversationSummary           String?
+  rejectionReason               String?
+  quoteAmountCents              Int?
+  expectedRevenueCents          Int?
+  wonRevenueCents               Int?
+  history                       LeadHistory[]
+  websiteAnalyses               WebsiteAnalysis[]
+  leadNotes                     LeadNote[]
+  scanJobs                      ScanJob[]
+  evidence                      VerificationEvidence[]
+  sourceRecords                 SourceRecord[]
+  activities                    LeadActivity[]
 
   @@unique([normalizedCompanyName, normalizedAddress], map: "lead_name_address_unique")
   @@unique([normalizedCompanyName, latitude, longitude], map: "lead_name_coordinates_unique")
@@ -173,6 +208,9 @@ model Lead {
   @@index([email])
   @@index([confidenceScore])
   @@index([websiteStatus, isActive, createdAt])
+  @@index([websiteConfidence, websiteStatus])
+  @@index([source, sourceFetchedAt])
+  @@index([nextFollowUpAt])
   @@index([googleWebsitePresent, googleWebsiteVerifiedAt])
   @@index([googleWebsiteCheckAttemptedAt])
   @@index([status, isFiltered, leadType])
@@ -190,6 +228,7 @@ model GenerationRun {
   duplicates         Int         @default(0)
   rejected           Int         @default(0)
   stored             Int         @default(0)
+  manualReview       Int         @default(0)
   websitesChecked    Int         @default(0)
   permanentlyClosed  Int         @default(0)
   temporarilyClosed  Int         @default(0)
@@ -202,6 +241,12 @@ model GenerationRun {
   branchesUsed       Json        @default("[]")
   apiErrors          Json        @default("[]")
   exhausted          Boolean     @default(false)
+  cancelRequested    Boolean     @default(false)
+  currentPhase       String      @default("Wachten")
+  currentSource      String?
+  currentRegion      String?
+  stopReason         String?
+  warnings           Json        @default("[]")
   startedAt          DateTime?
   finishedAt         DateTime?
   createdAt          DateTime    @default(now())
@@ -393,6 +438,75 @@ model SuppressedLead {
   fingerprint String   @unique
   reason      String
   createdAt   DateTime @default(now())
+}
+
+model LeadExclusion {
+  id               String    @id @default(cuid())
+  identityKey      String    @unique
+  source           String?
+  sourceRecordId   String?
+  phoneNormalized  String?
+  domainNormalized String?
+  nameNormalized   String?
+  postalCode       String?
+  reason           String
+  expiresAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([source, sourceRecordId])
+  @@index([phoneNormalized])
+  @@index([domainNormalized])
+  @@index([expiresAt])
+}
+
+model SourceRecord {
+  id                String   @id @default(cuid())
+  leadId            String?
+  lead              Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  source            String
+  sourceRecordId    String
+  sourceUrl         String?
+  fetchedAt         DateTime @default(now())
+  rawName           String?
+  rawAddress        String?
+  rawPhone          String?
+  rawWebsite        String?
+  rawBusinessStatus String?
+  payload           Json?
+
+  @@unique([source, sourceRecordId])
+  @@index([leadId, fetchedAt])
+  @@index([source, fetchedAt])
+}
+
+model VerificationEvidence {
+  id               String   @id @default(cuid())
+  leadId           String
+  lead             Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  checkType        String
+  result           String
+  confidence       Int
+  evidenceUrl      String?
+  shortExplanation String
+  checkedAt        DateTime @default(now())
+
+  @@index([leadId, checkedAt])
+  @@index([checkType, result])
+}
+
+model LeadActivity {
+  id        String   @id @default(cuid())
+  leadId    String
+  lead      Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actorId   String?
+  type      String
+  summary   String
+  details   Json?
+  createdAt DateTime @default(now())
+
+  @@index([leadId, createdAt])
+  @@index([type, createdAt])
 }
 
 model SourceLog {

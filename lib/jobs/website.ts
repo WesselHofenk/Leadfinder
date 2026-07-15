@@ -29,9 +29,9 @@ export async function runWebsiteAnalysisJob() {
       const result = await analyzeWebsite(job.lead.websiteUrl);
       const decision = determineWebsiteStatus(job.lead, { reachable: result.isReachable, httpStatus: result.httpStatus, failureKind: result.failureKind, auditClassification: result.classification });
       logWebsiteStatusDecision(job.lead.companyName, decision);
-      const accepted = decision.status === "outdated_website";
+      const accepted = decision.status === "outdated_website" || result.hasInvalidSsl === true;
       const leadType = result.classification === "OUTDATED" ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE";
-      const websiteStatus = decision.status === "unknown" ? "UNKNOWN" : decision.status === "has_website" ? "OWN_WEBSITE" : result.classification === "OUTDATED" ? "OUTDATED" : "IMPROVABLE";
+      const websiteStatus = decision.status === "unknown" ? "UNKNOWN" : result.hasInvalidSsl ? "WEBSITE_BROKEN" : result.classification === "OUTDATED" || result.classification === "IMPROVABLE" ? "WEBSITE_OUTDATED" : "WEBSITE_FOUND";
       await prisma.$transaction([
         prisma.websiteAnalysis.create({ data: {
           leadId: job.lead.id, websiteUrl: result.websiteUrl, opportunityScore: result.opportunityScore,
@@ -46,12 +46,14 @@ export async function runWebsiteAnalysisJob() {
         } }),
         prisma.lead.update({ where: { id: job.lead.id }, data: {
           leadType, websiteStatus, websiteStatusReason: decision.reason, websiteSource: decision.source,
+          websiteConfidence: decision.status === "unknown" ? 55 : 95,
           website: decision.normalizedUrl, websiteUrl: decision.normalizedUrl, opportunityScore: result.opportunityScore, conversionQualityScore: result.conversionQualityScore,
           lastWebsiteAnalysisAt: new Date(), isActive: accepted, isFiltered: !accepted,
           status: accepted && job.lead.status === "FILTERED" ? "NEW" : !accepted && job.lead.status === "NEW" ? "FILTERED" : job.lead.status,
           filterReason: accepted ? result.reasons[0]?.label ?? decision.reason : decision.reason,
         } }),
         prisma.scanJob.update({ where: { id: job.id }, data: { status: "COMPLETE", finishedAt: new Date(), recordsFound: 1, recordsStored: accepted ? 1 : 0 } }),
+        prisma.leadActivity.create({ data: { leadId: job.lead.id, type: "WEBSITE_SCANNED", summary: decision.reason, details: { websiteStatus, score: result.opportunityScore } } }),
       ]);
       return { skipped: false, leadId: job.lead.id, accepted, score: result.opportunityScore, classification: result.classification };
     } catch (error) {

@@ -34,12 +34,14 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       externalPlaceId: `osm:${element.type}/${element.id}`, source: "OPENSTREETMAP", companyName: tags.name,
       phoneNumber: tags.phone || tags["contact:phone"], internationalPhoneNumber: tags["contact:mobile"],
       email: tags.email || tags["contact:email"], website: tags.website || tags["contact:website"],
-      websiteFields: [tags.url, tags["contact:facebook"], tags["contact:instagram"]],
+      websiteFields: [tags.url, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       businessStatus: closureSignals.length ? "CLOSED_PERMANENTLY" : "UNKNOWN", closureSignals,
       sourceUpdatedAt: element.timestamp, country: (tags["addr:country"] || country).toUpperCase(), category,
-      subCategory: tags.brand, province: tags["addr:province"] || tags["addr:state"], municipality: tags["addr:municipality"],
+      subCategory: tags.brand, brand: tags.brand, brandWikidata: tags["brand:wikidata"], operator: tags.operator,
+      province: tags["addr:province"] || tags["addr:state"], municipality: tags["addr:municipality"],
       city, postalCode: tags["addr:postcode"], streetAddress: street, houseNumber: tags["addr:housenumber"],
       latitude, longitude, googleMapsUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+      sourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`, fetchedAt: new Date().toISOString(),
     }];
   });
 }

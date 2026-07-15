@@ -5,16 +5,21 @@
   "engines": { "node": ">=20 <25" },
   "scripts": {
     "dev": "next dev -p 3001",
+    "start:local": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next dev -p 3001",
     "build": "prisma generate && next build",
+    "vercel-build": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts && next build",
     "start": "next start -p 3001",
     "lint": "eslint .",
     "typecheck": "prisma generate && tsc --noEmit",
     "test": "vitest run",
     "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate deploy",
-    "db:dev": "prisma migrate dev",
+    "db:setup": "prisma generate && prisma migrate deploy && tsx prisma/seed.ts",
+    "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
+    "db:smoke": "tsx scripts/smoke-database.ts",
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
+    "db:backup:sqlite": "tsx scripts/backup-local.ts",
+    "db:restore:sqlite": "tsx scripts/restore-local.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

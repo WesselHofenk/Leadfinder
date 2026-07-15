@@ -51,23 +51,26 @@ const centers = [
 ] as const;
 
 async function main() {
-  const username = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase() || "sitoro";
+  const username = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase();
   const password = process.env.INITIAL_ADMIN_PASSWORD;
-  if (password) {
+  if (username && password) {
     const email = `${username}@leadfinder.local`;
     await prisma.user.upsert({ where: { username }, update: {}, create: { username, email, name: "Sitora", role: "ADMIN", passwordHash: await hash(password, 12) } });
   }
-  await prisma.category.createMany({
-    data: categories.map((name) => ({ slug: name.replaceAll(" ", "-"), name })),
-    skipDuplicates: true,
-  });
+  for (const name of categories) {
+    const slug = name.replaceAll(" ", "-");
+    await prisma.category.upsert({ where: { slug }, create: { slug, name }, update: { name } });
+  }
   for (const slug of excluded) await prisma.excludedCategory.upsert({ where:{slug}, update:{}, create:{slug,name:slug.replaceAll("_"," "),reason:"Geen relevante commerciële websitelead"} });
-  await prisma.coverageArea.createMany({
-    data: centers.flatMap(([country, region, city, latitude, longitude]) =>
-      categories.map((category) => ({ country, region, city, latitude, longitude, radius: 12000, category })),
-    ),
-    skipDuplicates: true,
-  });
+  for (const [country, region, city, latitude, longitude] of centers) {
+    for (const category of categories) {
+      await prisma.coverageArea.upsert({
+        where: { country_city_category_latitude_longitude: { country, city, category, latitude, longitude } },
+        create: { country, region, city, latitude, longitude, radius: 12000, category },
+        update: { region, radius: 12000 },
+      });
+    }
+  }
 }
 
 main().finally(() => prisma.$disconnect());

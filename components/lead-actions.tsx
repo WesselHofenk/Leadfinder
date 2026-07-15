@@ -1,7 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { Activity, LoaderCircle, Save, Trash2 } from "lucide-react";
+import { Activity, ExternalLink, LoaderCircle, Save, ShieldCheck, Trash2 } from "lucide-react";
 import { leadStatuses } from "@/lib/leads/filters";
 import { statusLabels } from "@/lib/format";
 
@@ -12,3 +12,15 @@ export function AnalyzeButton({leadId,disabled}:{leadId:string;disabled:boolean}
 export function QuickStatus({leadId,status}:{leadId:string;status:string}){const router=useRouter();const[pending,setPending]=useState(false);async function change(value:string){setPending(true);await fetch(`/api/leads/${leadId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:value})});setPending(false);router.refresh()}return <select className="select" aria-label="Leadstatus" value={status} onChange={e=>change(e.target.value)} disabled={pending} style={{minWidth:145}}>{leadStatuses.map(item=><option value={item} key={item}>{statusLabels[item]}</option>)}</select>}
 
 export function SuppressLeadButton({leadId}:{leadId:string}){const router=useRouter();const[pending,setPending]=useState(false);async function suppress(){if(!window.confirm("Deze lead verwijderen en blokkeren voor toekomstige imports?"))return;setPending(true);const response=await fetch(`/api/leads/${leadId}`,{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({reason:"Handmatig verwijderd; niet opnieuw importeren"})});if(response.ok){router.push("/leads");router.refresh()}else setPending(false)}return <button className="button button-danger" onClick={suppress} disabled={pending}>{pending?<LoaderCircle className="animate-spin" size={15}/>:<Trash2 size={15}/>}Verwijderen en blokkeren</button>}
+
+export function WebsiteReviewActions({leadId,googleUrl,currentWebsite}:{leadId:string;googleUrl:string;currentWebsite?:string|null}){
+  const router=useRouter();const[pending,setPending]=useState(false);const[websiteUrl,setWebsiteUrl]=useState(currentWebsite||"");const[message,setMessage]=useState("");
+  async function review(websiteReview:"NO_WEBSITE_CONFIRMED"|"WEBSITE_FOUND"){
+    if(websiteReview==="NO_WEBSITE_CONFIRMED"&&!window.confirm("Heb je het actuele Google-bedrijfsprofiel geopend en gecontroleerd dat daar geen websiteknop of eigen domein staat?"))return;
+    if(websiteReview==="WEBSITE_FOUND"&&!websiteUrl.trim()){setMessage("Vul eerst de gevonden eigen website in.");return;}
+    setPending(true);setMessage("");
+    const response=await fetch(`/api/leads/${leadId}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({websiteReview,websiteUrl})});
+    const data=await response.json().catch(()=>({}));setPending(false);setMessage(response.ok?"Websitecontrole opgeslagen":data.error||"Opslaan mislukt");if(response.ok)router.refresh();
+  }
+  return <section className="card card-pad"><h2>Verplichte Google-controle</h2><p className="small muted">Open eerst het actuele bedrijfsprofiel. Alleen een handmatig bevestigde afwezigheid wordt een actieve lead.</p><div className="form-stack" style={{marginTop:14}}><a className="button button-secondary" href={googleUrl} target="_blank" rel="noopener noreferrer">Google-bedrijfsprofiel openen <ExternalLink size={14}/></a><div className="field"><label htmlFor="reviewWebsiteUrl">Eigen website gevonden</label><input className="input" id="reviewWebsiteUrl" value={websiteUrl} onChange={event=>setWebsiteUrl(event.target.value)} placeholder="https://bedrijfsnaam.nl"/></div><button type="button" className="button button-secondary" disabled={pending} onClick={()=>review("WEBSITE_FOUND")}>{pending?<LoaderCircle className="animate-spin" size={15}/>:<ExternalLink size={15}/>}Website gevonden: uitsluiten</button><button type="button" className="button button-primary" disabled={pending} onClick={()=>review("NO_WEBSITE_CONFIRMED")}>{pending?<LoaderCircle className="animate-spin" size={15}/>:<ShieldCheck size={15}/>}Google gecontroleerd: geen website</button>{message&&<span className="small muted" aria-live="polite">{message}</span>}</div></section>;
+}
