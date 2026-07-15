@@ -42,15 +42,18 @@ beforeEach(() => clearOverpassCircuitState());
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); clearOverpassCircuitState(); });
 
 describe("gerichte Overpass-query", () => {
-  it("maakt een kleine geldige tegelquery voor de gekozen branche", () => {
+  it("maakt een kleine geen-websitegerichte tegelquery voor de gekozen branche", () => {
     const tile = overpassTile(52.3676, 4.9041, 12_000, 0);
     const query = buildOverpassQuery({ ...tile, category: "kapper", timeoutSeconds: 10 });
     expect(tile.radius).toBe(2_400);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
     expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
+    expect(query).toContain('[!"website"][!"contact:website"]');
+    expect(query).toContain("opening_hours|check_date");
+    expect(query).toContain('["website"~"^(no|none|nee|geen|n\\.v\\.t\\.|nvt)$",i]');
     expect(query).toContain("node(around:");
-    expect(query.match(/node\(around:/g)).toHaveLength(1);
+    expect(query.match(/node\(around:/g)).toHaveLength(3);
     expect(query).not.toContain("nwr(around:");
     expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);

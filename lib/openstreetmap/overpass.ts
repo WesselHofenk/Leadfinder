@@ -201,9 +201,15 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
   const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
-  const statements = filters.map((filter) =>
-    `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]${contactFilter};`,
-  ).join("");
+  const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
+  const recentActivity = '[~"^(opening_hours|check_date|contact:check_date|opening_hours:check_date|survey:date|email|contact:email|facebook|contact:facebook|instagram|contact:instagram)$"~"."]';
+  const explicitNoWebsite = '^(no|none|nee|geen|n\\.v\\.t\\.|nvt)$';
+  const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
+  const statements = filters.flatMap((filter) => [
+    `${around}${filter}[name]${contactFilter}${noOfficialWebsite}${recentActivity};`,
+    `${around}${filter}[name]${contactFilter}["website"~"${explicitNoWebsite}",i];`,
+    `${around}${filter}[name]${contactFilter}["contact:website"~"${explicitNoWebsite}",i];`,
+  ]).join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
