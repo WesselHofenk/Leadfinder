@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateDedupeKeys, fingerprintValues, RunDeduplicator } from "@/lib/leads/deduplication";
+import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentityFingerprintValues } from "@/lib/leads/deduplication";
 import { hasOwnWebsite, isNonOwnedWebsite, normalizeWebsite } from "@/lib/leads/website";
 import type { Candidate } from "@/lib/leads/eligibility";
 import { shouldContinueGeneration } from "@/lib/leads/search-loop";
@@ -17,6 +17,7 @@ describe("deduplicatie binnen een run", () => {
   it("dedupliceert op telefoonnummer", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys(base)); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", companyName: "Andere naam" }))).toBe(true); });
   it("dedupliceert op naam en postcode", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys(base)); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", streetAddress: "Andere straat 2" }))).toBe(true); });
   it("dedupliceert op genormaliseerd domein en e-mail", () => { const first = candidateDedupeKeys({ ...base, website: "https://www.Bedrijf.nl/contact", email: "INFO@BEDRIJF.NL" }); const second = candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "Andere naam", postalCode: "3521 AA", streetAddress: "Andere straat 2", category: "aannemer", website: "http://bedrijf.nl", email: "info@bedrijf.nl" }); const index = new RunDeduplicator(); index.hasOrAdd(first); expect(index.hasOrAdd(second)).toBe(true); expect(fingerprintValues(first).map((item) => item.kind)).toEqual(expect.arrayContaining(["domain", "email"])); });
+  it("herstelt bestaande records alleen via sterke identiteitssleutels", () => expect(strongIdentityFingerprintValues(candidateDedupeKeys(base)).map((item) => item.kind)).toEqual(["external", "phone", "postal", "address"]));
 });
 
 describe("zoeklus", () => {

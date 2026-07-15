@@ -135,6 +135,7 @@ model Lead {
   websiteStatusReason      String?
   websiteSource            String?
   googlePlaceId            String?           @unique
+  googleWebsiteCheckAttemptedAt DateTime?
   googleWebsiteVerifiedAt  DateTime?
   googleWebsitePresent     Boolean?
   employeeCount            Int?
@@ -173,6 +174,7 @@ model Lead {
   @@index([confidenceScore])
   @@index([websiteStatus, isActive, createdAt])
   @@index([googleWebsitePresent, googleWebsiteVerifiedAt])
+  @@index([googleWebsiteCheckAttemptedAt])
   @@index([status, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])

@@ -27,6 +27,11 @@ export function fingerprintValues(keys: DedupeKeys) {
   ].filter((item): item is [string, string] => Boolean(item[1])).map(([kind, value]) => ({ kind, fingerprint: `${kind}:${value}` }));
 }
 
+export function strongIdentityFingerprintValues(keys: DedupeKeys) {
+  const strongKinds = new Set(["external", "phone", "postal", "address"]);
+  return fingerprintValues(keys).filter(({ kind }) => strongKinds.has(kind));
+}
+
 export class RunDeduplicator {
   private values = new Set<string>();
   hasOrAdd(keys: DedupeKeys) {

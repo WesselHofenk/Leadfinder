@@ -3,18 +3,18 @@ import { prisma } from "@/lib/prisma";
 import { serverEnv } from "@/lib/env";
 import { searchPlaces } from "@/lib/google/places";
 import { qualifyCandidate, validateCandidateBasics, type Candidate, type EligibleBase } from "@/lib/leads/eligibility";
-import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, type DedupeKeys } from "@/lib/leads/deduplication";
+import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentityFingerprintValues, type DedupeKeys } from "@/lib/leads/deduplication";
 import { normalizeText } from "@/lib/leads/normalization";
 import { logWebsiteStatusDecision, type WebsiteStatusDecision } from "@/lib/leads/website";
-import { verifyGoogleNoWebsiteCandidate } from "@/lib/leads/google-verification";
+import { canPublishReconciledGoogleLead, verifyGoogleNoWebsiteCandidate } from "@/lib/leads/google-verification";
 import { searchTerms } from "@/lib/leads/config";
 import { acquireJobLock } from "./lock";
 import { reserveBudgetedApiCall } from "./quota";
 
-type ExistingLead = Pick<Lead, "externalPlaceId" | "normalizedPhoneNumber" | "normalizedCompanyName" | "postalCode" | "city" | "streetAddress" | "category" | "normalizedDomain" | "email">;
+type ExistingLead = Pick<Lead, "id" | "externalPlaceId" | "normalizedPhoneNumber" | "normalizedCompanyName" | "postalCode" | "city" | "streetAddress" | "category" | "normalizedDomain" | "email" | "status" | "filterReason" | "websiteSource" | "isActive" | "isFiltered" | "isSuppressed">;
 
 class ExistingLeadIndex {
-  private values = new Set<string>();
+  private values = new Map<string, ExistingLead>();
   constructor(leads: ExistingLead[]) {
     leads.forEach((lead) => this.add({
       externalId: lead.externalPlaceId, phone: lead.normalizedPhoneNumber, email: lead.email ?? undefined,
@@ -22,10 +22,12 @@ class ExistingLeadIndex {
       namePostal: lead.postalCode ? `${lead.normalizedCompanyName}|${normalizeText(lead.postalCode)}` : undefined,
       nameCityAddress: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.streetAddress)}`,
       nameCityCategory: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.category)}`,
-    }));
+    }, lead));
   }
-  has(keys: DedupeKeys) { return fingerprintValues(keys).some(({ fingerprint }) => this.values.has(fingerprint)); }
-  add(keys: DedupeKeys) { fingerprintValues(keys).forEach(({ fingerprint }) => this.values.add(fingerprint)); }
+  find(keys: DedupeKeys) {
+    return strongIdentityFingerprintValues(keys).map(({ fingerprint }) => this.values.get(fingerprint)).find(Boolean);
+  }
+  add(keys: DedupeKeys, lead: ExistingLead) { fingerprintValues(keys).forEach(({ fingerprint }) => this.values.set(fingerprint, lead)); }
 }
 
 type Stats = {
@@ -97,7 +99,7 @@ export async function runLeadGeneration(runId: string) {
       prisma.coverageArea.findMany({ where: { status: { not: "PAUSED" } }, orderBy: [{ lastScannedAt: "asc" }, { priority: "asc" }] }),
       prisma.category.findMany({ where: { isActive: true }, orderBy: [{ priority: "asc" }, { name: "asc" }] }),
       prisma.excludedCategory.findMany({ where: { isActive: true }, select: { slug: true } }),
-      prisma.lead.findMany({ select: { externalPlaceId: true, normalizedPhoneNumber: true, normalizedCompanyName: true, postalCode: true, city: true, streetAddress: true, category: true, normalizedDomain: true, email: true } }),
+      prisma.lead.findMany({ select: { id: true, externalPlaceId: true, normalizedPhoneNumber: true, normalizedCompanyName: true, postalCode: true, city: true, streetAddress: true, category: true, normalizedDomain: true, email: true, status: true, filterReason: true, websiteSource: true, isActive: true, isFiltered: true, isSuppressed: true } }),
       prisma.suppressedLead.findMany({ select: { fingerprint: true } }),
     ]);
     const excludedValues = new Set(excluded.map((item) => item.slug.replaceAll("_", "-").toLowerCase()));
@@ -118,7 +120,7 @@ export async function runLeadGeneration(runId: string) {
           longitude: new Prisma.Decimal(base.longitude), googleMapsUrl: base.googleMapsUrl, website: null, websiteUrl: null,
           normalizedDomain: null, websiteStatus: "NO_OWN_WEBSITE", websiteStatusReason: websiteDecision.reason,
           websiteSource: "google_places.websiteUri", googlePlaceId: base.externalPlaceId,
-          googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: false,
+          googleWebsiteCheckAttemptedAt: verifiedAt, googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: false,
           leadType: "NO_WEBSITE", opportunityScore: score, conversionQualityScore: 0, businessStatus: base.businessStatus,
           source: "GOOGLE_PLACES", confidenceScore: base.confidenceScore, confidenceLevel: base.confidenceLevel, status: "NEW",
         } });
@@ -130,9 +132,41 @@ export async function runLeadGeneration(runId: string) {
         await tx.duplicateFingerprint.createMany({ data: fingerprintValues(keys).map((item) => ({ ...item, leadId: lead.id })), skipDuplicates: true });
         return lead;
       });
-      existing.add(keys); stats.stored += 1;
+      existing.add(keys, saved); stats.stored += 1;
       stats.withoutWebsite += 1; stats.noWebsite += 1;
       return saved;
+    };
+
+    const reconcileExisting = async (current: ExistingLead, base: EligibleBase, websiteDecision: WebsiteStatusDecision) => {
+      const noWebsite = websiteDecision.status === "no_website";
+      const ownWebsite = websiteDecision.status === "has_website" || websiteDecision.status === "outdated_website";
+      const published = canPublishReconciledGoogleLead(current, websiteDecision);
+      const checkedAt = new Date();
+      await prisma.$transaction([
+        prisma.lead.update({ where: { id: current.id }, data: {
+          googlePlaceId: base.externalPlaceId,
+          googleMapsUrl: base.googleMapsUrl,
+          googleWebsiteCheckAttemptedAt: checkedAt,
+          googleWebsiteVerifiedAt: checkedAt,
+          googleWebsitePresent: noWebsite ? false : ownWebsite ? true : null,
+          website: noWebsite ? null : websiteDecision.normalizedUrl,
+          websiteUrl: noWebsite ? null : websiteDecision.normalizedUrl,
+          normalizedDomain: websiteDecision.normalizedUrl ? new URL(websiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null,
+          websiteStatus: noWebsite ? "NO_OWN_WEBSITE" : ownWebsite ? "OWN_WEBSITE" : "UNKNOWN",
+          websiteStatusReason: websiteDecision.reason,
+          websiteSource: "google_places.websiteUri",
+          leadType: noWebsite ? "NO_WEBSITE" : "IMPROVABLE_WEBSITE",
+          isActive: published ? true : noWebsite ? current.isActive : false,
+          isFiltered: published ? false : noWebsite ? current.isFiltered : true,
+          status: published ? "NEW" : noWebsite ? current.status : current.status === "DO_NOT_CONTACT" ? "DO_NOT_CONTACT" : "FILTERED",
+          filterReason: published ? null : noWebsite ? current.filterReason : websiteDecision.reason,
+          lastVerifiedAt: checkedAt,
+        } }),
+        prisma.leadHistory.create({ data: { leadId: current.id, event: "GOOGLE_WEBSITE_RECONCILED", details: {
+          googlePlaceId: base.externalPlaceId, websiteStatus: websiteDecision.status, published,
+        } } }),
+      ]);
+      return published;
     };
 
     const processPending = async () => {
@@ -142,13 +176,21 @@ export async function runLeadGeneration(runId: string) {
         if (["CLOSED_PERMANENTLY", "PERMANENTLY_CLOSED"].includes(candidate.businessStatus ?? "")) { stats.permanentlyClosed += 1; stats.rejected += 1; continue; }
         if (["CLOSED_TEMPORARILY", "TEMPORARILY_CLOSED"].includes(candidate.businessStatus ?? "")) { stats.temporarilyClosed += 1; stats.rejected += 1; continue; }
         const keys = candidateDedupeKeys(candidate); const prints = fingerprintValues(keys);
-        if (prints.some(({ fingerprint }) => suppressed.has(fingerprint)) || runDedupe.hasOrAdd(keys) || existing.has(keys)) { stats.duplicates += 1; continue; }
+        if (prints.some(({ fingerprint }) => suppressed.has(fingerprint)) || runDedupe.hasOrAdd(keys)) { stats.duplicates += 1; continue; }
+        const existingLead = existing.find(keys);
         const basic = validateCandidateBasics(candidate);
         if (!basic.ok) { stats.rejected += 1; continue; }
         stats.websitesChecked += 1;
         const verification = verifyGoogleNoWebsiteCandidate(candidate);
         logWebsiteStatusDecision(candidate.companyName, verification.decision);
         try {
+          if (existingLead) {
+            const published = await reconcileExisting(existingLead, basic.lead, verification.decision);
+            if (published) { stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1; }
+            else if (verification.accepted) stats.duplicates += 1;
+            else stats.rejected += 1;
+            continue;
+          }
           if (!verification.accepted) { stats.rejected += 1; continue; }
           const qualified = qualifyCandidate(candidate);
           if (!qualified.ok) { stats.rejected += 1; continue; }

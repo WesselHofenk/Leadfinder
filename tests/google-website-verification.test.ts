@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candidate } from "@/lib/leads/eligibility";
-import { selectGoogleBusinessMatch, verifyGoogleNoWebsiteCandidate } from "@/lib/leads/google-verification";
+import { canPublishReconciledGoogleLead, GOOGLE_REVIEW_REQUIRED_REASON, selectGoogleBusinessMatch, verifyGoogleNoWebsiteCandidate } from "@/lib/leads/google-verification";
 
 const pearle: Candidate = {
   externalPlaceId: "ChIJPearleWestwijk",
@@ -42,5 +42,12 @@ describe("Google als leidende websitebron", () => {
     const other = { ...pearle, externalPlaceId: "other", companyName: "Andere Opticien", phoneNumber: "020 999 9999", postalCode: "1188 AA", latitude: 52.31 };
     expect(selectGoogleBusinessMatch(original, [other, exact])?.externalPlaceId).toBe(exact.externalPlaceId);
     expect(selectGoogleBusinessMatch(original, [exact, { ...exact, externalPlaceId: "duplicate" }])).toBeNull();
+  });
+
+  it("herstelt een quarantainerecord alleen wanneer Google echt geen website teruggeeft", () => {
+    const quarantined = { filterReason: GOOGLE_REVIEW_REQUIRED_REASON, websiteSource: "google_reverification_required", isSuppressed: false };
+    expect(canPublishReconciledGoogleLead(quarantined, verifyGoogleNoWebsiteCandidate({ ...pearle, website: undefined }).decision)).toBe(true);
+    expect(canPublishReconciledGoogleLead(quarantined, verifyGoogleNoWebsiteCandidate(pearle).decision)).toBe(false);
+    expect(canPublishReconciledGoogleLead({ ...quarantined, isSuppressed: true }, verifyGoogleNoWebsiteCandidate({ ...pearle, website: undefined }).decision)).toBe(false);
   });
 });

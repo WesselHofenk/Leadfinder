@@ -5,6 +5,15 @@ import { determineWebsiteStatus, type WebsiteStatusDecision } from "./website";
 
 export const GOOGLE_REVIEW_REQUIRED_REASON = "Wacht op verplichte Google Places-websitecontrole";
 
+export function canPublishReconciledGoogleLead(
+  current: { filterReason?: string | null; websiteSource?: string | null; isSuppressed?: boolean },
+  decision: WebsiteStatusDecision,
+) {
+  const automaticallyQuarantined = current.filterReason === GOOGLE_REVIEW_REQUIRED_REASON
+    || current.websiteSource === "google_reverification_required";
+  return decision.status === "no_website" && automaticallyQuarantined && !current.isSuppressed;
+}
+
 export const googleVerifiedNoWebsiteWhere = {
   websiteStatus: "NO_OWN_WEBSITE",
   googleWebsitePresent: false,

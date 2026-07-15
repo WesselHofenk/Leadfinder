@@ -2,7 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { serverEnv } from "@/lib/env";
 import { getPlaceDetails, searchPlaces } from "@/lib/google/places";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
-import { GOOGLE_REVIEW_REQUIRED_REASON, selectGoogleBusinessMatch } from "@/lib/leads/google-verification";
+import { canPublishReconciledGoogleLead, GOOGLE_REVIEW_REQUIRED_REASON, selectGoogleBusinessMatch } from "@/lib/leads/google-verification";
 import { determineWebsiteStatus, logWebsiteStatusDecision } from "@/lib/leads/website";
 import { createGenerationRun, runLeadGeneration } from "./generation";
 import { acquireJobLock } from "./lock";
@@ -48,20 +48,28 @@ export async function reverifyStaleLeads() {
   const lock = await acquireJobLock("reverify");
   if (!lock) return { skipped: true, reason: "Er draait al een herverificatie" };
   try {
+    const staleBefore = new Date(Date.now() - 30 * 86_400_000);
+    const retryBefore = new Date(Date.now() - 7 * 86_400_000);
     const stale = await prisma.lead.findMany({
       where: {
         isSuppressed: false,
         OR: [
-          { googleWebsiteVerifiedAt: null },
-          { googleWebsiteVerifiedAt: { lte: new Date(Date.now() - 30 * 86_400_000) } },
+          { googleWebsiteVerifiedAt: null, googleWebsiteCheckAttemptedAt: null },
+          { googleWebsiteVerifiedAt: null, googleWebsiteCheckAttemptedAt: { lte: retryBefore } },
+          { googleWebsiteVerifiedAt: { lte: staleBefore }, OR: [
+            { googleWebsiteCheckAttemptedAt: null },
+            { googleWebsiteCheckAttemptedAt: { lte: retryBefore } },
+          ] },
         ],
       },
-      take: 20, orderBy: { lastVerifiedAt: "asc" },
+      take: 20, orderBy: [{ googleWebsiteCheckAttemptedAt: "asc" }, { lastVerifiedAt: "asc" }],
     });
     const job = await prisma.scanJob.create({ data: { type: "REVERIFY", status: "RUNNING", startedAt: new Date(), attempt: 1 } });
     let calls = 0, verified = 0, sourceFailures = 0;
     for (const existing of stale) {
       try {
+        const attemptedAt = new Date();
+        await prisma.lead.update({ where: { id: existing.id }, data: { googleWebsiteCheckAttemptedAt: attemptedAt } });
         await reserveBudgetedApiCall({ provider: "GOOGLE_PLACES", dailyLimit: env.GOOGLE_PLACES_DAILY_LIMIT, monthlyLimit: env.GOOGLE_PLACES_MONTHLY_LIMIT, estimatedCostCents: env.GOOGLE_PLACES_ESTIMATED_COST_CENTS });
         calls += 1;
         const candidate = await findBusinessOnGoogle(env.GOOGLE_PLACES_API_KEY, existing);
@@ -87,20 +95,20 @@ export async function reverifyStaleLeads() {
         logWebsiteStatusDecision(candidate.companyName, websiteDecision);
         const noWebsite = websiteDecision.status === "no_website";
         const ownWebsite = websiteDecision.status === "has_website" || websiteDecision.status === "outdated_website";
-        const automaticallyQuarantined = existing.filterReason === GOOGLE_REVIEW_REQUIRED_REASON || existing.websiteSource === "google_reverification_required";
+        const publish = canPublishReconciledGoogleLead(existing, websiteDecision);
         const verifiedAt = new Date();
         await prisma.$transaction([
           prisma.lead.update({ where: { id: existing.id }, data: { companyName: basic.lead.companyName, normalizedCompanyName: basic.lead.normalizedCompanyName, phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber, normalizedPhoneNumber: basic.lead.normalizedPhoneNumber, internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber, email: basic.lead.email, businessStatus: basic.lead.businessStatus, confidenceScore: basic.lead.confidenceScore, confidenceLevel: basic.lead.confidenceLevel,
             website: websiteDecision.normalizedUrl, websiteUrl: websiteDecision.normalizedUrl, normalizedDomain: websiteDecision.normalizedUrl ? new URL(websiteDecision.normalizedUrl).hostname.replace(/^www\./, "") : null,
             websiteStatus: noWebsite ? "NO_OWN_WEBSITE" : ownWebsite ? "OWN_WEBSITE" : "UNKNOWN",
             websiteStatusReason: websiteDecision.reason, websiteSource: "google_places.websiteUri",
-            googlePlaceId: candidate.externalPlaceId, googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: noWebsite ? false : ownWebsite ? true : null,
+            googlePlaceId: candidate.externalPlaceId, googleWebsiteCheckAttemptedAt: verifiedAt, googleWebsiteVerifiedAt: verifiedAt, googleWebsitePresent: noWebsite ? false : ownWebsite ? true : null,
             googleMapsUrl: candidate.googleMapsUrl,
             leadType: noWebsite ? "NO_WEBSITE" : "IMPROVABLE_WEBSITE",
-            isActive: noWebsite ? (automaticallyQuarantined ? true : existing.isActive) : false,
-            isFiltered: noWebsite ? (automaticallyQuarantined ? false : existing.isFiltered) : true,
-            status: noWebsite && automaticallyQuarantined ? "NEW" : noWebsite ? existing.status : existing.status === "DO_NOT_CONTACT" ? "DO_NOT_CONTACT" : "FILTERED",
-            filterReason: noWebsite && automaticallyQuarantined ? null : noWebsite ? existing.filterReason : websiteDecision.reason,
+            isActive: noWebsite ? (publish ? true : existing.isActive) : false,
+            isFiltered: noWebsite ? (publish ? false : existing.isFiltered) : true,
+            status: noWebsite && publish ? "NEW" : noWebsite ? existing.status : existing.status === "DO_NOT_CONTACT" ? "DO_NOT_CONTACT" : "FILTERED",
+            filterReason: noWebsite && publish ? null : noWebsite ? existing.filterReason : websiteDecision.reason,
             lastVerifiedAt: verifiedAt } }),
           prisma.leadHistory.create({ data: { leadId: existing.id, event: "GOOGLE_WEBSITE_VERIFIED", details: { googlePlaceId: candidate.externalPlaceId, noWebsite } } }),
         ]);
