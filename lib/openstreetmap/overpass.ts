@@ -202,13 +202,10 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const strategy = params.strategy ?? "node";
   const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
-  const explicitNoWebsite = '^(no|none|nee|geen|n\\.v\\.t\\.|nvt)$';
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
-  const statements = filters.flatMap((filter) => [
-    `${around}${filter}[name]${contactFilter}${noOfficialWebsite};`,
-    `${around}${filter}[name]${contactFilter}["website"~"${explicitNoWebsite}",i];`,
-    `${around}${filter}[name]${contactFilter}["contact:website"~"${explicitNoWebsite}",i];`,
-  ]).join("");
+  const statements = filters
+    .map((filter) => `${around}${filter}[name]${contactFilter}${noOfficialWebsite};`)
+    .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
