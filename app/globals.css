@@ -133,8 +133,8 @@ tbody tr:last-child td { border-bottom:0; }
 .generation-cancel { width:100%; }
 .success-message { margin:0; padding:11px 13px; border-radius:9px; font-size:13px; background:var(--success-bg); color:var(--success-ink); border:1px solid var(--success-line); }
 .bars { display:grid; gap:14px; }
-.pipeline-grid { display:grid; grid-template-columns:repeat(5,minmax(240px,1fr)); gap:12px; overflow-x:auto; padding-bottom:10px; }
-.pipeline-column { background:var(--pipeline); border:1px solid var(--pipeline-line); border-radius:13px; padding:10px; min-height:460px; }
+.pipeline-grid { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(250px,1fr); gap:12px; width:100%; max-width:100%; overflow-x:auto; overscroll-behavior-inline:contain; scrollbar-gutter:stable; padding:2px 2px 12px; }
+.pipeline-column { background:var(--pipeline); border:1px solid var(--pipeline-line); border-radius:13px; padding:10px; min-height:460px; min-width:0; }
 .pipeline-title { display:flex; align-items:center; justify-content:space-between; padding:5px 5px 12px; font-size:13px; }
 .pipeline-list { display:grid; gap:9px; }
 .pipeline-card { background:var(--surface-raised); border:1px solid var(--line); border-radius:10px; padding:13px; box-shadow:0 1px 2px var(--shadow); }

@@ -45,7 +45,7 @@ export default async function LeadsPage({
         </div>
         <div className="actions">
           <GenerationButton />
-          <Link className="button button-secondary" href="/leads?filtered=yes&status=NEEDS_REVIEW">Google-controle nodig</Link>
+          <Link className="button button-secondary" href="/leads?filtered=yes">Google-controle nodig</Link>
           <a
             className="button button-secondary"
             href={`/api/export?${exportQs}`}
@@ -126,7 +126,7 @@ export default async function LeadsPage({
           <Select label="Telefoon" name="hasPhone" value={filters.hasPhone} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
           <Select label="E-mail" name="hasEmail" value={filters.hasEmail} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
           <Select label="Sorteren" name="sort" value={filters.sort} options={[["newest","Nieuwste lead"],["confidence_desc","Hoogste website-confidence"],["opportunity_desc","Hoogste opportunity"],["oldest","Oudste lead"],["checked_desc","Laatst gecontroleerd"],["city","Plaats"],["category","Branche"],["status","Pipelinestatus"],["contacts_desc","Meeste contactmogelijkheden"]]}/>
-          <Select label="Gebeld" name="called" value={filters.called} options={[["yes", "Ja"], ["no", "Nee"]]}/>
+          <Select label="Opgevolgd" name="called" value={filters.called} options={[["yes", "Ja"], ["no", "Nee"]]}/>
           <div className="field"><label htmlFor="foundAfter">Gevonden vanaf</label><input className="input" type="date" id="foundAfter" name="foundAfter" defaultValue={raw.foundAfter as string | undefined}/></div>
           <div className="field"><label htmlFor="foundBefore">Gevonden t/m</label><input className="input" type="date" id="foundBefore" name="foundBefore" defaultValue={raw.foundBefore as string | undefined}/></div>
           <Select
@@ -386,7 +386,7 @@ const filterLabels: Record<string, string> = {
   q: "Zoeken", country: "Land", region: "Regio", municipality: "Gemeente", city: "Plaats", postalCode: "Postcode",
   category: "Branche", status: "Status", leadType: "Leadtype", websiteStatus: "Website-status", source: "Bron",
   businessStatus: "Bedrijfsstatus", filtered: "Pipeline", hasPhone: "Telefoon", hasEmail: "E-mail", minScore: "Min. score",
-  maxScore: "Max. score", minConfidence: "Min. confidence", called: "Gebeld", issue: "Websiteprobleem", foundAfter: "Vanaf", foundBefore: "Tot",
+  maxScore: "Max. score", minConfidence: "Min. confidence", called: "Opgevolgd", issue: "Websiteprobleem", foundAfter: "Vanaf", foundBefore: "Tot",
 };
 
 function filterLabel(key: string) {

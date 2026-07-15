@@ -40,7 +40,7 @@ export async function reverifyStaleLeads() {
           website: result.website, websiteUrl: result.website, normalizedDomain: result.website ? new URL(result.website).hostname.replace(/^www\./, "") : null,
           websiteStatus: result.status, websiteStatusReason: result.reason, websiteConfidence: result.confidence,
           lastVerifiedAt: checkedAt, isActive: hasWebsite ? false : lead.isActive,
-          isFiltered: hasWebsite ? true : lead.isFiltered, status: hasWebsite ? "HAS_WEBSITE" : lead.status,
+          isFiltered: hasWebsite ? true : lead.isFiltered,
           filterReason: hasWebsite ? "Eigen website gevonden bij lokale hercontrole" : lead.filterReason,
         } }),
         prisma.verificationEvidence.createMany({ data: result.evidence.map((evidence) => ({ leadId: lead.id, ...evidence, checkedAt })) }),

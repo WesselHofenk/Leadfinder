@@ -49,7 +49,6 @@ export async function runWebsiteAnalysisJob() {
           websiteConfidence: decision.status === "unknown" ? 55 : 95,
           website: decision.normalizedUrl, websiteUrl: decision.normalizedUrl, opportunityScore: result.opportunityScore, conversionQualityScore: result.conversionQualityScore,
           lastWebsiteAnalysisAt: new Date(), isActive: accepted, isFiltered: !accepted,
-          status: accepted && job.lead.status === "FILTERED" ? "NEW" : !accepted && job.lead.status === "NEW" ? "FILTERED" : job.lead.status,
           filterReason: accepted ? result.reasons[0]?.label ?? decision.reason : decision.reason,
         } }),
         prisma.scanJob.update({ where: { id: job.id }, data: { status: "COMPLETE", finishedAt: new Date(), recordsFound: 1, recordsStored: accepted ? 1 : 0 } }),

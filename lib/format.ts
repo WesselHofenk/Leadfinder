@@ -1,3 +1,5 @@
+import { pipelineStatusLabels } from "@/lib/leads/pipeline";
+
 export const dateFormatter = new Intl.DateTimeFormat("nl-NL", { day: "2-digit", month: "short", year: "numeric" });
 export const numberFormatter = new Intl.NumberFormat("nl-NL");
 export const currencyFormatter = new Intl.NumberFormat("nl-NL", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
@@ -8,10 +10,7 @@ export const websiteStatusLabels: Record<string, string> = {
   OUTDATED:"Verouderd (oud)", IMPROVABLE:"Verbeterbaar (oud)",
 };
 export const statusLabels: Record<string, string> = {
-  NEW:"Nieuw", NEEDS_REVIEW:"Te controleren", VERIFIED:"Geverifieerd", CALLED:"Gebeld", NO_ANSWER:"Geen gehoor", CALL_BACK:"Terugbellen",
-  INTERESTED:"Geïnteresseerd", APPOINTMENT:"Afspraak", QUOTE_SENT:"Offerte verstuurd", WON:"Gewonnen", INVOICED:"Gefactureerd",
-  LOST:"Verloren", REJECTED:"Afgewezen", HAS_WEBSITE:"Heeft website", PERMANENTLY_CLOSED:"Permanent gesloten",
-  DO_NOT_CONTACT:"Niet benaderen", FILTERED:"Gefilterd", PENDING:"Gepland", RUNNING:"Bezig", COMPLETE:"Voltooid", FAILED:"Mislukt",
+  ...pipelineStatusLabels, PENDING:"Gepland", RUNNING:"Bezig", COMPLETE:"Voltooid", PARTIALLY_COMPLETED:"Gedeeltelijk afgerond", FAILED:"Mislukt",
   CANCELLED:"Geannuleerd", PAUSED:"Gepauzeerd", NO_WEBSITE:"Geen website", OUTDATED_WEBSITE:"Verouderde website",
   IMPROVABLE_WEBSITE:"Website verbeterbaar", OPERATIONAL:"Operationeel", UNKNOWN:"Status onbekend", CLOSED_TEMPORARILY:"Tijdelijk gesloten",
   CLOSED_PERMANENTLY:"Permanent gesloten", FUTURE_OPENING:"Opent later", GOOGLE_PLACES:"Google Places (historisch)", OPENSTREETMAP:"OpenStreetMap",

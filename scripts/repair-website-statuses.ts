@@ -54,7 +54,6 @@ async function main() {
           websiteStatus: nextWebsiteStatus, websiteStatusReason: reason, websiteConfidence: websiteFound ? verification.confidence : Math.min(55, verification.confidence),
           websiteSource: websiteFound ? "local_domain_repair" : "awaiting_google_manual_review",
           isActive: false, isFiltered: true, filterReason: reason,
-          status: websiteFound ? "HAS_WEBSITE" : ["NEW", "FILTERED", "NEEDS_REVIEW"].includes(lead.status) ? "NEEDS_REVIEW" : lead.status,
           lastVerifiedAt: new Date(),
         } });
         await tx.verificationEvidence.createMany({ data: verification.evidence.map((item) => ({ leadId: lead.id, ...item })) });

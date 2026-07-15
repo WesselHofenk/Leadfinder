@@ -7,7 +7,7 @@ import { getGoogleBusinessUrl } from "./google-business-url";
 import { isNonOwnedWebsite, normalizeWebsite } from "./website";
 
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
-  const showFiltered = filters.filtered === "yes" || filters.status === "FILTERED";
+  const showFiltered = filters.filtered === "yes";
   const where: Prisma.LeadWhereInput = { isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
   if (!filters.businessStatus && !showFiltered) where.businessStatus = { in: ["OPERATIONAL", "UNKNOWN", "FUTURE_OPENING"] };
   if (filters.q) where.OR = ["companyName","contactPersonName","email","phoneNumber","normalizedPhoneNumber","city","postalCode","category"].map((field) => ({ [field]: { contains: filters.q } })) as Prisma.LeadWhereInput[];
@@ -31,8 +31,8 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   }
   if (filters.minScore !== undefined || filters.maxScore !== undefined) where.opportunityScore = { ...(filters.minScore !== undefined ? { gte: filters.minScore } : {}), ...(filters.maxScore !== undefined ? { lte: filters.maxScore } : {}) };
   if (filters.minConfidence !== undefined) where.websiteConfidence = { gte: filters.minConfidence };
-  if (filters.called === "yes") where.status = { in: ["CALLED","NO_ANSWER","CALL_BACK","INTERESTED","APPOINTMENT","QUOTE_SENT","WON","INVOICED"] };
-  if (filters.called === "no") where.status = { in: ["NEW","NEEDS_REVIEW","VERIFIED"] };
+  if (filters.called === "yes") where.status = { in: ["VOICEMAIL","CALL_BACK","INTERESTED","APPOINTMENT","QUOTE_SENT","CUSTOMER"] };
+  if (filters.called === "no") where.status = "NEW";
   if (filters.hasPhone === "yes") where.phoneNumber = { not: "" };
   if (filters.hasPhone === "no") where.phoneNumber = "";
   if (filters.hasEmail === "yes") where.email = { not: null };
@@ -68,15 +68,13 @@ export async function listLeads(filters: LeadFilters) {
 
 export async function updateManualLeadFields(leadId: string, userId: string, input: { status: LeadStatus; notes?: string; filterReason?: string }) {
   return prisma.$transaction(async (tx) => {
-    const current = await tx.lead.findUniqueOrThrow({ where: { id: leadId } });
-    const pipelineFiltered = ["FILTERED","REJECTED","HAS_WEBSITE","PERMANENTLY_CLOSED"].includes(input.status);
-    const blocked = input.status === "DO_NOT_CONTACT";
-    const websiteConfirmed = current.websiteStatus === "NO_WEBSITE_CONFIRMED" && current.googleWebsitePresent === false && Boolean(current.googleWebsiteVerifiedAt);
-    const filtered = pipelineFiltered || blocked || !websiteConfirmed;
-    const filterReason = !websiteConfirmed
-      ? current.filterReason || "Activering geblokkeerd: actuele Google-controle ontbreekt."
-      : filtered ? (input.filterReason || "Handmatig gefilterd") : null;
-    const lead = await tx.lead.update({ where: { id: leadId }, data: { status: input.status, ...(input.notes !== undefined ? { notes: input.notes } : {}), isFiltered: filtered, isActive: !filtered, doNotContact: blocked, filterReason, lastContactAt: ["CALLED","NO_ANSWER","CALL_BACK","INTERESTED"].includes(input.status) ? new Date() : undefined } });
+    await tx.lead.findUniqueOrThrow({ where: { id: leadId } });
+    const lead = await tx.lead.update({ where: { id: leadId }, data: {
+      status: input.status,
+      ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      ...(input.filterReason !== undefined ? { filterReason: input.filterReason.trim() || null } : {}),
+      lastContactAt: ["VOICEMAIL","CALL_BACK","INTERESTED"].includes(input.status) ? new Date() : undefined,
+    } });
     await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "MANUAL_FIELDS_UPDATED", details: { status: input.status } } });
     await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "STATUS_CHANGED", summary: `Status gewijzigd naar ${input.status}` } });
     if (input.notes?.trim()) { await tx.leadNote.create({ data: { leadId, userId, content: input.notes } }); await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "NOTE_ADDED", summary: "Notitie toegevoegd" } }); }
@@ -94,13 +92,12 @@ export async function reviewLeadWebsite(
     const checkedAt = new Date();
     const evidenceUrl = getGoogleBusinessUrl(lead);
     if (input.websiteReview === "NO_WEBSITE_CONFIRMED") {
-      const nextStatus = ["NEW", "NEEDS_REVIEW", "FILTERED"].includes(lead.status) ? "VERIFIED" : lead.status;
       const reason = "Handmatig op het actuele Google-bedrijfsprofiel gecontroleerd: er was geen websiteknop of eigen domein zichtbaar.";
       const updated = await tx.lead.update({ where: { id: leadId }, data: {
         website: null, websiteUrl: null, normalizedDomain: null, websiteStatus: "NO_WEBSITE_CONFIRMED",
         websiteStatusReason: reason, websiteConfidence: 100, websiteSource: "google_manual_review",
         googleWebsiteCheckAttemptedAt: checkedAt, googleWebsiteVerifiedAt: checkedAt, googleWebsitePresent: false,
-        lastVerifiedAt: checkedAt, isActive: true, isFiltered: false, filterReason: null, status: nextStatus,
+        lastVerifiedAt: checkedAt, isActive: true, isFiltered: false, filterReason: null,
       } });
       await tx.verificationEvidence.create({ data: { leadId, checkType: "GOOGLE_BUSINESS_PROFILE_MANUAL", result: "NO_WEBSITE", confidence: 100, evidenceUrl, shortExplanation: reason } });
       await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "WEBSITE_VERIFIED", summary: "Google handmatig gecontroleerd: geen website", details: { websiteStatus: "NO_WEBSITE_CONFIRMED" } } });
@@ -116,7 +113,7 @@ export async function reviewLeadWebsite(
       website: websiteUrl, websiteUrl, normalizedDomain, websiteStatus: "WEBSITE_FOUND", websiteStatusReason: reason,
       websiteConfidence: 100, websiteSource: "google_manual_review", googleWebsiteCheckAttemptedAt: checkedAt,
       googleWebsiteVerifiedAt: checkedAt, googleWebsitePresent: true, lastVerifiedAt: checkedAt,
-      isActive: false, isFiltered: true, filterReason: reason, status: "HAS_WEBSITE",
+      isActive: false, isFiltered: true, filterReason: reason,
     } });
     await tx.leadExclusion.upsert({ where: { identityKey: `external:${lead.externalPlaceId}` }, create: {
       identityKey: `external:${lead.externalPlaceId}`, source: lead.source, sourceRecordId: lead.externalPlaceId,
@@ -140,7 +137,7 @@ export async function suppressLead(leadId: string, userId: string, reason = "Han
       nameCityAddress: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.streetAddress)}`,
       nameCityCategory: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.category)}` };
     for (const { fingerprint } of fingerprintValues(keys)) await tx.suppressedLead.upsert({ where: { fingerprint }, create: { fingerprint, reason }, update: { reason } });
-    const updated = await tx.lead.update({ where: { id: leadId }, data: { isSuppressed: true, isActive: false, isFiltered: true, status: "FILTERED", filterReason: reason } });
+    const updated = await tx.lead.update({ where: { id: leadId }, data: { isSuppressed: true, isActive: false, isFiltered: true, filterReason: reason } });
     await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "SUPPRESSED", details: { reason } } });
     await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "EXCLUDED", summary: reason } });
     return updated;

@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { pipelineStatuses } from "./pipeline";
 
-export const leadStatuses = ["NEW","NEEDS_REVIEW","VERIFIED","CALLED","NO_ANSWER","CALL_BACK","INTERESTED","APPOINTMENT","QUOTE_SENT","WON","INVOICED","LOST","REJECTED","HAS_WEBSITE","PERMANENTLY_CLOSED","DO_NOT_CONTACT","FILTERED"] as const;
+export const leadStatuses = pipelineStatuses;
 export const websiteStatuses = ["NO_WEBSITE_CONFIRMED","NO_WEBSITE_LIKELY","SOCIAL_ONLY","WEBSITE_FOUND","WEBSITE_OUTDATED","WEBSITE_BROKEN","MANUAL_REVIEW_REQUIRED","UNKNOWN"] as const;
 export const sortOptions = ["confidence_desc","opportunity_desc","newest","oldest","checked_desc","city","category","status","contacts_desc"] as const;
 

@@ -281,7 +281,7 @@ async function storeLead(candidate: Candidate, verification: WebsiteVerification
     source: "OPENSTREETMAP",
     confidenceScore: basic.lead.confidenceScore,
     confidenceLevel: basic.lead.confidenceLevel,
-    status: reviewOnly ? "NEEDS_REVIEW" : "NEW",
+    status: "NEW",
     isActive: !reviewOnly,
     isFiltered: reviewOnly,
     filterReason: reviewOnly ? "Handmatige controle van het actuele bedrijfsprofiel is vereist." : null,
