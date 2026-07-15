@@ -67,6 +67,7 @@ enum JobStatus {
   COMPLETE
   FAILED
   CANCELLED
+  TIMED_OUT
 }
 
 enum JobType {
@@ -242,9 +243,15 @@ model GenerationRun {
   apiErrors          Json        @default("[]")
   exhausted          Boolean     @default(false)
   cancelRequested    Boolean     @default(false)
+  progress           Int         @default(0)
+  message            String?
+  heartbeatAt        DateTime?
+  processedSegments  Int         @default(0)
+  existingLeads      Int         @default(0)
   currentPhase       String      @default("Wachten")
   currentSource      String?
   currentRegion      String?
+  currentTile        String?
   stopReason         String?
   warnings           Json        @default("[]")
   startedAt          DateTime?
@@ -254,6 +261,7 @@ model GenerationRun {
   logs               SourceLog[]
 
   @@index([status, createdAt])
+  @@index([status, updatedAt])
 }
 
 model WebsiteAnalysis {
@@ -416,6 +424,8 @@ model SearchCombination {
   validLeads      Int       @default(0)
   lastUsedAt      DateTime?
   lastError       String?
+  tileCursor      Int       @default(0)
+  lastTile        String?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
@@ -461,18 +471,21 @@ model LeadExclusion {
 }
 
 model SourceRecord {
-  id                String   @id @default(cuid())
+  id                String    @id @default(cuid())
   leadId            String?
-  lead              Lead?    @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  lead              Lead?     @relation(fields: [leadId], references: [id], onDelete: SetNull)
   source            String
   sourceRecordId    String
   sourceUrl         String?
-  fetchedAt         DateTime @default(now())
+  fetchedAt         DateTime  @default(now())
   rawName           String?
   rawAddress        String?
   rawPhone          String?
   rawWebsite        String?
   rawBusinessStatus String?
+  decision          String?
+  reasonCode        String?
+  processedAt       DateTime?
   payload           Json?
 
   @@unique([source, sourceRecordId])

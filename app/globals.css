@@ -120,6 +120,8 @@ tbody tr:last-child td { border-bottom:0; }
 .timeline li:before { content:""; position:absolute; width:8px; height:8px; background:var(--brand); border-radius:50%; left:-5px; top:4px; }
 .progress { height:8px; border-radius:99px; background:var(--badge); overflow:hidden; }
 .progress span { height:100%; display:block; background:var(--brand); border-radius:99px; }
+.progress-active span { min-width:12%; animation:generation-pulse 1.25s ease-in-out infinite alternate; }
+@keyframes generation-pulse { from { opacity:.45; transform:translateX(0); } to { opacity:1; transform:translateX(10px); } }
 .generation-control { position:relative; display:grid; gap:8px; min-width:210px; }
 .generation-progress { position:absolute; right:0; top:48px; z-index:20; width:min(380px,calc(100vw - 32px)); padding:14px; display:grid; gap:10px; background:var(--surface-raised); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px var(--shadow); }
 .generation-progress > div:not(.progress) { display:flex; justify-content:space-between; gap:18px; font-size:12px; }

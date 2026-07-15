@@ -9,12 +9,14 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   readonly enabled: boolean;
   private endpoints: string[];
   private timeoutMs: number;
+  private totalTimeoutMs: number;
 
   constructor() {
     const env = serverEnv();
     this.enabled = env.OSM_SOURCE_ENABLED;
     this.endpoints = env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean);
     this.timeoutMs = env.OVERPASS_TIMEOUT_MS;
+    this.totalTimeoutMs = env.OVERPASS_TOTAL_TIMEOUT_MS;
   }
 
   async searchBusinesses(input: SourceSearch) {
@@ -24,9 +26,14 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       latitude: input.latitude,
       longitude: input.longitude,
       radius: input.radius,
+      category: input.category,
+      tileCursor: input.tileCursor,
       timeoutMs: this.timeoutMs,
+      totalTimeoutMs: this.totalTimeoutMs,
+      signal: input.signal,
+      onEvent: input.onEvent,
     });
-    return { candidates: result.candidates, source: this.id, sourceUrl: result.endpoint, warnings: [] };
+    return { candidates: result.candidates, source: this.id, sourceUrl: result.endpoint, warnings: [], tile: result.tile.id, queryType: result.queryType };
   }
 }
 

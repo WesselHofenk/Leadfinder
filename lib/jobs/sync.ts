@@ -1,15 +1,19 @@
 import { prisma } from "@/lib/prisma";
 import type { Candidate } from "@/lib/leads/eligibility";
 import { verifyWebsiteCandidate } from "@/lib/leads/website-verification";
-import { createGenerationRun, runLeadGeneration } from "./generation";
+import { createGenerationRun, markStaleGenerationRuns, processGenerationBatch } from "./generation";
 import { acquireJobLock } from "./lock";
 
 export async function runDiscoveryJob() {
+  await markStaleGenerationRuns();
   const active = await prisma.generationRun.findFirst({ where: { status: { in: ["PENDING", "RUNNING"] } } });
-  if (active) return { skipped: true, reason: "Er draait al een leadgeneratie", runId: active.id };
-  const run = await createGenerationRun();
-  await runLeadGeneration(run.id);
-  const finished = await prisma.generationRun.findUniqueOrThrow({ where: { id: run.id } });
+  const run = active ?? await createGenerationRun();
+  const batch = await processGenerationBatch(run.id);
+  const finished = batch.status === "RUNNING" ? await prisma.generationRun.update({ where: { id: run.id }, data: {
+    status: "COMPLETE", progress: 100, currentPhase: "Automatische batch voltooid", finishedAt: new Date(),
+    stopReason: "De dagelijkse serverless zoekbatch is afgerond; een volgende run gebruikt een nieuw segment.",
+    message: "De dagelijkse zoekbatch is veilig en zonder langlopende achtergrondtaak afgerond.",
+  } }) : batch;
   return { skipped: false, runId: run.id, status: finished.status, found: finished.candidatesFound, stored: finished.stored, sourceFailures: finished.sourceFailures };
 }
 

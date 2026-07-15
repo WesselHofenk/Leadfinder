@@ -59,7 +59,7 @@ export function candidateDomains(candidate: Candidate) {
     companyWords.filter((token) => !weakNameTokens.has(token)).join(""), companyWords.join(""),
   ].filter((root): root is string => Boolean(root && root.length >= 4 && root.length <= 63 && /[a-z]/.test(root)));
   const suffixes = countrySuffix === "nl" ? ["nl", "com"] : ["be", "com"];
-  return [...new Set(roots.flatMap((root) => suffixes.map((suffix) => `${root}.${suffix}`)))].slice(0, 8);
+  return [...new Set(roots.flatMap((root) => suffixes.map((suffix) => `${root}.${suffix}`)))].slice(0, 4);
 }
 
 function dnsAbsent(error: unknown) {
@@ -68,23 +68,58 @@ function dnsAbsent(error: unknown) {
 }
 
 type DomainProbe = { result: "found" | "absent" | "unknown"; website?: string };
+const probeCache = new Map<string, { expiresAt: number; value: DomainProbe }>();
 
-async function probeDomain(domain: string): Promise<DomainProbe> {
-  try { await resolveAny(domain); }
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timeout")), timeoutMs); })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+
+async function requestWithRedirects(url: string, method: "HEAD" | "GET", fetchImpl: typeof fetch, maxRedirects = 3) {
+  let current = url;
+  for (let redirect = 0; redirect <= maxRedirects; redirect += 1) {
+    const response = await fetchImpl(current, {
+      method, redirect: "manual", signal: AbortSignal.timeout(2_500),
+      headers: { "User-Agent": "LeadfinderSitora/4.0 local-website-verification" },
+    });
+    if (response.status < 300 || response.status >= 400) return response;
+    const location = response.headers.get("location");
+    if (!location || redirect === maxRedirects) return response;
+    current = new URL(location, current).toString();
+  }
+  throw new Error("redirect_limit");
+}
+
+export async function probeDomain(domain: string, options: { fetchImpl?: typeof fetch; dnsLookup?: typeof resolveAny; now?: () => number } = {}): Promise<DomainProbe> {
+  const now = options.now?.() ?? Date.now();
+  const cached = probeCache.get(domain);
+  if (cached && cached.expiresAt > now) return cached.value;
+  const remember = (value: DomainProbe, ttlMs: number) => { probeCache.set(domain, { value, expiresAt: now + ttlMs }); return value; };
+  try { await withTimeout((options.dnsLookup ?? resolveAny)(domain), 2_500); }
   catch (error) { return { result: dnsAbsent(error) ? "absent" : "unknown" }; }
+  const fetchImpl = options.fetchImpl ?? fetch;
   for (const protocol of ["https", "http"] as const) {
     try {
-      const response = await fetch(`${protocol}://${domain}`, {
-        method: "GET", redirect: "follow", signal: AbortSignal.timeout(6_000),
-        headers: { "User-Agent": "LeadfinderSitora/3.1 local-website-verification" },
-      });
+      let response = await requestWithRedirects(`${protocol}://${domain}`, "HEAD", fetchImpl);
+      if (response.status === 405) response = await requestWithRedirects(`${protocol}://${domain}`, "GET", fetchImpl);
       if (response.status === 403 || response.status === 429 || response.status >= 500) continue;
-      // A plausible company domain that resolves and answers must stay out of the no-website list.
-      return { result: "found", website: normalizeWebsite(response.url) ?? `${protocol}://${domain}` };
+      if (response.status < 400) return remember({ result: "found", website: normalizeWebsite(response.url) ?? `${protocol}://${domain}` }, 12 * 60 * 60_000);
     } catch { /* Try the other protocol. */ }
   }
-  return { result: "unknown" };
+  return remember({ result: "unknown" }, 10 * 60_000);
 }
+
+async function mapLimited<T, R>(values: T[], concurrency: number, mapper: (value: T) => Promise<R>) {
+  const results = new Array<R>(values.length); let cursor = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (cursor < values.length) { const index = cursor; cursor += 1; results[index] = await mapper(values[index]); }
+  }));
+  return results;
+}
+
+export function clearDomainProbeCache() { probeCache.clear(); }
 
 export function isConfirmedNoWebsite(status: LocalWebsiteStatus | string) {
   return status === "NO_WEBSITE_CONFIRMED";
@@ -112,7 +147,7 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
     reason: "Er kon geen verantwoord domeinvoorstel worden opgebouwd; controleer Google handmatig.",
     evidence: [...externalEvidence, { checkType: "DOMAIN_CANDIDATES", result: "UNAVAILABLE", confidence: 40, shortExplanation: "Google-bedrijfsprofiel moet handmatig worden gecontroleerd." }],
   };
-  const checks = await Promise.all(domains.map(async (domain) => ({ domain, probe: await probeDomain(domain) })));
+  const checks = await mapLimited(domains, 3, async (domain) => ({ domain, probe: await probeDomain(domain) }));
   const found = checks.find((check) => check.probe.result === "found");
   if (found) return {
     status: "WEBSITE_FOUND", confidence: 92, website: found.probe.website ?? `https://${found.domain}`,

@@ -2,11 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:dns/promises",()=>({resolveAny:vi.fn()}));
 import { resolveAny } from "node:dns/promises";
-import { candidateDomains, isConfirmedNoWebsite, verifyWebsiteCandidate } from "@/lib/leads/website-verification";
+import { candidateDomains, clearDomainProbeCache, isConfirmedNoWebsite, verifyWebsiteCandidate } from "@/lib/leads/website-verification";
 import type { Candidate } from "@/lib/leads/eligibility";
 
 const base:Candidate={externalPlaceId:"osm:node/1",source:"OPENSTREETMAP",companyName:"By Yoel",phoneNumber:"0201234567",country:"NL",category:"salon",city:"Abcoude",postalCode:"1391AA",streetAddress:"Kerkstraat 1",latitude:52.2,longitude:4.9,googleMapsUrl:"https://www.openstreetmap.org/node/1"};
-describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();vi.mocked(resolveAny).mockReset();vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("not found"),{code:"ENOTFOUND"}));delete process.env.WEBSITE_CANDIDATE_DNS_CHECK;});
+describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();clearDomainProbeCache();vi.mocked(resolveAny).mockReset();vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("not found"),{code:"ENOTFOUND"}));delete process.env.WEBSITE_CANDIDATE_DNS_CHECK;});
   it("herkent een eigen website rechtstreeks",async()=>expect(await verifyWebsiteCandidate({...base,website:"https://byyoel.nl"})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://byyoel.nl"}));
   it("herkent een domein zonder protocol",async()=>expect(await verifyWebsiteCandidate({...base,website:"byyoel.nl"})).toMatchObject({status:"WEBSITE_FOUND",confidence:100}));
   it("classificeert alleen social als SOCIAL_ONLY maar nog niet als actieve lead",async()=>expect(await verifyWebsiteCandidate({...base,websiteFields:["https://instagram.com/byyoel"]})).toMatchObject({status:"SOCIAL_ONLY",confidence:60}));

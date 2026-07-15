@@ -1,4 +1,5 @@
 import type { Candidate } from "@/lib/leads/eligibility";
+import type { OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 export type SourceSearch = {
   country: string;
@@ -7,6 +8,9 @@ export type SourceSearch = {
   longitude: number;
   radius: number;
   category?: string;
+  tileCursor?: number;
+  signal?: AbortSignal;
+  onEvent?: (event: OverpassEvent) => void | Promise<void>;
 };
 
 export type SourceSearchResult = {
@@ -14,6 +18,8 @@ export type SourceSearchResult = {
   source: string;
   sourceUrl?: string;
   warnings: string[];
+  tile?: string;
+  queryType?: string;
 };
 
 export interface BusinessSourceAdapter {
