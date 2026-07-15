@@ -21,6 +21,7 @@ enum LeadStatus {
   APPOINTMENT
   QUOTE_SENT
   CUSTOMER
+  NOT_INTERESTED
 }
 
 enum LeadType {

@@ -5,7 +5,7 @@ import { GenerationButton } from "@/components/generation-button";
 import { prisma } from "@/lib/prisma";
 import { currencyFormatter, dateFormatter, numberFormatter, statusLabels, websiteStatusLabels } from "@/lib/format";
 
-const active = { isActive:true, isFiltered:false, isSuppressed:false, websiteStatus:"NO_WEBSITE_CONFIRMED", googleWebsitePresent:false, googleWebsiteVerifiedAt:{not:null} } as const;
+const active = { isActive:true, isFiltered:false, isSuppressed:false, status:{not:"NOT_INTERESTED"}, websiteStatus:"NO_WEBSITE_CONFIRMED", googleWebsitePresent:false, googleWebsiteVerifiedAt:{not:null} } as const;
 const reviewQueue = { isFiltered:true, isSuppressed:false, websiteStatus:{in:["NO_WEBSITE_LIKELY","SOCIAL_ONLY","MANUAL_REVIEW_REQUIRED","UNKNOWN"]} } satisfies Prisma.LeadWhereInput;
 export default async function DashboardPage() {
   const start=new Date();start.setHours(0,0,0,0);

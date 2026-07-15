@@ -9,6 +9,7 @@ import { isNonOwnedWebsite, normalizeWebsite } from "./website";
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   const showFiltered = filters.filtered === "yes";
   const where: Prisma.LeadWhereInput = { isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
+  if (!filters.status && !showFiltered) where.status = { not: "NOT_INTERESTED" };
   if (!filters.businessStatus && !showFiltered) where.businessStatus = { in: ["OPERATIONAL", "UNKNOWN", "FUTURE_OPENING"] };
   if (filters.q) where.OR = ["companyName","contactPersonName","email","phoneNumber","normalizedPhoneNumber","city","postalCode","category"].map((field) => ({ [field]: { contains: filters.q } })) as Prisma.LeadWhereInput[];
   if (filters.country) where.country = filters.country;

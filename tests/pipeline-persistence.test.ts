@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { pipelineStatuses } from "@/lib/leads/pipeline";
 
 const { leadState, tx, prismaMock } = vi.hoisted(() => {
-  const leadState = { id: "lead-1", companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, status: "NEW" };
+  const leadState = { id: "lead-1", companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true, status: "NEW" };
   const tx = {
     lead: {
       findUniqueOrThrow: vi.fn(async () => leadState),
@@ -25,8 +25,8 @@ describe("persistente pipelinewijzigingen", () => {
     for (const status of pipelineStatuses) {
       await updateManualLeadFields("lead-1", "user-1", { status });
       expect(leadState.status).toBe(status);
-      expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91 });
+      expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true });
     }
-    expect(tx.lead.update).toHaveBeenCalledTimes(7);
+    expect(tx.lead.update).toHaveBeenCalledTimes(8);
   });
 });

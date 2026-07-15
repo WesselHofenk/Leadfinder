@@ -18,20 +18,32 @@ import PipelinePage from "@/app/(app)/pipeline/page";
 describe("pipelineweergave", () => {
   afterEach(() => cleanup());
 
-  it("toont exact zeven kolommen en overal dezelfde zeven dropdownopties", async () => {
+  it("toont exact acht kolommen en overal dezelfde acht dropdownopties", async () => {
     const view = render(await PipelinePage());
     expect([...view.container.querySelectorAll(".pipeline-title strong")].map((node) => node.textContent)).toEqual(pipelineStages.map(({ label }) => label));
     const dropdowns = [...view.container.querySelectorAll<HTMLSelectElement>('select[aria-label="Pipelinefase"]')];
-    expect(dropdowns).toHaveLength(7);
+    expect(dropdowns).toHaveLength(8);
     for (const dropdown of dropdowns) expect([...dropdown.options].map((option) => option.text)).toEqual(pipelineStages.map(({ label }) => label));
-    expect(view.container.querySelectorAll(".pipeline-column")).toHaveLength(7);
-    expect([...view.container.querySelectorAll(".pipeline-title .badge")].map((node) => node.textContent)).toEqual(["1","1","1","1","1","1","1"]);
+    expect(view.container.querySelectorAll(".pipeline-column")).toHaveLength(8);
+    expect([...view.container.querySelectorAll(".pipeline-title .badge")].map((node) => node.textContent)).toEqual(["1","1","1","1","1","1","1","1"]);
+    expect([...view.container.querySelectorAll(".pipeline-title strong")].at(-1)?.textContent).toBe("Niet geïnteresseerd");
     expect(view.container.textContent).not.toMatch(/Te controleren|Geverifieerd|Gebeld|Geen gehoor|Gewonnen/);
   });
 
-  it("houdt de zeven kolommen horizontaal scrollbaar op kleine schermen", () => {
+  it("houdt alle acht kolommen bereikbaar op desktop, tablet en mobiel", () => {
     const css = readFileSync(resolve("app/globals.css"), "utf8");
     expect(css).toMatch(/\.pipeline-grid\s*\{[^}]*grid-auto-flow:column/);
     expect(css).toMatch(/\.pipeline-grid\s*\{[^}]*overflow-x:auto/);
+    expect(css).toMatch(/\.pipeline-grid::-webkit-scrollbar\s*\{[^}]*height:12px/);
+    expect(css).toMatch(/\.pipeline-page\s*\{[^}]*max-width:none/);
+    expect(css).toContain("@media (max-width:760px)");
+    expect(css).toContain(".pipeline-grid{grid-auto-columns:calc(100vw - 48px)}");
+  });
+
+  it("laat iedere lege fase expliciet zichtbaar", async () => {
+    findMany.mockResolvedValue([]);
+    count.mockResolvedValue(0);
+    const view = render(await PipelinePage());
+    expect(view.getAllByText("Geen leads in deze fase.")).toHaveLength(8);
   });
 });

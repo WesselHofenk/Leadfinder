@@ -6,6 +6,7 @@ export const pipelineStages = [
   { status: "APPOINTMENT", label: "Afspraak" },
   { status: "QUOTE_SENT", label: "Offerte gestuurd" },
   { status: "CUSTOMER", label: "Klant" },
+  { status: "NOT_INTERESTED", label: "Niet geïnteresseerd" },
 ] as const;
 
 export type PipelineStatus = typeof pipelineStages[number]["status"];
