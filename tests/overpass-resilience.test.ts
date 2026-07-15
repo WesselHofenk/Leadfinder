@@ -43,10 +43,13 @@ describe("gerichte Overpass-query", () => {
   it("maakt een kleine geldige tegelquery voor de gekozen branche", () => {
     const tile = overpassTile(52.3676, 4.9041, 12_000, 0);
     const query = buildOverpassQuery({ ...tile, category: "kapper", timeoutSeconds: 10 });
-    expect(tile.radius).toBe(3_000);
+    expect(tile.radius).toBe(1_500);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
-    expect(query).toContain("out center tags qt 200");
+    expect(query).toContain('["phone"]');
+    expect(query).toContain('["contact:phone"]');
+    expect(query).not.toContain('[~"^(phone');
+    expect(query).toContain("out center tags qt 100");
   });
 
   it("verwerkt een geldige locatie en response", async () => {

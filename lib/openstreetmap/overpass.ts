@@ -122,7 +122,7 @@ export function categoryFilters(category?: string) {
 export function overpassTile(latitude: number, longitude: number, radius: number, cursor = 0) {
   const index = Math.abs(cursor) % tileOffsets.length;
   const [row, column] = tileOffsets[index];
-  const tileRadius = Math.min(3_000, Math.max(1_000, Math.round(radius / 4)));
+  const tileRadius = Math.min(1_500, Math.max(1_000, Math.round(radius / 6)));
   const north = (row * tileRadius * 1.7) / 111_320;
   const east = (column * tileRadius * 1.7) / (111_320 * Math.max(0.2, Math.cos(latitude * Math.PI / 180)));
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
@@ -130,9 +130,11 @@ export function overpassTile(latitude: number, longitude: number, radius: number
 
 export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number }) {
   const filters = categoryFilters(params.category);
-  const phone = '[~"^(phone|contact:phone|contact:mobile)$"~"."]';
-  const statements = filters.map((filter) => `nwr(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]${phone};`).join("");
-  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out center tags qt 200;`;
+  const contactFields = ["phone", "contact:phone", "contact:mobile"];
+  const statements = filters.flatMap((filter) => contactFields.map((field) =>
+    `node(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]["${field}"];`,
+  )).join("");
+  return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out center tags qt 100;`;
 }
 
 function errorType(error: unknown) {
@@ -177,8 +179,8 @@ export async function searchOverpass(params: SearchParams) {
   const endpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
   const timeoutMs = Math.min(20_000, Math.max(5_000, params.timeoutMs ?? 12_000));
-  const totalTimeoutMs = Math.min(30_000, Math.max(8_000, params.totalTimeoutMs ?? 24_000));
-  const retries = Math.min(3, Math.max(1, params.retriesPerEndpoint ?? 2));
+  const totalTimeoutMs = Math.min(45_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
+  const retries = Math.min(3, Math.max(1, params.retriesPerEndpoint ?? 1));
   const tile = overpassTile(params.latitude, params.longitude, params.radius, params.tileCursor);
   const queryType = normalizedCategory(params.category) || "alle_bruikbare_bedrijven";
   const query = buildOverpassQuery({ ...tile, category: params.category, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 2) });
