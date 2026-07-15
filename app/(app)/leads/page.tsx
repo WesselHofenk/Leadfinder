@@ -315,7 +315,7 @@ function TextFilter({
               position: "absolute",
               left: 11,
               top: 12,
-              color: "#718078",
+              color: "var(--muted)",
             }}
           />
         )}
