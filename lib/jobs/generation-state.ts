@@ -44,5 +44,6 @@ export function generationProgress(input: { stored: number; target: number; proc
   const resultProgress = Math.min(72, Math.round((input.stored / Math.max(1, input.target)) * 72));
   const attemptedSegments = input.processedSegments + input.sourceFailures;
   const searchProgress = Math.min(18, Math.max(attemptedSegments > 0 ? 1 : 0, Math.round((attemptedSegments / Math.max(1, input.maxSegments)) * 18)));
-  return Math.min(94, Math.max(phaseProgress("validate"), phaseProgress("validate") + resultProgress + searchProgress));
+  const phaseFloor = attemptedSegments > 0 ? phaseProgress("source") : phaseProgress("validate");
+  return Math.min(94, Math.max(phaseFloor, phaseProgress("validate") + resultProgress + searchProgress));
 }

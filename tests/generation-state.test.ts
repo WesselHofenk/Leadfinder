@@ -40,8 +40,8 @@ describe("persistente generatiejobstatus", () => {
   });
 
   it("beweegt zichtbaar voorbij 5% na een echte maar mislukte bronpoging", () => {
-    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(5);
-    expect(generationProgress({ stored: 1, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(6);
+    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBe(phaseProgress("source"));
+    expect(generationProgress({ stored: 10, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
   });
 
   it("stopt een run op de echte totale looptijd", () => {
