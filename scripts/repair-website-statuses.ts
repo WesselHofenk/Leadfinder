@@ -3,11 +3,26 @@ import { determineWebsiteStatus, logWebsiteStatusDecision } from "../lib/leads/w
 
 const prisma = new PrismaClient();
 
+// Facts explicitly supplied and verified by the operator can repair data that the old importer discarded.
+// Keep these corrections narrow; the generic legacy rule below protects every other missing record.
+const verifiedCorrections = new Map([
+  ["by yoel|abcoude", { website: "https://byyoel.nl", source: "operator_verified" }],
+]);
+
 async function main() {
   const leads = await prisma.lead.findMany({ orderBy: { createdAt: "asc" } });
   let repaired = 0, ownWebsite = 0, noWebsite = 0, unknown = 0;
+  const sourceCounts = new Map<string, number>();
   for (const lead of leads) {
-    const decision = determineWebsiteStatus(lead);
+    sourceCounts.set(lead.source, (sourceCounts.get(lead.source) ?? 0) + 1);
+    const correction = verifiedCorrections.get(`${lead.companyName.trim().toLowerCase()}|${lead.city.trim().toLowerCase()}`);
+    const decision = determineWebsiteStatus(
+      correction ? { ...lead, website: correction.website, websiteUrl: correction.website } : lead,
+      // Legacy empty values were never retained from their source. Reusing the old NO_OWN_WEBSITE
+      // flag would repeat the original false positive, so absence must be treated as unverified.
+      { absenceVerified: false },
+    );
+    if (correction && decision.normalizedUrl) decision.source = correction.source;
     logWebsiteStatusDecision(lead.companyName, decision);
     if (decision.status === "has_website") ownWebsite += 1;
     else if (decision.status === "no_website") noWebsite += 1;
@@ -43,7 +58,7 @@ async function main() {
     repaired += 1;
     if (lead.companyName.toLowerCase().includes("by yoel")) console.info("[website-repair:by-yoel]", JSON.stringify({ website: nextWebsite, websiteStatus: decision.status, databaseStatus: targetStatus, excludedFromNoWebsite: targetStatus !== "NO_OWN_WEBSITE" }));
   }
-  console.info("[website-repair:summary]", JSON.stringify({ checked: leads.length, repaired, ownWebsite, noWebsite, unknown }));
+  console.info("[website-repair:summary]", JSON.stringify({ checked: leads.length, repaired, ownWebsite, noWebsite, unknown, sources: Object.fromEntries(sourceCounts) }));
 }
 
 main().finally(() => prisma.$disconnect());

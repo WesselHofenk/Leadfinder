@@ -148,7 +148,11 @@ export async function runLeadGeneration(runId: string) {
         if (prints.some(({ fingerprint }) => suppressed.has(fingerprint)) || runDedupe.hasOrAdd(keys) || existing.has(keys)) { stats.duplicates += 1; continue; }
         const basic = validateCandidateBasics(candidate);
         if (!basic.ok) { stats.rejected += 1; continue; }
-        const initialWebsiteDecision = determineWebsiteStatus(candidate);
+        // OSM not publishing a website tag is not proof that the business has no website.
+        // Google Places explicitly returns websiteUri in our field mask, so absence there is a checked source result.
+        const initialWebsiteDecision = determineWebsiteStatus(candidate, {
+          absenceVerified: candidate.source === "GOOGLE_PLACES",
+        });
         logWebsiteStatusDecision(candidate.companyName, initialWebsiteDecision);
         try {
           if (initialWebsiteDecision.status === "no_website") {

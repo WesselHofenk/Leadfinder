@@ -9,13 +9,16 @@ const externalProfileHosts = [
 
 export type WebsiteStatusValue = "no_website" | "has_website" | "outdated_website" | "unknown";
 export type WebsiteVerification = {
-  reachable: boolean;
+  reachable?: boolean;
+  /** True only when the upstream source was actually checked for an absent website field. */
+  absenceVerified?: boolean;
   httpStatus?: number | null;
   failureKind?: "timeout" | "forbidden" | "blocked" | "network" | "invalid_ssl" | "unknown" | null;
   auditClassification?: "USABLE" | "IMPROVABLE" | "OUTDATED" | null;
 };
 export type WebsiteStatusInput = {
   companyName?: string | null;
+  source?: string | null;
   website?: string | null;
   websiteUrl?: string | null;
   website_url?: string | null;
@@ -78,10 +81,13 @@ export function determineWebsiteStatus(lead: WebsiteStatusInput, verification?: 
     if (invalid) return { status: "unknown", rawValue: invalid.rawValue, normalizedUrl: null, source: invalid.source, reason: "Websitewaarde is aanwezig maar niet geldig te normaliseren; handmatige controle nodig" };
     const profile = normalized.find((entry) => entry.normalizedUrl);
     if (profile) return { status: "no_website", rawValue: profile.rawValue, normalizedUrl: null, source: profile.source, reason: "Alleen een extern profiel of boekingsplatform gevonden" };
+    if (verification?.absenceVerified === false) {
+      return { status: "unknown", rawValue: null, normalizedUrl: null, source: null, reason: "De bron bevat geen websitewaarde, maar afwezigheid is niet opnieuw bevestigd; handmatige controle nodig" };
+    }
     return { status: "no_website", rawValue: null, normalizedUrl: null, source: null, reason: "Geen websitewaarde gevonden in de beschikbare bronvelden" };
   }
 
-  if (verification && !verification.reachable) {
+  if (verification?.reachable === false) {
     const reason = verification.httpStatus === 403 || verification.failureKind === "forbidden" || verification.failureKind === "blocked"
       ? "Websitecontrole geblokkeerd of HTTP 403; handmatige controle nodig"
       : verification.failureKind === "timeout" ? "Websitecontrole gaf een timeout; handmatige controle nodig"

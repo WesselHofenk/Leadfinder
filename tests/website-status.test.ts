@@ -14,6 +14,13 @@ describe("centrale website-status", () => {
     expect(determineWebsiteStatus({ website: "  ", websiteUrl: null, website_url: undefined, domain: "n.v.t." }).status).toBe("no_website");
   });
 
+  it("maakt een ontbrekende website onbekend als de bronafwezigheid niet is bevestigd", () => {
+    expect(determineWebsiteStatus({ companyName: "Legacy lead", website: null }, { absenceVerified: false })).toMatchObject({
+      status: "unknown",
+      normalizedUrl: null,
+    });
+  });
+
   it.each([
     "https://facebook.com/byyoel",
     "https://instagram.com/byyoel",
