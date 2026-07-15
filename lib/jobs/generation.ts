@@ -12,7 +12,7 @@ import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, ty
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses } from "./generation-state";
+import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 
 type Stats = {
   found: number;
@@ -415,13 +415,13 @@ export async function processGenerationBatch(runId: string) {
 
     if (!queued.length) {
       if (run.processedSegments >= env.GENERATION_MAX_SOURCE_CALLS) {
-        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
         return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; de ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt.`);
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
       const selected = await nextSearchArea();
-      if (!selected) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar.");
+      if (!selected) return terminalRun(runId, stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar; er zijn geen nieuwe geldige leads opgeslagen.");
       const { area, combination, tileCursor } = selected;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
@@ -476,17 +476,8 @@ export async function processGenerationBatch(runId: string) {
           prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message } }),
           prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
         ]);
-        if (shouldStopForSourceFailures({ sourceFailures: stats.sourceFailures, processedSegments: run.processedSegments, maxFailures: env.GENERATION_MAX_SOURCE_FAILURES })) {
-          const status = stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
-          return terminalRun(
-            runId,
-            status,
-            stats,
-            places,
-            errors,
-            warnings,
-            `${stats.stored} bevestigde leads opgeslagen. De gratis openbare bron bleef na ${stats.sourceFailures} pogingen overwegend onbereikbaar; de zoekruimte is niet als uitgeput gemarkeerd en onzekere kandidaten zijn niet opgeslagen. Probeer de generatie later opnieuw.`,
-          );
+        if (sourceFailureWarningDue(stats.sourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
+          warnings.push(`${stats.sourceFailures} openbare bronbatches reageerden niet; de run gaat door met andere plaatsen, branches, tegels en hosts.`);
         }
       }
 
@@ -646,7 +637,7 @@ export async function processGenerationBatch(runId: string) {
     const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
     if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten zijn veilig overgeslagen.`);
     if (completionStatus) {
-      const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+      const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : completionStatus === "FAILED" ? JobStatus.FAILED : JobStatus.COMPLETE;
       return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden. De ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt; onzekere kandidaten zijn niet opgeslagen.`);
     }
 

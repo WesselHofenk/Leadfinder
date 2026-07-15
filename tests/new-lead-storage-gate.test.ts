@@ -3,8 +3,13 @@ import type { Candidate } from "@/lib/leads/eligibility";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 vi.mock("server-only", () => ({}));
-const { leadCreate } = vi.hoisted(() => ({ leadCreate: vi.fn() }));
-vi.mock("@/lib/prisma", () => ({ prisma: { lead: { create: leadCreate } } }));
+const { leadCreate, sourceUpdate, fingerprintUpsert, prismaTransaction } = vi.hoisted(() => ({
+  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintUpsert: vi.fn(), prismaTransaction: vi.fn(),
+}));
+vi.mock("@/lib/prisma", () => ({ prisma: {
+  lead: { create: leadCreate },
+  $transaction: prismaTransaction,
+} }));
 
 import { storeNewLead } from "@/lib/jobs/generation";
 
@@ -17,7 +22,13 @@ const confirmed: WebsiteVerificationResult = { status: "NO_WEBSITE_CONFIRMED", c
 const unknown: WebsiteVerificationResult = { status: "UNKNOWN", confidence: 40, website: null, reason: "Timeout", evidence: [] };
 
 describe("laatste databasebarrière voor nieuwe leads", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    leadCreate.mockResolvedValue({ id: "lead-new" });
+    prismaTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
+      lead: { create: leadCreate }, sourceRecord: { update: sourceUpdate }, duplicateFingerprint: { upsert: fingerprintUpsert },
+    }));
+  });
 
   it.each([
     [{ ...base, businessStatus: "CLOSED_PERMANENTLY" }, confirmed, "SKIPPED_PERMANENTLY_CLOSED"],
@@ -26,5 +37,13 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
   ] as const)("maakt geen Lead-record voor %s", async (candidate, verification, reason) => {
     await expect(storeNewLead(candidate, verification)).resolves.toMatchObject({ stored: false, reason });
     expect(leadCreate).not.toHaveBeenCalled();
+  });
+
+  it("slaat een geldige lead atomair op in pipelinefase Nieuw", async () => {
+    await expect(storeNewLead(base, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
+    expect(prismaTransaction).toHaveBeenCalledOnce();
+    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      status: "NEW", isActive: true, isFiltered: false, websiteStatus: "NO_WEBSITE_CONFIRMED",
+    }) }));
   });
 });

@@ -26,9 +26,12 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   else if (filters.leadType === "OUTDATED_WEBSITE") where.websiteStatus = "WEBSITE_OUTDATED";
   else if (filters.leadType === "IMPROVABLE_WEBSITE") where.websiteStatus = { in: ["WEBSITE_BROKEN", "MANUAL_REVIEW_REQUIRED"] };
   else if (!showFiltered) where.websiteStatus = "NO_WEBSITE_CONFIRMED";
-  if (filters.websiteStatus === "NO_WEBSITE_CONFIRMED" || filters.leadType === "NO_WEBSITE" || (!filters.websiteStatus && !filters.leadType && !showFiltered)) {
+  if (filters.googleReview === "confirmed") {
     where.googleWebsitePresent = false;
     where.googleWebsiteVerifiedAt = { not: null };
+  } else if (filters.googleReview === "pending") {
+    where.googleWebsiteVerifiedAt = null;
+    where.websiteStatus = "NO_WEBSITE_CONFIRMED";
   }
   if (filters.minScore !== undefined || filters.maxScore !== undefined) where.opportunityScore = { ...(filters.minScore !== undefined ? { gte: filters.minScore } : {}), ...(filters.maxScore !== undefined ? { lte: filters.maxScore } : {}) };
   if (filters.minConfidence !== undefined) where.websiteConfidence = { gte: filters.minConfidence };

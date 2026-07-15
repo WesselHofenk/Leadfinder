@@ -70,10 +70,27 @@ export function nextOverpassTileCursor(current: number) {
 }
 
 const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
+const endpointLocks = new Map<string, Promise<void>>();
 const circuitFailureThreshold = 2;
 const circuitCooldownMs = 30_000;
 
 export function clearOverpassCircuitState() { endpointHealth.clear(); }
+
+async function withEndpointLock<T>(endpoint: string, task: () => Promise<T>) {
+  const host = new URL(endpoint).host;
+  const previous = endpointLocks.get(host) ?? Promise.resolve();
+  let releaseGate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  endpointLocks.set(host, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    releaseGate();
+    if (endpointLocks.get(host) === tail) endpointLocks.delete(host);
+  }
+}
 
 function healthyEndpoints(endpoints: string[], now: number) {
   const available = endpoints.filter((endpoint) => (endpointHealth.get(endpoint)?.openUntil ?? 0) <= now);
@@ -278,7 +295,7 @@ export async function searchOverpass(params: SearchParams) {
   const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
   const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));
-  const totalTimeoutMs = Math.min(40_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
+  const totalTimeoutMs = Math.min(18_000, Math.max(8_000, params.totalTimeoutMs ?? 18_000));
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
@@ -304,7 +321,7 @@ export async function searchOverpass(params: SearchParams) {
       const fairTimeoutMs = Math.max(1_000, Math.floor(remaining / endpointsRemaining));
       const started = Date.now();
       try {
-        const response = await fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, fairTimeoutMs), params.signal);
+        const response = await withEndpointLock(endpoint, () => fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, fairTimeoutMs), params.signal));
         const raw = await readBoundedText(response, maxResponseBytes);
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);
@@ -324,7 +341,11 @@ export async function searchOverpass(params: SearchParams) {
       } catch (error) {
         lastError = error instanceof Error ? error : lastError;
         recordEndpointFailure(endpoint, Date.now());
-        await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, errorType: errorType(error), message: lastError.message });
+        const failureType = errorType(error);
+        await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, errorType: failureType, message: lastError.message });
+        // A timeout consumed this host's fair share; retrying it would starve the
+        // independent fallback. Fast HTTP failures can still use normal retries.
+        if (failureType === "timeout") break;
       }
       if (attempt < retries && deadline - Date.now() > 500) await sleep(Math.min(backoffDelayMs(attempt - 1, random() * 250), Math.max(0, deadline - Date.now() - 250)));
     }

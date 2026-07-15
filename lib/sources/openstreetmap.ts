@@ -15,23 +15,28 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   constructor() {
     const env = serverEnv();
     this.enabled = env.OSM_SOURCE_ENABLED;
-    // Keep production overrides, but always retain independent public fallbacks.
-    // A stale Vercel override previously omitted the final fallback completely.
+    // Separate the two same-operator hosts with independent public fallbacks.
     this.endpoints = [...new Set([
-      ...env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean),
       "https://overpass-api.de/api/interpreter",
-      "https://lz4.overpass-api.de/api/interpreter",
       "https://overpass.kumi.systems/api/interpreter",
       "https://overpass.private.coffee/api/interpreter",
+      "https://lz4.overpass-api.de/api/interpreter",
+      ...env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean),
     ])];
     this.timeoutMs = env.OVERPASS_TIMEOUT_MS;
-    this.totalTimeoutMs = env.OVERPASS_TOTAL_TIMEOUT_MS;
+    // A stale production override must never restore the former 28-second request.
+    this.totalTimeoutMs = Math.min(18_000, env.OVERPASS_TOTAL_TIMEOUT_MS);
     this.maxResponseBytes = env.OVERPASS_MAX_RESPONSE_BYTES;
   }
 
   async searchBusinesses(input: SourceSearch) {
+    const start = Math.abs(input.tileCursor ?? 0) % this.endpoints.length;
+    const rotated = [...this.endpoints.slice(start), ...this.endpoints.slice(0, start)];
+    // Try two independent hosts per short serverless batch. The next tile rotates
+    // to another pair, so one request never exhausts every public host.
+    const endpoints = rotated.slice(0, Math.min(2, rotated.length));
     const result = await searchOverpass({
-      endpoints: this.endpoints,
+      endpoints,
       country: input.country,
       latitude: input.latitude,
       longitude: input.longitude,

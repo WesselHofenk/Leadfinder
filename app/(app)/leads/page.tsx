@@ -40,12 +40,12 @@ export default async function LeadsPage({
           <span className="eyebrow">Kansenbestand</span>
           <h1>{filters.filtered ? "Gefilterde leads" : "Actieve leads"}</h1>
           <p className="muted">
-            Alleen bedrijven waarvan Google handmatig is gecontroleerd en geen website toont.
+            Gevalideerde bedrijven zonder gevonden eigen website. Handmatige Google-controle blijft afzonderlijk zichtbaar.
           </p>
         </div>
         <div className="actions">
           <GenerationButton />
-          <Link className="button button-secondary" href="/leads?filtered=yes">Google-controle nodig</Link>
+          <Link className="button button-secondary" href="/leads?googleReview=pending">Google-controle nodig</Link>
           <a
             className="button button-secondary"
             href={`/api/export?${exportQs}`}
@@ -122,6 +122,7 @@ export default async function LeadsPage({
           </div>
           <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_WEBSITE_CONFIRMED","Geen website bevestigd"],["NO_WEBSITE_LIKELY","Waarschijnlijk geen website"],["SOCIAL_ONLY","Alleen extern profiel"],["WEBSITE_FOUND","Website gevonden"],["WEBSITE_OUTDATED","Website verouderd"],["WEBSITE_BROKEN","Website kapot"],["MANUAL_REVIEW_REQUIRED","Handmatige controle"],["UNKNOWN","Onbekend"]]}/>
           <Select label="Databron" name="source" value={filters.source} options={[["OPENSTREETMAP","OpenStreetMap"],["OPEN_DATA","Open data"],["PUBLIC_WEBSITE","Openbare website"],["MANUAL","Handmatig"]]}/>
+          <Select label="Google-controle" name="googleReview" value={filters.googleReview} options={[["pending","Nog controleren"],["confirmed","Handmatig bevestigd"]]}/>
           <Select label="Bedrijfsstatus" name="businessStatus" value={filters.businessStatus} options={[["OPERATIONAL","Operationeel"],["CLOSED_TEMPORARILY","Tijdelijk gesloten"],["CLOSED_PERMANENTLY","Permanent gesloten"],["FUTURE_OPENING","Toekomstige opening"],["UNKNOWN","Onbekend"]]}/>
           <Select label="Telefoon" name="hasPhone" value={filters.hasPhone} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
           <Select label="E-mail" name="hasEmail" value={filters.hasEmail} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>
@@ -230,6 +231,7 @@ export default async function LeadsPage({
                         >
                           {websiteStatusLabels[lead.websiteStatus]}
                         </span>
+                        <div className="small muted">{lead.googleWebsiteVerifiedAt ? "Google handmatig bevestigd" : "Automatisch gevalideerd · Google-controle aanbevolen"}</div>
                       </td>
                       <td>
                         <strong
@@ -385,7 +387,7 @@ function Select({
 const filterLabels: Record<string, string> = {
   q: "Zoeken", country: "Land", region: "Regio", municipality: "Gemeente", city: "Plaats", postalCode: "Postcode",
   category: "Branche", status: "Status", leadType: "Leadtype", websiteStatus: "Website-status", source: "Bron",
-  businessStatus: "Bedrijfsstatus", filtered: "Pipeline", hasPhone: "Telefoon", hasEmail: "E-mail", minScore: "Min. score",
+  businessStatus: "Bedrijfsstatus", filtered: "Pipeline", googleReview: "Google-controle", hasPhone: "Telefoon", hasEmail: "E-mail", minScore: "Min. score",
   maxScore: "Max. score", minConfidence: "Min. confidence", called: "Opgevolgd", issue: "Websiteprobleem", foundAfter: "Vanaf", foundBefore: "Tot",
 };
 

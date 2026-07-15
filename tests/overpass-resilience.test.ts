@@ -188,6 +188,32 @@ describe("timeouts, retries en fallback", () => {
     await expect(searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers zijn mislukt");
   });
 
+  it("laat een volgende zoekquery doorgaan nadat alle endpoints voor één query faalden", async () => {
+    const fetchImpl = vi.fn()
+      .mockRejectedValueOnce(new Error("host one unavailable"))
+      .mockRejectedValueOnce(new Error("host two unavailable"))
+      .mockResolvedValueOnce(jsonResponse());
+    await expect(searchOverpass({ ...base, fetchImpl })).rejects.toThrow("Alle OpenStreetMap-servers zijn mislukt");
+    await expect(searchOverpass({ ...base, fetchImpl })).resolves.toMatchObject({ candidates: [expect.objectContaining({ companyName: "Testbedrijf" })] });
+  });
+
+  it("voert maximaal één request tegelijk uit per openbare OSM-host", async () => {
+    let active = 0;
+    let maximum = 0;
+    const fetchImpl = vi.fn(async () => {
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active -= 1;
+      return jsonResponse();
+    });
+    await Promise.all([
+      searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch }),
+      searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch }),
+    ]);
+    expect(maximum).toBe(1);
+  });
+
   it("retryt een permanente 404 niet op hetzelfde endpoint", async () => {
     const fetchImpl = vi.fn(async () => new Response("not found", { status: 404 }));
     await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], retriesPerEndpoint: 2, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("HTTP 404");

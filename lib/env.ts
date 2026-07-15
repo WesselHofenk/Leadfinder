@@ -8,7 +8,7 @@ const schema = z.object({
   OVERPASS_API_URL: z.string().url().default("https://overpass-api.de/api/interpreter"),
   OVERPASS_API_URLS: z.string().default("https://overpass-api.de/api/interpreter,https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter"),
   OVERPASS_TIMEOUT_MS: z.coerce.number().int().min(4000).max(15000).default(10000),
-  OVERPASS_TOTAL_TIMEOUT_MS: z.coerce.number().int().min(8000).max(40000).default(28000),
+  OVERPASS_TOTAL_TIMEOUT_MS: z.coerce.number().int().min(8000).max(40000).default(18000),
   OVERPASS_MAX_RESPONSE_BYTES: z.coerce.number().int().min(100000).max(4000000).default(2000000),
   GENERATION_BATCH_CANDIDATES: z.coerce.number().int().min(5).max(10).default(8),
   GENERATION_BATCH_WEBSITE_CHECKS: z.coerce.number().int().min(1).max(6).default(3),

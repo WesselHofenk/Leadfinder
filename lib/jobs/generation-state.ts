@@ -24,14 +24,14 @@ export function sourceAttemptDelta(sourceSucceeded: boolean) {
   return { processedSegments: sourceSucceeded ? 1 : 0, sourceFailures: sourceSucceeded ? 0 : 1 } as const;
 }
 
-export function shouldStopForSourceFailures(input: { sourceFailures: number; processedSegments: number; maxFailures: number }) {
-  return input.sourceFailures >= input.maxFailures && input.sourceFailures > input.processedSegments;
+export function sourceFailureWarningDue(sourceFailures: number, warningInterval: number) {
+  return sourceFailures > 0 && sourceFailures % Math.max(1, warningInterval) === 0;
 }
 
 export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; maxSegments: number; pendingCandidates: number }) {
   if (input.usable >= input.target) return "COMPLETE" as const;
   if (input.processedSegments >= input.maxSegments && input.pendingCandidates === 0) {
-    return input.usable > 0 ? "PARTIALLY_COMPLETED" as const : "COMPLETE" as const;
+    return input.usable > 0 ? "PARTIALLY_COMPLETED" as const : "FAILED" as const;
   }
   return null;
 }

@@ -80,4 +80,16 @@ describe("frontend polling en eindstatus", () => {
     expect(await screen.findByText("2/50")).toBeTruthy();
     expect(screen.queryByText("7/50")).toBeNull();
   });
+
+  it("toont een begrijpelijke stopreden in plaats van de technische Overpass-fout", async () => {
+    const failed = {
+      ...baseRun, status: "FAILED", progress: 100,
+      stopReason: "Geen nieuwe geldige leads gevonden. Probeer de zoekrun later opnieuw.",
+      apiErrors: ["OPENSTREETMAP / Breda, NL / dakdekker: totale timeout van 28 seconden"],
+    };
+    vi.stubGlobal("fetch", vi.fn(() => json({ run: failed })));
+    render(<GenerationButton/>);
+    expect(await screen.findByText(failed.stopReason)).toBeTruthy();
+    expect(screen.queryByText(failed.apiErrors[0])).toBeNull();
+  });
 });

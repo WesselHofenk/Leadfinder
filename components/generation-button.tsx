@@ -45,7 +45,7 @@ function resultMessage(run: Run) {
   if (run.status === "PARTIALLY_COMPLETED") return run.stopReason || `De generatie is gedeeltelijk afgerond; ${run.stored} bevestigde resultaten zijn veilig opgeslagen.`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
   if (run.status === "TIMED_OUT") return run.stopReason || "De zoekrun is na de maximale verwerkingstijd gestopt. Probeer opnieuw.";
-  return run.apiErrors?.at(-1) || run.stopReason || "Leadgeneratie is gestopt.";
+  return run.stopReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
 }
 
 export function GenerationButton() {
@@ -131,7 +131,11 @@ export function GenerationButton() {
       const data = await response.json();
       if (!alive.current || actionVersion.current !== initialVersion) return;
       const latest = data.run as Run | null;
-      if (latest && !isTerminalGenerationStatus(latest.status)) {
+      if (latest && isTerminalGenerationStatus(latest.status)) {
+        finish(latest);
+        return;
+      }
+      if (latest) {
         setRun((current) => stopped.current ? current : latest);
         setPending((current) => stopped.current ? current : true);
         advance(latest.id);
@@ -142,7 +146,7 @@ export function GenerationButton() {
       alive.current = false;
       batchController.current?.abort();
     };
-  }, [advance, pollUntilFinished]);
+  }, [advance, finish, pollUntilFinished]);
 
   useEffect(() => {
     if (!pending) return;
