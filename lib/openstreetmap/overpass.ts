@@ -62,9 +62,11 @@ export function overpassSearchPlan(cursor = 0) {
   return { cursor: normalized, tileCursor, strategy, id: `t${tileCursor}-${strategy}` };
 }
 
-export function nextOverpassTileCursor(current: number, sourceSucceeded: boolean) {
+export function nextOverpassTileCursor(current: number) {
   const normalized = ((current % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
-  return sourceSucceeded ? (normalized + 1) % OSM_SEARCH_CURSOR_COUNT : normalized;
+  // A failed query must not pin a search combination to the same expensive tile forever.
+  // The failure is logged separately, so moving on loses no evidence and avoids a retry loop.
+  return (normalized + 1) % OSM_SEARCH_CURSOR_COUNT;
 }
 
 const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
@@ -276,7 +278,7 @@ export async function searchOverpass(params: SearchParams) {
   const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));
   const totalTimeoutMs = Math.min(40_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
-  const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 1));
+  const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
   const tile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
   const queryType = `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}`;
@@ -287,14 +289,20 @@ export async function searchOverpass(params: SearchParams) {
   const deadline = Date.now() + totalTimeoutMs;
   let lastError = new Error("OpenStreetMap is niet bereikbaar.");
 
-  for (const endpoint of endpoints) {
+  for (let endpointIndex = 0; endpointIndex < endpoints.length; endpointIndex += 1) {
+    const endpoint = endpoints[endpointIndex];
     for (let attempt = 1; attempt <= retries; attempt += 1) {
       if (params.signal?.aborted) throw new Error("De zoekrun is geannuleerd.");
       const remaining = deadline - Date.now();
       if (remaining < 500) throw new Error(`Alle OpenStreetMap-servers bereikten de totale timeout van ${Math.ceil(totalTimeoutMs / 1000)} seconden.`);
+      // Reserve an equal slice for every remaining fallback. Previously the first
+      // three servers consumed all 28 seconds, so the final healthy fallback was
+      // never attempted in production.
+      const endpointsRemaining = endpoints.length - endpointIndex;
+      const fairTimeoutMs = Math.max(1_000, Math.floor(remaining / endpointsRemaining));
       const started = Date.now();
       try {
-        const response = await fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, remaining), params.signal);
+        const response = await fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, fairTimeoutMs), params.signal);
         const raw = await readBoundedText(response, maxResponseBytes);
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);

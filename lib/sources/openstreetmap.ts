@@ -15,7 +15,15 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   constructor() {
     const env = serverEnv();
     this.enabled = env.OSM_SOURCE_ENABLED;
-    this.endpoints = env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean);
+    // Keep production overrides, but always retain independent public fallbacks.
+    // A stale Vercel override previously omitted the final fallback completely.
+    this.endpoints = [...new Set([
+      ...env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean),
+      "https://overpass-api.de/api/interpreter",
+      "https://lz4.overpass-api.de/api/interpreter",
+      "https://overpass.kumi.systems/api/interpreter",
+      "https://overpass.private.coffee/api/interpreter",
+    ])];
     this.timeoutMs = env.OVERPASS_TIMEOUT_MS;
     this.totalTimeoutMs = env.OVERPASS_TOTAL_TIMEOUT_MS;
     this.maxResponseBytes = env.OVERPASS_MAX_RESPONSE_BYTES;

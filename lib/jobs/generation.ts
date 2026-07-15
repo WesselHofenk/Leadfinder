@@ -12,7 +12,7 @@ import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, ty
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses } from "./generation-state";
+import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses } from "./generation-state";
 
 type Stats = {
   found: number;
@@ -86,7 +86,7 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   };
 }
 
-function capacity(stats: Stats) { return stats.stored; }
+function capacity(stats: Pick<Stats, "stored">) { return stats.stored; }
 
 export async function createGenerationRun() {
   const target = Number(process.env.LEAD_GENERATION_TARGET || 50);
@@ -252,61 +252,63 @@ export async function storeNewLead(candidate: Candidate, verification: WebsiteVe
   if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
   const basic = validateCandidateBasics(candidate);
   if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
-  const lead = await prisma.lead.create({ data: {
-    externalPlaceId: basic.lead.externalPlaceId,
-    companyName: basic.lead.companyName,
-    normalizedCompanyName: basic.lead.normalizedCompanyName,
-    phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber,
-    normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
-    internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber,
-    email: basic.lead.email,
-    category: basic.lead.category,
-    subCategory: basic.lead.subCategory,
-    country: basic.lead.country,
-    province: basic.lead.province,
-    municipality: basic.lead.municipality,
-    city: basic.lead.city,
-    postalCode: basic.lead.postalCode,
-    streetAddress: basic.lead.streetAddress,
-    houseNumber: basic.lead.houseNumber,
-    normalizedAddress: basic.lead.normalizedAddress,
-    latitude: new Prisma.Decimal(basic.lead.latitude),
-    longitude: new Prisma.Decimal(basic.lead.longitude),
-    googleMapsUrl: basic.lead.googleMapsUrl,
-    website: verification.website,
-    websiteUrl: verification.website,
-    normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
-    websiteStatus: verification.status,
-    websiteStatusReason: verification.reason,
-    websiteConfidence: verification.confidence,
-    websiteSource: "local_verification",
-    sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
-    sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
-    leadType: "NO_WEBSITE",
-    opportunityScore: 90,
-    conversionQualityScore: 0,
-    businessStatus: basic.lead.businessStatus,
-    source: "OPENSTREETMAP",
-    confidenceScore: basic.lead.confidenceScore,
-    confidenceLevel: basic.lead.confidenceLevel,
-    status: "NEW",
-    isActive: true,
-    isFiltered: false,
-    filterReason: null,
-    evidence: { create: verification.evidence },
-    activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status } } },
-    history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status } } },
-  } });
-  await prisma.sourceRecord.update({
-    where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: { leadId: lead.id },
+  return prisma.$transaction(async (tx) => {
+    const lead = await tx.lead.create({ data: {
+      externalPlaceId: basic.lead.externalPlaceId,
+      companyName: basic.lead.companyName,
+      normalizedCompanyName: basic.lead.normalizedCompanyName,
+      phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber,
+      normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
+      internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber,
+      email: basic.lead.email,
+      category: basic.lead.category,
+      subCategory: basic.lead.subCategory,
+      country: basic.lead.country,
+      province: basic.lead.province,
+      municipality: basic.lead.municipality,
+      city: basic.lead.city,
+      postalCode: basic.lead.postalCode,
+      streetAddress: basic.lead.streetAddress,
+      houseNumber: basic.lead.houseNumber,
+      normalizedAddress: basic.lead.normalizedAddress,
+      latitude: new Prisma.Decimal(basic.lead.latitude),
+      longitude: new Prisma.Decimal(basic.lead.longitude),
+      googleMapsUrl: basic.lead.googleMapsUrl,
+      website: verification.website,
+      websiteUrl: verification.website,
+      normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
+      websiteStatus: verification.status,
+      websiteStatusReason: verification.reason,
+      websiteConfidence: verification.confidence,
+      websiteSource: "local_verification",
+      sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
+      sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
+      leadType: "NO_WEBSITE",
+      opportunityScore: 90,
+      conversionQualityScore: 0,
+      businessStatus: basic.lead.businessStatus,
+      source: "OPENSTREETMAP",
+      confidenceScore: basic.lead.confidenceScore,
+      confidenceLevel: basic.lead.confidenceLevel,
+      status: "NEW",
+      isActive: true,
+      isFiltered: false,
+      filterReason: null,
+      evidence: { create: verification.evidence },
+      activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status } } },
+      history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status } } },
+    } });
+    await tx.sourceRecord.update({
+      where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
+      data: { leadId: lead.id },
+    });
+    await Promise.all(fingerprintValues(candidateDedupeKeys(candidate)).map((item) => tx.duplicateFingerprint.upsert({
+      where: { fingerprint: item.fingerprint },
+      create: { ...item, leadId: lead.id },
+      update: { leadId: lead.id },
+    })));
+    return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
   });
-  await Promise.all(fingerprintValues(candidateDedupeKeys(candidate)).map((item) => prisma.duplicateFingerprint.upsert({
-    where: { fingerprint: item.fingerprint },
-    create: { ...item, leadId: lead.id },
-    update: { leadId: lead.id },
-  })));
-  return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
 }
 
 function rejectionCode(reason: string) {
@@ -359,12 +361,6 @@ async function finishQueueItem(id: string, status: CandidateQueueStatus, lastErr
 async function releaseQueueItems(ids: string[], reason: string) {
   if (!ids.length) return;
   await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, lastError: reason } });
-}
-
-function progressFor(stats: Stats, target: number, processedSegments: number, maxSegments: number) {
-  const resultProgress = Math.min(72, Math.round((capacity(stats) / Math.max(1, target)) * 72));
-  const searchProgress = Math.min(18, Math.round((processedSegments / Math.max(1, maxSegments)) * 18));
-  return Math.min(94, Math.max(5, 5 + resultProgress + searchProgress));
 }
 
 export async function processGenerationBatch(runId: string) {
@@ -435,6 +431,7 @@ export async function processGenerationBatch(runId: string) {
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: adapter.id, currentRegion: region,
         currentCategory: area.category, currentTile: tileLabel, continuationCursor: segment,
+        progress: Math.max(run.progress, phaseProgress("source")),
         message: `Zoektegel ${tileLabel} voor ${area.category} in ${region} wordt met een eigen requesttimeout opgehaald.`, heartbeatAt: new Date(),
       } });
 
@@ -444,25 +441,26 @@ export async function processGenerationBatch(runId: string) {
           radius: area.radius, category: area.category, tileCursor,
           onEvent: (event) => logOverpassEvent(runId, area.city, area.category, event),
         });
-        const queuedResult = await prisma.generationCandidate.createMany({
-          data: result.candidates.map((candidate) => ({
-            runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
-            payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
-          })),
-          skipDuplicates: true,
-        });
-        stats.found += queuedResult.count;
         const attemptDelta = sourceAttemptDelta(true);
         warnings.push(...result.warnings);
         if (!places.includes(segment)) places.push(segment);
-        await prisma.$transaction([
-          prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: queuedResult.count } } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: {
-            useCount: { increment: 1 }, candidatesFound: { increment: queuedResult.count }, lastUsedAt: new Date(),
-            tileCursor: nextOverpassTileCursor(tileCursor, true), lastTile: result.tile, lastError: null,
-          } }),
-          prisma.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, lastError: null } }),
-        ]);
+        const queuedResult = await prisma.$transaction(async (tx) => {
+          const inserted = await tx.generationCandidate.createMany({
+            data: result.candidates.map((candidate) => ({
+              runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
+              payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
+            })),
+            skipDuplicates: true,
+          });
+          await tx.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: inserted.count } } });
+          await tx.searchCombination.update({ where: { id: combination.id }, data: {
+            useCount: { increment: 1 }, candidatesFound: { increment: inserted.count }, lastUsedAt: new Date(),
+            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null,
+          } });
+          await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, lastError: null } });
+          return inserted;
+        });
+        stats.found += queuedResult.count;
         run.processedSegments += attemptDelta.processedSegments;
         batchMessage = `${queuedResult.count} nieuwe kandidaten zijn duurzaam in de controlequeue gezet.`;
       } catch (error) {
@@ -474,7 +472,7 @@ export async function processGenerationBatch(runId: string) {
         await Promise.all([
           logSource(runId, adapter.id, "ERROR", JSON.stringify({ jobId: runId, batchNumber: run.batchNumber, step: "source_failed", region, category: area.category, tile: tileLabel, errorCode: "SOURCE_ERROR", message }), area.city, area.category),
           prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date() } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor, false), lastTile: tileLabel, lastError: message } }),
+          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message } }),
           prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
         ]);
         if (shouldStopForSourceFailures({ sourceFailures: stats.sourceFailures, processedSegments: run.processedSegments, maxFailures: env.GENERATION_MAX_SOURCE_FAILURES })) {
@@ -653,7 +651,7 @@ export async function processGenerationBatch(runId: string) {
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
       pendingCandidates, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
-      progress: progressFor(stats, run.targetCount, run.processedSegments, env.GENERATION_MAX_SOURCE_CALLS),
+      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
         ? "De huidige batch is vóór de serverless deadline veilig gepauzeerd; de volgende batch wordt automatisch gestart."

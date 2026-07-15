@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta } from "@/lib/jobs/generation-state";
+import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -37,6 +37,11 @@ describe("persistente generatiejobstatus", () => {
   it("telt alleen een werkelijk ontvangen bronresponse als doorzocht segment", () => {
     expect(sourceAttemptDelta(true)).toEqual({ processedSegments: 1, sourceFailures: 0 });
     expect(sourceAttemptDelta(false)).toEqual({ processedSegments: 0, sourceFailures: 1 });
+  });
+
+  it("beweegt zichtbaar voorbij 5% na een echte maar mislukte bronpoging", () => {
+    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(5);
+    expect(generationProgress({ stored: 1, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(6);
   });
 
   it("stopt een run op de echte totale looptijd", () => {

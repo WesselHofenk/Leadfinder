@@ -86,10 +86,9 @@ describe("gerichte Overpass-query", () => {
     expect(categoryFilters("loodgieter")).toEqual(['["craft"~"^(plumber|hvac)$"]']);
   });
 
-  it("verliest een tegel niet na een tijdelijke bronfout", () => {
-    expect(nextOverpassTileCursor(4, false)).toBe(4);
-    expect(nextOverpassTileCursor(4, true)).toBe(5);
-    expect(nextOverpassTileCursor(OSM_SEARCH_CURSOR_COUNT - 1, true)).toBe(0);
+  it("voorkomt dat een tijdelijke bronfout dezelfde tegel oneindig blijft herhalen", () => {
+    expect(nextOverpassTileCursor(4)).toBe(5);
+    expect(nextOverpassTileCursor(OSM_SEARCH_CURSOR_COUNT - 1)).toBe(0);
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
@@ -149,6 +148,17 @@ describe("timeouts, retries en fallback", () => {
   it.each([502, 503, 504])("behandelt HTTP %s als tijdelijke bronfout", async (status) => {
     const fetchImpl = vi.fn(async () => new Response("temporary", { status }));
     await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers");
+  });
+
+  it("retryt een tijdelijke bronfout met backoff voordat dezelfde bron wordt opgegeven", async () => {
+    const sleep = vi.fn(async () => undefined);
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response("temporary", { status: 503 }))
+      .mockResolvedValueOnce(jsonResponse());
+    const result = await searchOverpass({ ...base, endpoints: [base.endpoints[0]], retriesPerEndpoint: 2, fetchImpl, sleep });
+    expect(result.candidates).toHaveLength(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledOnce();
   });
 
   it("breekt een hangend request hard af", async () => {

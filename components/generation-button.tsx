@@ -206,6 +206,7 @@ export function GenerationButton() {
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Website gevonden" value={run?.websitesFound ?? 0}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
         <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker overgeslagen" value={run?.manualReview ?? 0}/>
+        <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Bronfouten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten veilig in PostgreSQL · onzekere kandidaten worden niet opgeslagen · {run?.sourceFailures ?? 0} bronfouten</p>
