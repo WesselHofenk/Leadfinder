@@ -11,8 +11,8 @@ export default async function PipelinePage() {
   const options = toPipelineOptions(stages);
   const groups = await Promise.all(stages.map(async (stage) => {
     const [items, total] = await prisma.$transaction([
-      prisma.lead.findMany({ where: visibleLeadWhere({ pipelineStageId: stage.id, isSuppressed: false }), orderBy: { updatedAt: "desc" }, take: 50 }),
-      prisma.lead.count({ where: visibleLeadWhere({ pipelineStageId: stage.id, isSuppressed: false }) }),
+      prisma.lead.findMany({ where: visibleLeadWhere({ pipelineStageId: stage.id, isActive: true, isFiltered: false, isSuppressed: false }), orderBy: { updatedAt: "desc" }, take: 50 }),
+      prisma.lead.count({ where: visibleLeadWhere({ pipelineStageId: stage.id, isActive: true, isFiltered: false, isSuppressed: false }) }),
     ]);
     return { items, total };
   }));

@@ -26,8 +26,18 @@ describe("pipeline API-validatie", () => {
     expect((await response.json()).lead.pipelineStage).toBe(pipelineStage);
   });
 
-  it.each(["NEEDS_REVIEW", "VERIFIED", "CALLED", "NO_ANSWER", "WON", "FILTERED"])("weigert oude status %s", async (status) => {
+  it.each([
+    ["NEEDS_REVIEW", "nieuw"], ["VERIFIED", "nieuw"], ["CALLED", "belletje-1"],
+    ["NO_ANSWER", "belletje-1"], ["WON", "deal"], ["FILTERED", "nieuw"],
+    ["CALLBACK_REQUEST", "terugbel-verzoek"], ["EMAILED", "gemaild"],
+  ])("normaliseert oude status %s naar %s", async (status, pipelineStage) => {
     const response = await PATCH(request(status), { params: Promise.resolve({ id: "lead-1" }) });
+    expect(response.status).toBe(200);
+    expect(updateManualLeadFields).toHaveBeenCalledWith("lead-1", "user-1", { pipelineStage });
+  });
+
+  it("weigert een onbekende status", async () => {
+    const response = await PATCH(request("BESTAAT_NIET"), { params: Promise.resolve({ id: "lead-1" }) });
     expect(response.status).toBe(400);
     expect(updateManualLeadFields).not.toHaveBeenCalled();
   });

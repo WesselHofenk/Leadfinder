@@ -44,9 +44,9 @@ export default async function LeadsPage({
       <header className="page-head">
         <div>
           <span className="eyebrow">Kansenbestand</span>
-          <h1>{filters.filtered ? "Gefilterde leads" : "Actieve leads"}</h1>
+          <h1>{filters.filtered ? "Gefilterde leads" : "Alle actieve leads"}</h1>
           <p className="muted">
-            Gevalideerde bedrijven zonder gevonden eigen website. Handmatige Google-controle blijft afzonderlijk zichtbaar.
+            Bestaande en nieuw gevalideerde bedrijven met behoud van hun websitecontrole, historie en pipelinefase.
           </p>
         </div>
         <div className="actions">

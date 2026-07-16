@@ -6,12 +6,11 @@ import { fingerprintValues, type DedupeKeys } from "./deduplication";
 import { normalizeText } from "./normalization";
 import { getGoogleBusinessUrl } from "./google-business-url";
 import { isNonOwnedWebsite, normalizeWebsite } from "./website";
-import { blockedLeadWhere, isBlockedLocation } from "./blocked-location";
+import { isBlockedLocation, nonBlockedLeadWhere } from "./blocked-location";
 
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   const showFiltered = filters.filtered === "yes";
-  const where: Prisma.LeadWhereInput = { AND: [{ NOT: blockedLeadWhere }], isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
-  if (!filters.status && !showFiltered) where.pipelineStage = { is: { slug: { not: "geen-interesse" } } };
+  const where: Prisma.LeadWhereInput = { AND: [nonBlockedLeadWhere], isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
   if (!filters.businessStatus && !showFiltered) where.businessStatus = { in: ["OPERATIONAL", "UNKNOWN", "FUTURE_OPENING"] };
   if (filters.q) where.OR = ["companyName","contactPersonName","email","phoneNumber","normalizedPhoneNumber","city","postalCode","category"].map((field) => ({ [field]: { contains: filters.q } })) as Prisma.LeadWhereInput[];
   if (filters.country) where.country = filters.country;
@@ -27,7 +26,6 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   else if (filters.leadType === "NO_WEBSITE") where.websiteStatus = "NO_WEBSITE_CONFIRMED";
   else if (filters.leadType === "OUTDATED_WEBSITE") where.websiteStatus = "WEBSITE_OUTDATED";
   else if (filters.leadType === "IMPROVABLE_WEBSITE") where.websiteStatus = { in: ["WEBSITE_BROKEN", "MANUAL_REVIEW_REQUIRED"] };
-  else if (!showFiltered) where.websiteStatus = "NO_WEBSITE_CONFIRMED";
   if (filters.googleReview === "confirmed") {
     where.googleWebsitePresent = false;
     where.googleWebsiteVerifiedAt = { not: null };

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { brusselsNames, brusselsPostcodes, detectBlockedLocation, ghentNames, ghentPostcodes, isBlockedLocation } from "@/lib/leads/blocked-location";
+import { brusselsNames, brusselsPostcodes, detectBlockedLocation, ghentNames, ghentPostcodes, isBlockedLocation, nonBlockedLeadWhere, visibleLeadWhere } from "@/lib/leads/blocked-location";
 
 describe("centrale harde locatieblokkade", () => {
   it.each(brusselsNames)("herkent Brusselse naamvariant %s", (city) => {
@@ -45,5 +45,10 @@ describe("centrale harde locatieblokkade", () => {
     const retained = existing.filter((lead) => !isBlockedLocation(lead)).map(({ id }) => id);
     expect(removed).toEqual(["brussels", "ghent"]);
     expect(retained).toEqual(["antwerp", "rotterdam"]);
+  });
+
+  it("gebruikt voor leesquery's een positieve NULL-veilige blokkade", () => {
+    expect(visibleLeadWhere({ isActive: true })).toEqual({ AND: [{ isActive: true }, nonBlockedLeadWhere] });
+    expect(visibleLeadWhere()).not.toHaveProperty("NOT");
   });
 });

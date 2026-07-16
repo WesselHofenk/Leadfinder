@@ -94,14 +94,28 @@ export function isBlockedLocation(input: LocationInput) {
 }
 
 const exactLocationNames = [...brusselsNames, ...ghentNames];
+const blockedPostcodes = [...brusselsPostcodes, ...ghentPostcodes];
 export const blockedLeadWhere = {
   OR: [
     ...["city", "municipality", "province"].flatMap((field) => exactLocationNames.map((name) => ({ [field]: { equals: name, mode: "insensitive" as const } }))),
-    { postalCode: { in: [...brusselsPostcodes, ...ghentPostcodes] } },
+    { postalCode: { in: blockedPostcodes } },
     ...["streetAddress", "formattedAddress"].flatMap((field) => exactLocationNames.map((name) => ({ [field]: { contains: name, mode: "insensitive" as const } }))),
   ],
 } satisfies Prisma.LeadWhereInput;
 
+// Een SQL `NOT (a OR b ...)` levert bij nullable adresvelden UNKNOWN op en kan
+// daardoor ook geldige rijen verbergen. Deze positieve, NULL-veilige vorm is
+// bedoeld voor alle leesquery's; de uitgebreidere JS-detector blijft de harde
+// poort bij imports en mutaties.
+export const nonBlockedLeadWhere = {
+  AND: [
+    { city: { notIn: exactLocationNames, mode: "insensitive" as const } },
+    { OR: [{ municipality: null }, { municipality: { notIn: exactLocationNames, mode: "insensitive" as const } }] },
+    { OR: [{ province: null }, { province: { notIn: exactLocationNames, mode: "insensitive" as const } }] },
+    { OR: [{ postalCode: null }, { postalCode: { notIn: blockedPostcodes } }] },
+  ],
+} satisfies Prisma.LeadWhereInput;
+
 export function visibleLeadWhere(base: Prisma.LeadWhereInput = {}): Prisma.LeadWhereInput {
-  return { AND: [base, { NOT: blockedLeadWhere }] };
+  return { AND: [base, nonBlockedLeadWhere] };
 }

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { currentUser } from "@/lib/auth/session";
-import { pipelineStatuses } from "@/lib/leads/pipeline";
+import { normalizePipelineStatus, pipelineStatuses } from "@/lib/leads/pipeline";
 import { reviewLeadWebsite, suppressLead, updateManualLeadFields } from "@/lib/leads/service";
 import { hasValidOrigin } from "@/lib/security/request";
 const schema = z.union([
-  z.object({ pipelineStage: z.enum(pipelineStatuses), notes: z.string().max(5000).optional(), filterReason: z.string().max(500).optional() }),
+  z.object({ pipelineStage: z.preprocess((value) => typeof value === "string" ? normalizePipelineStatus(value) ?? value : value, z.enum(pipelineStatuses)), notes: z.string().max(5000).optional(), filterReason: z.string().max(500).optional() }),
   z.object({ websiteReview: z.enum(["NO_WEBSITE_CONFIRMED", "WEBSITE_FOUND"]), websiteUrl: z.string().trim().max(500).optional() }),
 ]);
 export async function PATCH(request: NextRequest, context: { params: Promise<{ id: string }> }) {

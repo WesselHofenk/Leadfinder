@@ -7,6 +7,7 @@ const notInterestedMigration = readFileSync(resolve("prisma/migrations/202607161
 const relationalMigration = readFileSync(resolve("prisma/migrations/20260716210000_relational_pipeline_stages/migration.sql"), "utf8");
 const emailedStageMigration = readFileSync(resolve("prisma/migrations/20260716234500_add_emailed_pipeline_stage/migration.sql"), "utf8");
 const callbackRequestStageMigration = readFileSync(resolve("prisma/migrations/20260716235900_add_callback_request_pipeline_stage/migration.sql"), "utf8");
+const dutchLeadRecoveryMigration = readFileSync(resolve("prisma/migrations/20260717001000_restore_dutch_leads/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -58,5 +59,18 @@ describe("veilige pipeline-datamigratie", () => {
     expect(callbackRequestStageMigration).toContain("lead_count_before <> lead_count_after");
     expect(callbackRequestStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
     expect(callbackRequestStageMigration).toContain("callback_stage_count <> 1");
+  });
+
+  it("herstelt alleen vooraf geback-upte Nederlandse leads transactioneel en idempotent", () => {
+    expect(dutchLeadRecoveryMigration).toMatch(/^BEGIN;/);
+    expect(dutchLeadRecoveryMigration.trim()).toMatch(/COMMIT;$/);
+    expect(dutchLeadRecoveryMigration).toContain("recovery_backup_20260716_165500");
+    expect(dutchLeadRecoveryMigration).toContain('CREATE TEMP TABLE "_DutchLeadRecoveryCandidates"');
+    expect(dutchLeadRecoveryMigration).toContain('"isActive" = true');
+    expect(dutchLeadRecoveryMigration).toContain('"isFiltered" = false');
+    expect(dutchLeadRecoveryMigration).toContain('"isSuppressed" = false');
+    expect(dutchLeadRecoveryMigration).toContain('ON CONFLICT ("recoveryKey") DO NOTHING');
+    expect(dutchLeadRecoveryMigration).toContain("foreign_before IS DISTINCT FROM foreign_after");
+    expect(dutchLeadRecoveryMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
   });
 });
