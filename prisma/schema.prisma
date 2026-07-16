@@ -193,6 +193,9 @@ model Lead {
   languageConfidence            Int                    @default(0)
   regionLanguage                String?
   verificationSource            String?
+  singleLocationVerified        Boolean                @default(false)
+  singleLocationReason          String?
+  singleLocationVerifiedAt      DateTime?
   socialUrls                    Json                   @default("[]")
   source                        LeadSource             @default(OPENSTREETMAP)
   confidenceScore               Int                    @default(50)
@@ -334,6 +337,13 @@ model GenerationRun {
   blockedGhent        Int                   @default(0)
   invalidPhone        Int                   @default(0)
   languageRejected    Int                   @default(0)
+  multipleLocationsRejected Int             @default(0)
+  chainRejected       Int                   @default(0)
+  franchiseRejected   Int                   @default(0)
+  sameNameMultipleAddresses Int             @default(0)
+  samePhoneMultipleAddresses Int            @default(0)
+  locationCountUncertain Int                 @default(0)
+  duplicateListingsMerged Int               @default(0)
   estimatedCostCents  Int                   @default(0)
   placesUsed          Json                  @default("[]")
   branchesUsed        Json                  @default("[]")

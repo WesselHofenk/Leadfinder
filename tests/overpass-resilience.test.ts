@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassIdentityQuery, buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, searchOverpassHedged, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
@@ -50,21 +50,18 @@ describe("gerichte Overpass-query", () => {
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
-    expect(query).toContain('["contact:phone"]');
-    expect(query).toContain('["mobile"]');
-    expect(query).toContain('["contact:mobile"]');
-    expect(query).toContain('["telephone"]');
-    expect(query).toContain('["contact:telephone"]');
+    expect(query).not.toContain('["contact:phone"]');
     expect(query).toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
     expect(query).toContain("node(around:");
-    expect(query.match(/node\(around:/g)).toHaveLength(6);
+    expect(query.match(/node\(around:/g)).toHaveLength(1);
     expect(query).not.toContain("nwr(around:");
     expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
     expect(overpassTile(52.3676, 4.9041, 12_000, 1).id).toBe("t1");
     expect(overpassTile(52.3676, 4.9041, 12_000, 1).latitude).not.toBe(tile.latitude);
+    expect(buildOverpassQuery({ ...tile, category: "kapper", timeoutSeconds: 10, contact: "contact:mobile" })).toContain('["contact:mobile"]');
   });
 
   it("verwerkt een geldige locatie en response", async () => {
@@ -102,11 +99,12 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3);
-    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", id: "t0-node" });
-    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", id: "t0-way" });
-    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", id: "t0-relation" });
-    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 1, strategy: "node", id: "t1-node" });
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 6);
+    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "phone", id: "t0-node-phone" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "phone", id: "t0-way-phone" });
+    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "phone", id: "t0-relation-phone" });
+    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "contact:phone", id: "t0-node-contact-phone" });
+    expect(overpassSearchPlan(18)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {
@@ -160,6 +158,14 @@ describe("timeouts, retries en fallback", () => {
     await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers");
   });
 
+  it("bouwt een kleine exacte identiteitsquery zonder websitefilter", () => {
+    const query = buildOverpassIdentityQuery({ ...base, externalPlaceId: "osm:node/42", companyName: 'Kapper "De Hoek"', phoneNumber: "+31201234567", streetAddress: "Teststraat 1", googleMapsUrl: "https://www.openstreetmap.org/node/42", rawData: { phone: "+31 20 123 45 67" } });
+    expect(query).toContain('nwr(around:250000');
+    expect(query).toContain('["name"="Kapper \\"De Hoek\\""]');
+    expect(query).toContain('["phone"="+31 20 123 45 67"]');
+    expect(query).not.toContain('[!"website"]');
+  });
+
   it("neemt alleen een expliciete Google-verwijzing over en verzint geen verificatie", async () => {
     const withGoogle = { ...element, tags: { ...element.tags, "google:place_id": "ChIJ-explicit", "google:maps": "https://www.google.com/maps/place/Testbedrijf", "name:nl": "Testbedrijf", business_status: "operational" } };
     const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([withGoogle])) as typeof fetch });
@@ -191,13 +197,15 @@ describe("timeouts, retries en fallback", () => {
 
   it("breekt een hangend request hard af", async () => {
     vi.useFakeTimers();
+    const events: OverpassEvent[] = [];
     const fetchImpl = vi.fn((_url: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError")), { once: true });
     })) as typeof fetch;
-    const pending = searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl });
+    const pending = searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl, onEvent: (event) => { events.push(event); } });
     const assertion = expect(pending).rejects.toThrow(/timeout|seconden/i);
     await vi.advanceTimersByTimeAsync(5_100);
     await assertion;
+    expect(events.at(-1)?.errorType).toBe("timeout");
   });
 
   it("herkent een HTML-foutpagina en gebruikt een fallback", async () => {
@@ -220,6 +228,19 @@ describe("timeouts, retries en fallback", () => {
       .mockResolvedValueOnce(jsonResponse());
     await expect(searchOverpass({ ...base, fetchImpl })).rejects.toThrow("Alle OpenStreetMap-servers zijn mislukt");
     await expect(searchOverpass({ ...base, fetchImpl })).resolves.toMatchObject({ candidates: [expect.objectContaining({ companyName: "Testbedrijf" })] });
+  });
+
+  it("laat een snelle onafhankelijke fallback winnen zonder op de hangende primaire host te wachten", async () => {
+    let primaryAborted = false;
+    const fetchImpl = vi.fn((url: string | URL | Request, init?: RequestInit) => {
+      if (String(url).includes("one.example")) return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => { primaryAborted = true; reject(init.signal?.reason); }, { once: true });
+      });
+      return Promise.resolve(jsonResponse());
+    }) as typeof fetch;
+    const result = await searchOverpassHedged({ ...base, fetchImpl, hedgeDelayMs: 250, sleep: async () => undefined });
+    expect(result.endpoint).toBe("https://two.example/api");
+    expect(primaryAborted).toBe(true);
   });
 
   it("voert maximaal één request tegelijk uit per openbare OSM-host", async () => {

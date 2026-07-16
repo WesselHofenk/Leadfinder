@@ -14,9 +14,9 @@ describe("duurzame provider-circuitbreaker", () => {
     mocks.upsert.mockResolvedValue({});
   });
 
-  it("slaat een afgekoeld endpoint over en gebruikt de onafhankelijke fallback", async () => {
+  it("probeert de gezonde host eerst maar behoudt een half-open fallback", async () => {
     mocks.findMany.mockResolvedValue([{ provider: "https://a.example", unhealthyUntil: new Date("2026-07-16T10:05:00Z"), consecutiveFailures: 2 }]);
-    await expect(healthySourceEndpoints(["https://a.example", "https://b.example"], new Date("2026-07-16T10:00:00Z"))).resolves.toEqual(["https://b.example"]);
+    await expect(healthySourceEndpoints(["https://a.example", "https://b.example"], new Date("2026-07-16T10:00:00Z"))).resolves.toEqual(["https://b.example", "https://a.example"]);
   });
 
   it("opent na de tweede timeout een circuit met cooldown", async () => {
@@ -30,5 +30,11 @@ describe("duurzame provider-circuitbreaker", () => {
     mocks.findUnique.mockResolvedValue({ consecutiveFailures: 3, totalFailures: 3, totalSuccesses: 1, averageDurationMs: 4_000 });
     await recordSourceProviderEvent({ endpoint: "https://b.example", queryType: "kapper:way", tile: "t1-way", attempt: 1, durationMs: 900, statusCode: 200, resultCount: 4, message: "ok" });
     expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ consecutiveFailures: 0, unhealthyUntil: null, totalSuccesses: { increment: 1 } }) }));
+  });
+
+  it("telt een door een snellere hedge geannuleerde request niet als providerfout", async () => {
+    await recordSourceProviderEvent({ endpoint: "https://a.example", queryType: "kapper:node:phone", tile: "t0-node-phone", attempt: 1, durationMs: 250, errorType: "cancelled", message: "hedged_request_cancelled" });
+    expect(mocks.findUnique).not.toHaveBeenCalled();
+    expect(mocks.upsert).not.toHaveBeenCalled();
   });
 });

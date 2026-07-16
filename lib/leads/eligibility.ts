@@ -24,6 +24,8 @@ export type Candidate = {
   locality?: string; town?: string; village?: string; suburb?: string; district?: string; county?: string; region?: string;
   googlePlaceId?: string; googleBusinessProfileUrl?: string; googleBusinessProfileVerified?: boolean; googleBusinessStatusVerified?: boolean;
   description?: string; contactText?: string; reviewSnippets?: string[]; socialUrls?: string[];
+  singleLocationStatus?: "CONFIRMED" | "MULTIPLE" | "UNCERTAIN";
+  singleLocationReason?: string; locationEvidence?: string[]; duplicateListingIds?: string[];
 };
 
 export type EligibleBase = Candidate & {

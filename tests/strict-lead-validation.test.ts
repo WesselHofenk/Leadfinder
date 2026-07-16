@@ -33,6 +33,8 @@ const base: Candidate = {
   latitude: 52.09,
   longitude: 5.12,
   googleMapsUrl: "https://www.google.com/maps/place/Voorbeeldbedrijf",
+  singleLocationStatus: "CONFIRMED",
+  singleLocationReason: "enkele_vestiging_bevestigd",
 };
 
 describe("centrale strikte leadvalidatie", () => {
@@ -70,6 +72,10 @@ describe("centrale strikte leadvalidatie", () => {
 
   it("wijst een onbekende bedrijfsstatus af", () => {
     expect(validateStrictLead({ ...base, businessStatus: "UNKNOWN", activitySignals: [] }, noWebsite).reasons).toContain("BUSINESS_NOT_CONFIRMED_ACTIVE");
+  });
+
+  it("wijst een niet bevestigde enkele vestiging af", () => {
+    expect(validateStrictLead({ ...base, singleLocationStatus: "UNCERTAIN" }, noWebsite).reasons).toContain("SINGLE_LOCATION_NOT_CONFIRMED");
   });
 
   it("accepteert een actief Nederlandstalig Vlaams bedrijf", () => {

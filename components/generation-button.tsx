@@ -28,6 +28,13 @@ type Run = {
   blockedGhent: number;
   invalidPhone: number;
   languageRejected: number;
+  multipleLocationsRejected: number;
+  chainRejected: number;
+  franchiseRejected: number;
+  sameNameMultipleAddresses: number;
+  samePhoneMultipleAddresses: number;
+  locationCountUncertain: number;
+  duplicateListingsMerged: number;
   pendingCandidates: number;
   retriedCandidates: number;
   batchNumber: number;
@@ -218,8 +225,12 @@ export function GenerationButton() {
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
         <Metric label="Brussel afgewezen" value={run?.blockedBrussels ?? 0}/><Metric label="Gent afgewezen" value={run?.blockedGhent ?? 0}/>
         <Metric label="Zonder geldig telefoonnummer" value={run?.invalidPhone ?? 0}/><Metric label="Niet Nederlandstalig" value={run?.languageRejected ?? 0}/>
-        <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/>
-        <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
+        <Metric label="Meerdere vestigingen" value={run?.multipleLocationsRejected ?? 0}/><Metric label="Ketens" value={run?.chainRejected ?? 0}/>
+        <Metric label="Franchises" value={run?.franchiseRejected ?? 0}/><Metric label="Zelfde naam, ander adres" value={run?.sameNameMultipleAddresses ?? 0}/>
+        <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
+        <Metric label="Dubbele vermeldingen samengevoegd" value={run?.duplicateListingsMerged ?? 0}/><Metric label="Bestaand" value={run?.existingLeads ?? 0}/>
+        <Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
+        <Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten</p>

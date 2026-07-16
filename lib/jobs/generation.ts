@@ -5,10 +5,11 @@ import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentity
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
-import { validateStrictLead, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { hasReadableAddress, validateStrictLead, type StrictLeadReason } from "@/lib/leads/strict-validation";
 import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
-import { normalizeText } from "@/lib/leads/normalization";
+import { normalizePhones, normalizeText } from "@/lib/leads/normalization";
+import { applySingleLocationDecision, assessSingleLocation, directSingleLocationSignal, organizationNameKey, type SingleLocationDecision, type SingleLocationReason } from "@/lib/leads/single-location";
 import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
 import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
 import { extractCompanyWebsite } from "@/lib/leads/website";
@@ -40,6 +41,13 @@ type Stats = {
   blockedGhent: number;
   invalidPhone: number;
   languageRejected: number;
+  multipleLocationsRejected: number;
+  chainRejected: number;
+  franchiseRejected: number;
+  sameNameMultipleAddresses: number;
+  samePhoneMultipleAddresses: number;
+  locationCountUncertain: number;
+  duplicateListingsMerged: number;
 };
 
 const terminalStatuses = new Set<JobStatus>(terminalGenerationStatuses as readonly JobStatus[]);
@@ -68,6 +76,13 @@ function statsFromRun(run: GenerationRun): Stats {
     blockedGhent: run.blockedGhent,
     invalidPhone: run.invalidPhone,
     languageRejected: run.languageRejected,
+    multipleLocationsRejected: run.multipleLocationsRejected,
+    chainRejected: run.chainRejected,
+    franchiseRejected: run.franchiseRejected,
+    sameNameMultipleAddresses: run.sameNameMultipleAddresses,
+    samePhoneMultipleAddresses: run.samePhoneMultipleAddresses,
+    locationCountUncertain: run.locationCountUncertain,
+    duplicateListingsMerged: run.duplicateListingsMerged,
   };
 }
 
@@ -94,6 +109,13 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     blockedGhent: stats.blockedGhent,
     invalidPhone: stats.invalidPhone,
     languageRejected: stats.languageRejected,
+    multipleLocationsRejected: stats.multipleLocationsRejected,
+    chainRejected: stats.chainRejected,
+    franchiseRejected: stats.franchiseRejected,
+    sameNameMultipleAddresses: stats.sameNameMultipleAddresses,
+    samePhoneMultipleAddresses: stats.samePhoneMultipleAddresses,
+    locationCountUncertain: stats.locationCountUncertain,
+    duplicateListingsMerged: stats.duplicateListingsMerged,
     estimatedCostCents: 0,
     placesUsed: places,
     branchesUsed: branches,
@@ -302,6 +324,12 @@ async function knownCandidateReasons(candidates: Candidate[]) {
       "EXCLUDED_CATEGORY",
       "BLOCKED_BRUSSELS",
       "BLOCKED_GHENT",
+      "meerdere_vestigingen",
+      "vermoedelijke_keten",
+      "franchise",
+      "merk_of_netwerk",
+      "zelfde_naam_meerdere_adressen",
+      "zelfde_telefoon_meerdere_adressen",
     ].includes(priorSource?.reasonCode ?? "")) {
       match = { reason: priorSource?.reasonCode ?? "previously_rejected", disposition: "rejected", matchedFields: ["source_id"] };
     } else if (strongIdentityFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) {
@@ -309,6 +337,114 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     }
     return [candidate.externalPlaceId, match] as const;
   }));
+}
+
+function countSingleLocationDecision(stats: Stats, decision: SingleLocationDecision) {
+  if (decision.status === "MULTIPLE") stats.multipleLocationsRejected += 1;
+  if (["vermoedelijke_keten", "merk_of_netwerk"].includes(decision.reason)) stats.chainRejected += 1;
+  if (decision.reason === "franchise") stats.franchiseRejected += 1;
+  if (decision.reason === "zelfde_naam_meerdere_adressen") stats.sameNameMultipleAddresses += 1;
+  if (decision.reason === "zelfde_telefoon_meerdere_adressen") stats.samePhoneMultipleAddresses += 1;
+  if (decision.status === "UNCERTAIN") stats.locationCountUncertain += 1;
+  if (decision.reason === "dubbele_vermelding_zelfde_vestiging") stats.duplicateListingsMerged += Math.max(1, decision.duplicateExternalIds.length);
+}
+
+async function excludeSingleLocation(candidate: Candidate, reason: SingleLocationReason) {
+  const keys = candidateDedupeKeys(candidate);
+  await Promise.all(strongIdentityFingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
+    where: { identityKey },
+    create: {
+      identityKey,
+      source: candidate.source,
+      sourceRecordId: candidate.externalPlaceId,
+      phoneNormalized: keys.phone,
+      nameNormalized: organizationNameKey(candidate.companyName, candidate.city),
+      postalCode: candidate.postalCode,
+      reason,
+    },
+    update: { reason, expiresAt: null },
+  })));
+}
+
+function candidateFromLead(lead: {
+  externalPlaceId: string; companyName: string; phoneNumber: string; internationalPhoneNumber: string | null;
+  email: string | null; category: string; country: string; province: string | null; municipality: string | null;
+  city: string; postalCode: string | null; streetAddress: string; formattedAddress: string | null;
+  latitude: Prisma.Decimal; longitude: Prisma.Decimal; googleMapsUrl: string; sourceUrl: string | null;
+}) : Candidate {
+  return {
+    externalPlaceId: lead.externalPlaceId,
+    companyName: lead.companyName,
+    phoneNumber: lead.phoneNumber,
+    internationalPhoneNumber: lead.internationalPhoneNumber ?? undefined,
+    email: lead.email ?? undefined,
+    category: lead.category,
+    country: lead.country,
+    province: lead.province ?? undefined,
+    municipality: lead.municipality ?? undefined,
+    city: lead.city,
+    postalCode: lead.postalCode ?? undefined,
+    streetAddress: lead.streetAddress,
+    formattedAddress: lead.formattedAddress ?? undefined,
+    latitude: Number(lead.latitude),
+    longitude: Number(lead.longitude),
+    googleMapsUrl: lead.googleMapsUrl,
+    sourceUrl: lead.sourceUrl ?? undefined,
+  };
+}
+
+async function databaseLocationEvidence(candidate: Candidate) {
+  const phones = [candidate.phoneNumber, candidate.internationalPhoneNumber, ...(candidate.phoneNumbers ?? [])]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const normalizedPhones = normalizePhones(phones, candidate.country);
+  const [records, leads] = await Promise.all([
+    prisma.sourceRecord.findMany({
+      where: { OR: [
+        { rawName: { equals: candidate.companyName, mode: "insensitive" } },
+        ...(phones.length ? [{ rawPhone: { in: phones } }] : []),
+      ] },
+      select: { sourceRecordId: true, payload: true },
+      take: 100,
+    }),
+    prisma.lead.findMany({
+      where: { OR: [
+        { normalizedCompanyName: normalizeText(candidate.companyName) },
+        ...(normalizedPhones.length ? [{ normalizedPhoneNumber: { in: normalizedPhones } }] : []),
+      ] },
+      select: {
+        externalPlaceId: true, companyName: true, phoneNumber: true, internationalPhoneNumber: true, email: true,
+        category: true, country: true, province: true, municipality: true, city: true, postalCode: true,
+        streetAddress: true, formattedAddress: true, latitude: true, longitude: true, googleMapsUrl: true, sourceUrl: true,
+      },
+      take: 100,
+    }),
+  ]);
+  const sourceCandidates = records.flatMap((record): Candidate[] => {
+    const payload = record.payload as unknown as Candidate | null;
+    return payload?.externalPlaceId && payload.companyName ? [payload] : [];
+  });
+  return [...sourceCandidates, ...leads.map(candidateFromLead)];
+}
+
+async function verifySingleLocationForRun(runId: string, candidate: Candidate) {
+  const direct = directSingleLocationSignal(candidate);
+  if (direct) return { candidate: applySingleLocationDecision(candidate, direct), decision: direct };
+  try {
+    const database = await databaseLocationEvidence(candidate);
+    const adapter = enabledSourceAdapters().find((source) => source.id === candidate.source && source.findIdentityMatches);
+    if (!adapter?.findIdentityMatches) {
+      const decision = assessSingleLocation(candidate, database, false);
+      return { candidate: applySingleLocationDecision(candidate, decision), decision };
+    }
+    const sourceMatches = await adapter.findIdentityMatches(candidate, (event) => logOverpassEvent(runId, candidate.city, candidate.category, event));
+    const related = [...new Map([...database, ...sourceMatches].map((item) => [item.externalPlaceId, item])).values()];
+    const decision = assessSingleLocation(candidate, related, true);
+    return { candidate: applySingleLocationDecision(candidate, decision), decision };
+  } catch (error) {
+    const decision = assessSingleLocation(candidate, [], false);
+    decision.evidence.push(`Identiteitscontrole mislukt: ${errorMessage(error)}`);
+    return { candidate: applySingleLocationDecision(candidate, decision), decision };
+  }
 }
 
 async function logDuplicateMatch(runId: string, candidate: Candidate, match: KnownCandidateMatch | { reason: string; matchedExternalId?: string; matchedFields: string[] }) {
@@ -346,6 +482,12 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
 export async function saveValidatedLead(candidate: Candidate, verification: WebsiteVerificationResult) {
   // Existing leads must remain untouched.
   // Validation applies only to newly generated candidates.
+  if (candidate.singleLocationStatus !== "CONFIRMED") return {
+    stored: false,
+    reviewOnly: candidate.singleLocationStatus !== "MULTIPLE",
+    reason: candidate.singleLocationReason || "onzeker_aantal_vestigingen",
+    leadId: undefined,
+  };
   const strict = validateStrictLead(candidate, verification);
   if (!strict.valid) return { stored: false, reviewOnly: false, reason: strict.reasons[0], leadId: undefined };
   const gate = evaluateNewLeadGate(candidate, verification);
@@ -403,6 +545,9 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       languageConfidence: strict.language.confidence,
       regionLanguage: candidate.regionLanguage || (candidate.country.toUpperCase() === "BE" ? candidate.province : "Nederlands"),
       verificationSource: candidate.source ?? "OPENSTREETMAP",
+      singleLocationVerified: true,
+      singleLocationReason: candidate.singleLocationReason || "enkele_vestiging_bevestigd",
+      singleLocationVerifiedAt: new Date(),
       socialUrls: (candidate.socialUrls ?? []) as Prisma.InputJsonValue,
       source: candidate.source ?? "OPENSTREETMAP",
       confidenceScore: basic.lead.confidenceScore,
@@ -487,6 +632,7 @@ function strictReasonMessage(reason: StrictLeadReason) {
     ADDRESS_NOT_USABLE: "Geen volledig normaal adres beschikbaar",
     WEBSITE_NOT_CONFIRMED_ABSENT: "Afwezigheid van een eigen website niet bevestigd",
     OWN_WEBSITE_FOUND: "Heeft een eigen website",
+    SINGLE_LOCATION_NOT_CONFIRMED: "Aantal fysieke vestigingen is niet als precies één bevestigd",
   } satisfies Record<StrictLeadReason, string>)[reason];
 }
 
@@ -534,7 +680,7 @@ async function nextSearchArea() {
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
   const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, startedAt: true, createdAt: true } });
-  const summary = `Resultaten: kandidaten ${stats.found}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
+  const summary = `Resultaten: kandidaten ${stats.found}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens ${stats.chainRejected}; franchises ${stats.franchiseRejected}; zelfde naam op meerdere adressen ${stats.sameNameMultipleAddresses}; zelfde telefoon op meerdere adressen ${stats.samePhoneMultipleAddresses}; vestigingsaantal onzeker ${stats.locationCountUncertain}; dubbele vermeldingen samengevoegd ${stats.duplicateListingsMerged}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
   const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
   const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
   const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
@@ -815,13 +961,38 @@ export async function processGenerationBatch(runId: string) {
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
-      let strict = validateStrictLead(candidate);
-      const reasonsWithoutAddress = strict.reasons.filter((reason) => reason !== "ADDRESS_NOT_USABLE");
-      if (!reasonsWithoutAddress.length && strict.reasons.includes("ADDRESS_NOT_USABLE")) {
+      if (!hasReadableAddress(candidate)) {
         candidate = await enrichCandidateAddress(candidate);
         await sourceRecord(candidate);
-        strict = validateStrictLead(candidate);
       }
+      const singleLocation = await verifySingleLocationForRun(runId, candidate);
+      candidate = singleLocation.candidate;
+      await sourceRecord(candidate);
+      if (row.attempts === 0) countSingleLocationDecision(stats, singleLocation.decision);
+      if (singleLocation.decision.status === "MULTIPLE") {
+        stats.rejected += 1;
+        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
+          jobId: runId,
+          step: "multiple_locations_rejected",
+          sourceRecordId: candidate.externalPlaceId,
+          reason: singleLocation.decision.reason,
+          evidence: singleLocation.decision.evidence,
+        }), candidate.city, candidate.category);
+        await excludeSingleLocation(candidate, singleLocation.decision.reason);
+        await markDecision(candidate, "rejected", singleLocation.decision.reason);
+        await markValidationRejected(candidate, singleLocation.decision.reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      if (singleLocation.decision.status === "UNCERTAIN") {
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", "onzeker_aantal_vestigingen");
+        await queueValidationRetry({ runId, candidate, reason: `onzeker_aantal_vestigingen: ${singleLocation.decision.evidence.join(" ")}` });
+        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, "onzeker_aantal_vestigingen");
+        continue;
+      }
+      const strict = validateStrictLead(candidate);
       if (!strict.valid) {
         const reason = strict.reasons[0];
         if (strict.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;

@@ -20,6 +20,7 @@ const base: Candidate = {
   source: "GOOGLE_PLACES", googlePlaceId: "ChIJ-source-1", googleBusinessProfileVerified: true,
   googleBusinessProfileUrl: "https://www.google.com/maps/place/Nieuw-bedrijf",
   latitude: 52.37, longitude: 4.89, googleMapsUrl: "https://www.google.com/maps/place/Nieuw-bedrijf",
+  singleLocationStatus: "CONFIRMED", singleLocationReason: "enkele_vestiging_bevestigd",
 };
 const confirmed: WebsiteVerificationResult = { status: "NO_WEBSITE_CONFIRMED", confidence: 95, website: null, reason: "Bevestigd", evidence: [] };
 const unknown: WebsiteVerificationResult = { status: "UNKNOWN", confidence: 40, website: null, reason: "Timeout", evidence: [] };
@@ -55,6 +56,12 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
 
   it("weigert ook vlak voor opslag een kandidaat zonder geldig telefoonnummer", async () => {
     await expect(storeNewLead({ ...base, phoneNumber: undefined }, confirmed)).resolves.toMatchObject({ stored: false, reason: "PHONE_REQUIRED" });
+    expect(leadCreate).not.toHaveBeenCalled();
+  });
+
+  it("weigert vlak voor opslag een kandidaat zonder bevestigde enkele vestiging", async () => {
+    await expect(storeNewLead({ ...base, singleLocationStatus: "UNCERTAIN", singleLocationReason: "onzeker_aantal_vestigingen" }, confirmed))
+      .resolves.toMatchObject({ stored: false, reviewOnly: true, reason: "onzeker_aantal_vestigingen" });
     expect(leadCreate).not.toHaveBeenCalled();
   });
 

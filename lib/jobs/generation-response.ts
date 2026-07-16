@@ -10,6 +10,13 @@ type GenerationSummaryRun = {
   duplicates?: number;
   rejected?: number;
   sourceFailures?: number;
+  multipleLocationsRejected?: number;
+  chainRejected?: number;
+  franchiseRejected?: number;
+  sameNameMultipleAddresses?: number;
+  samePhoneMultipleAddresses?: number;
+  locationCountUncertain?: number;
+  duplicateListingsMerged?: number;
   progress?: number;
   message?: string | null;
   stopReason?: string | null;
@@ -30,6 +37,13 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     rejectedDuplicate: run?.duplicates ?? 0,
     rejectedInvalid: Math.max(0, (run?.rejected ?? 0) - rejectedWithWebsite),
     failedQueries: run?.sourceFailures ?? 0,
+    rejectedMultipleLocations: run?.multipleLocationsRejected ?? 0,
+    rejectedChains: run?.chainRejected ?? 0,
+    rejectedFranchises: run?.franchiseRejected ?? 0,
+    rejectedSameNameDifferentAddress: run?.sameNameMultipleAddresses ?? 0,
+    rejectedSamePhoneDifferentAddress: run?.samePhoneMultipleAddresses ?? 0,
+    uncertainLocationCount: run?.locationCountUncertain ?? 0,
+    mergedDuplicateListings: run?.duplicateListingsMerged ?? 0,
     progress: run?.progress ?? 0,
     message: run?.stopReason || run?.message || fallbackMessage || "Geen actieve zoekrun.",
     run,

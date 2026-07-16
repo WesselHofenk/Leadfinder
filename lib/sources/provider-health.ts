@@ -22,16 +22,17 @@ export async function healthySourceEndpoints(endpoints: string[], now = new Date
     const row = byProvider.get(endpoint);
     return !row?.unhealthyUntil || row.unhealthyUntil <= now;
   });
-  if (healthy.length) return healthy;
-  // Half-open exactly one circuit when every public endpoint is cooling down.
-  return endpoints
-    .slice()
-    .sort((left, right) => (byProvider.get(left)?.unhealthyUntil?.getTime() ?? 0) - (byProvider.get(right)?.unhealthyUntil?.getTime() ?? 0))
-    .slice(0, 1);
+  const coolingDown = endpoints.filter((endpoint) => !healthy.includes(endpoint))
+    .sort((left, right) => (byProvider.get(left)?.unhealthyUntil?.getTime() ?? 0) - (byProvider.get(right)?.unhealthyUntil?.getTime() ?? 0));
+  // Persistent health is advisory: always retain at least two independent
+  // half-open fallbacks so stale serverless circuit state cannot pin a run to
+  // one provider that is still unavailable.
+  return [...healthy, ...coolingDown].slice(0, Math.min(3, Math.max(2, endpoints.length)));
 }
 
 export async function recordSourceProviderEvent(event: OverpassEvent, now = new Date()) {
   if (!process.env.NEON_POSTGRES_PRISMA_URL) return;
+  if (event.errorType === "cancelled") return;
   const current = await prisma.sourceProviderHealth.findUnique({ where: { provider: event.endpoint } });
   const checks = (current?.totalFailures ?? 0) + (current?.totalSuccesses ?? 0);
   const averageDurationMs = Math.round((((current?.averageDurationMs ?? 0) * checks) + event.durationMs) / (checks + 1));

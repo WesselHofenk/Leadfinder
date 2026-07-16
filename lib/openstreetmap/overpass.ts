@@ -44,23 +44,30 @@ type SearchParams = {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   onEvent?: (event: OverpassEvent) => void | Promise<void>;
+  queryOverride?: string;
+  queryTypeOverride?: string;
+  tileLabelOverride?: string;
 };
 
 export type OverpassElementStrategy = "node" | "way" | "relation";
+export type OverpassContactStrategy = "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length;
+const contactStrategies: readonly OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
+export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
   const strategyIndex = normalized % elementStrategies.length;
-  const tileCursor = Math.floor(normalized / elementStrategies.length);
+  const contactIndex = Math.floor(normalized / elementStrategies.length) % contactStrategies.length;
+  const tileCursor = Math.floor(normalized / (elementStrategies.length * contactStrategies.length));
   const strategy = elementStrategies[strategyIndex];
-  return { cursor: normalized, tileCursor, strategy, id: `t${tileCursor}-${strategy}` };
+  const contact = contactStrategies[contactIndex];
+  return { cursor: normalized, tileCursor, strategy, contact, id: `t${tileCursor}-${strategy}-${contact.replace(":", "-")}` };
 }
 
 export function nextOverpassTileCursor(current: number) {
@@ -253,23 +260,43 @@ export function overpassTile(latitude: number, longitude: number, radius: number
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
-export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy }) {
+export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy; contact?: OverpassContactStrategy }) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
+  const contact = params.contact ?? "phone";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
-  const phoneFields = ['["phone"]', '["contact:phone"]', '["mobile"]', '["contact:mobile"]', '["telephone"]', '["contact:telephone"]'];
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const statements = filters
-    .flatMap((filter) => phoneFields.map((phone) => `${around}${filter}[name]${phone}${noOfficialWebsite};`))
+    .map((filter) => `${around}${filter}[name]["${contact}"]${noOfficialWebsite};`)
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
 
+function qlLiteral(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ").trim();
+}
+
+export function buildOverpassIdentityQuery(candidate: Candidate, timeoutSeconds = 7) {
+  const latitude = Number(candidate.latitude);
+  const longitude = Number(candidate.longitude);
+  const raw = candidate.rawData && typeof candidate.rawData === "object" ? candidate.rawData as Record<string, unknown> : {};
+  const contactKeys: OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
+  const statements = new Set<string>();
+  const around = `nwr(around:250000,${latitude.toFixed(7)},${longitude.toFixed(7)})`;
+  statements.add(`${around}["name"="${qlLiteral(candidate.companyName)}"];`);
+  for (const key of contactKeys) {
+    const rawValue = typeof raw[key] === "string" ? raw[key].trim() : "";
+    if (rawValue) statements.add(`${around}["${key}"="${qlLiteral(rawValue)}"];`);
+  }
+  return `[out:json][timeout:${Math.min(10, Math.max(5, timeoutSeconds))}];(${[...statements].join("")});out meta center qt;`;
+}
+
 function errorType(error: unknown) {
+  if (error instanceof Error && /hedged_request_cancelled|zoekrun geannuleerd/i.test(error.message)) return "cancelled";
   if (error instanceof SyntaxError) return "invalid_json";
   if (error instanceof Error && /html|content-type/i.test(error.message)) return "invalid_content_type";
-  if (error instanceof Error && /abort|timeout/i.test(`${error.name} ${error.message}`)) return "timeout";
+  if (error instanceof Error && /abort|timeout|reageerde niet binnen/i.test(`${error.name} ${error.message}`)) return "timeout";
   return "network";
 }
 
@@ -339,8 +366,9 @@ export async function searchOverpass(params: SearchParams) {
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
   const tile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
-  const queryType = `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}`;
-  const query = buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
+  const queryType = params.queryTypeOverride ?? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`;
+  const query = params.queryOverride ?? buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, contact: plan.contact, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
+  const tileLabel = params.tileLabelOverride ?? plan.id;
   const fetchImpl = params.fetchImpl ?? fetch;
   const sleep = params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const random = params.random ?? Math.random;
@@ -365,7 +393,7 @@ export async function searchOverpass(params: SearchParams) {
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);
           recordEndpointFailure(endpoint, Date.now());
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
           if (!isRetryableStatus(response.status)) break;
         } else {
           const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
@@ -374,14 +402,15 @@ export async function searchOverpass(params: SearchParams) {
           if (!Array.isArray(data.elements)) throw new SyntaxError("OpenStreetMap-response bevat geen geldige elementenlijst.");
           const candidates = candidatesFrom(data.elements, params.country, params.city);
           recordEndpointSuccess(endpoint);
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
-          return { candidates, endpoint, query, tile: { ...tile, id: plan.id }, queryType };
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
+          return { candidates, endpoint, query, tile: { ...tile, id: tileLabel }, queryType };
         }
       } catch (error) {
         lastError = error instanceof Error ? error : lastError;
-        recordEndpointFailure(endpoint, Date.now());
         const failureType = errorType(error);
-        await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, errorType: failureType, message: lastError.message });
+        if (failureType !== "cancelled") recordEndpointFailure(endpoint, Date.now());
+        await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, errorType: failureType, message: lastError.message });
+        if (failureType === "cancelled") throw lastError;
         // A timeout consumed this host's fair share; retrying it would starve the
         // independent fallback. Fast HTTP failures can still use normal retries.
         if (failureType === "timeout") break;
@@ -390,4 +419,36 @@ export async function searchOverpass(params: SearchParams) {
     }
   }
   throw new Error(`Alle OpenStreetMap-servers zijn mislukt. Laatste fout: ${lastError.message}`);
+}
+
+export async function searchOverpassHedged(params: SearchParams & { hedgeDelayMs?: number }) {
+  const endpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
+  if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
+  if (endpoints.length === 1) return searchOverpass({ ...params, endpoints });
+
+  const hedgeDelayMs = Math.min(3_000, Math.max(250, params.hedgeDelayMs ?? 1_250));
+  const controllers = endpoints.map(() => new AbortController());
+  const parentAbort = () => controllers.forEach((controller) => controller.abort(params.signal?.reason ?? new Error("De zoekrun is geannuleerd.")));
+  params.signal?.addEventListener("abort", parentAbort, { once: true });
+  let winner = false;
+
+  const attempts = endpoints.map(async (endpoint, index) => {
+    if (index) await (params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))))(index * hedgeDelayMs);
+    if (winner) throw new Error("hedged_request_cancelled");
+    return searchOverpass({ ...params, endpoints: [endpoint], signal: controllers[index].signal });
+  });
+
+  try {
+    const result = await Promise.any(attempts);
+    winner = true;
+    controllers.forEach((controller) => controller.abort(new Error("hedged_request_cancelled")));
+    return result;
+  } catch (error) {
+    const messages = error instanceof AggregateError
+      ? error.errors.map((item) => item instanceof Error ? item.message : String(item))
+      : [error instanceof Error ? error.message : String(error)];
+    throw new Error(`Alle onafhankelijke OpenStreetMap-fallbacks zijn mislukt. ${messages.join(" | ")}`);
+  } finally {
+    params.signal?.removeEventListener("abort", parentAbort);
+  }
 }

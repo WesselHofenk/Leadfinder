@@ -26,4 +26,5 @@ export interface BusinessSourceAdapter {
   readonly id: string;
   readonly enabled: boolean;
   searchBusinesses(input: SourceSearch): Promise<SourceSearchResult>;
+  findIdentityMatches?(candidate: Candidate, onEvent?: SourceSearch["onEvent"]): Promise<Candidate[]>;
 }

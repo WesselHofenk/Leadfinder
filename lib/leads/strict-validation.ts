@@ -8,7 +8,7 @@ import { normalizePhones } from "./normalization";
 export type StrictLeadReason =
   | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
   | "BUSINESS_NOT_CONFIRMED_ACTIVE" | "BUSINESS_CLOSED" | "ADDRESS_NOT_USABLE"
-  | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND";
+  | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND" | "SINGLE_LOCATION_NOT_CONFIRMED";
 
 const flemishRegions = new Set(["antwerpen", "limburg", "oost vlaanderen", "vlaams brabant", "west vlaanderen"]);
 const dutchWords = /\b(de|het|een|en|voor|van|met|winkel|bedrijf|kapper|schilder|loodgieter|open|gesloten|afspraak|contact|welkom)\b/gi;
@@ -103,6 +103,7 @@ export function validateStrictLead(candidate: Candidate, verification?: WebsiteV
   if (active.status === "closed") reasons.push("BUSINESS_CLOSED");
   else if (!active.active) reasons.push("BUSINESS_NOT_CONFIRMED_ACTIVE");
   if (!hasReadableAddress(candidate)) reasons.push("ADDRESS_NOT_USABLE");
+  if (candidate.singleLocationStatus !== "CONFIRMED") reasons.push("SINGLE_LOCATION_NOT_CONFIRMED");
   if (verification) {
     if (["WEBSITE_FOUND", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status)) reasons.push("OWN_WEBSITE_FOUND");
     else if (verification.status !== "NO_WEBSITE_CONFIRMED") reasons.push("WEBSITE_NOT_CONFIRMED_ABSENT");
