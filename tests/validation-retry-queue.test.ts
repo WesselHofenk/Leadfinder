@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   validationFindMany: vi.fn(),
   generationFindMany: vi.fn(),
   generationCreateMany: vi.fn(),
+  generationUpdateMany: vi.fn(),
   validationUpdateMany: vi.fn(),
   transaction: vi.fn(),
 }));
@@ -23,7 +24,12 @@ vi.mock("@/lib/prisma", () => ({
   },
 }));
 
-import { importDueValidationRetries, queueValidationRetry, validationRetryDelayMs } from "@/lib/leads/retry-queue";
+import {
+  importDueValidationRetries,
+  importInterruptedGenerationCandidates,
+  queueValidationRetry,
+  validationRetryDelayMs,
+} from "@/lib/leads/retry-queue";
 
 const candidate: Candidate = {
   externalPlaceId: "osm:node/123",
@@ -45,7 +51,7 @@ describe("duurzame validatie-retryqueue", () => {
     mocks.validationFindUnique.mockResolvedValue(null);
     mocks.validationUpsert.mockResolvedValue({ id: "retry-1" });
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      generationCandidate: { createMany: mocks.generationCreateMany },
+      generationCandidate: { createMany: mocks.generationCreateMany, updateMany: mocks.generationUpdateMany },
       validationCandidate: { updateMany: mocks.validationUpdateMany },
     }));
   });
@@ -78,6 +84,42 @@ describe("duurzame validatie-retryqueue", () => {
     }));
     expect(mocks.validationUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: { status: "PENDING_VALIDATION", retryCount: { increment: 1 } },
+    }));
+  });
+
+  it("hervat echte kandidaten uit een afgebroken run en herstelt de bekende zoekgemeente", async () => {
+    mocks.generationFindMany.mockResolvedValue([{
+      id: "queued-old",
+      source: "OPENSTREETMAP",
+      sourceRecordId: "osm:node/456",
+      segment: "BE:Brugge:lunchroom:t0-node",
+      payload: {
+        ...candidate,
+        externalPlaceId: "osm:node/456",
+        city: "Onbekend",
+        streetAddress: "Onbekend (51.21000, 3.22000)",
+        latitude: 51.21,
+        longitude: 3.22,
+      },
+      createdAt: new Date("2026-07-16T08:00:00Z"),
+    }]);
+    mocks.generationCreateMany.mockResolvedValue({ count: 1 });
+    mocks.generationUpdateMany.mockResolvedValue({ count: 1 });
+
+    await expect(importInterruptedGenerationCandidates("run-new", 8)).resolves.toBe(1);
+    expect(mocks.generationFindMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ runId: { not: "run-new" }, status: "PENDING" }),
+    }));
+    expect(mocks.generationCreateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: [expect.objectContaining({
+        runId: "run-new",
+        sourceRecordId: "osm:node/456",
+        segment: "carryover:BE:Brugge:lunchroom:t0-node",
+        payload: expect.objectContaining({ city: "Brugge", streetAddress: "Brugge (51.21000, 3.22000)" }),
+      })],
+    }));
+    expect(mocks.generationUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: "PROCESSED" }),
     }));
   });
 

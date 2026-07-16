@@ -27,6 +27,7 @@ function jsonResponse(elements: unknown[] = [element], status = 200) {
 const base = {
   endpoints: ["https://one.example/api", "https://two.example/api"],
   country: "NL",
+  city: "Amsterdam",
   latitude: 52.3676,
   longitude: 4.9041,
   radius: 12_000,
@@ -152,6 +153,12 @@ describe("timeouts, retries en fallback", () => {
   it.each([502, 503, 504])("behandelt HTTP %s als tijdelijke bronfout", async (status) => {
     const fetchImpl = vi.fn(async () => new Response("temporary", { status }));
     await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers");
+  });
+
+  it("gebruikt de gecontroleerde zoekstad wanneer een OSM-object geen addr:city heeft", async () => {
+    const withoutCity = { ...element, id: 99, tags: { ...element.tags, "addr:city": undefined } };
+    const result = await searchOverpass({ ...base, city: "Brugge", country: "BE", latitude: 51.2093, longitude: 3.2247, fetchImpl: vi.fn(async () => jsonResponse([withoutCity])) as typeof fetch });
+    expect(result.candidates[0]).toMatchObject({ city: "Brugge", country: "BE" });
   });
 
   it("retryt een tijdelijke bronfout met backoff voordat dezelfde bron wordt opgegeven", async () => {

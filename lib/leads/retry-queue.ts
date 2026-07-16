@@ -1,4 +1,4 @@
-import { Prisma, ValidationCandidateStatus } from "@prisma/client";
+import { CandidateQueueStatus, JobStatus, Prisma, ValidationCandidateStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import type { Candidate } from "./eligibility";
@@ -105,6 +105,63 @@ export async function importDueValidationRetries(runId: string, limit: number, n
     await tx.validationCandidate.updateMany({
       where: { id: { in: selected.map(({ id }) => id) }, status: ValidationCandidateStatus.RETRY_REQUIRED },
       data: { status: ValidationCandidateStatus.PENDING_VALIDATION, retryCount: { increment: 1 } },
+    });
+    return inserted.count;
+  });
+}
+
+function repairInterruptedPayload(payload: Prisma.JsonValue, segment: string) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload as Prisma.InputJsonValue;
+  const candidate = { ...payload } as Record<string, unknown>;
+  const [segmentCountry, segmentCity] = segment.replace(/^(?:carryover:)+/, "").split(":");
+  const currentCity = typeof candidate.city === "string" ? candidate.city.trim() : "";
+  if ((!currentCity || /^onbekend$/i.test(currentCity)) && segmentCity) {
+    candidate.city = segmentCity;
+    const currentAddress = typeof candidate.streetAddress === "string" ? candidate.streetAddress.trim() : "";
+    if (!currentAddress || /^onbekend(?:\s|$)/i.test(currentAddress)) {
+      const latitude = typeof candidate.latitude === "number" ? candidate.latitude : null;
+      const longitude = typeof candidate.longitude === "number" ? candidate.longitude : null;
+      candidate.streetAddress = latitude !== null && longitude !== null
+        ? `${segmentCity} (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`
+        : segmentCity;
+    }
+  }
+  if ((!candidate.country || candidate.country === "UNKNOWN") && /^(NL|BE)$/i.test(segmentCountry ?? "")) {
+    candidate.country = segmentCountry.toUpperCase();
+  }
+  return json(candidate);
+}
+
+export async function importInterruptedGenerationCandidates(runId: string, limit: number) {
+  const interrupted = await prisma.generationCandidate.findMany({
+    where: {
+      runId: { not: runId },
+      status: CandidateQueueStatus.PENDING,
+      run: { status: { in: [JobStatus.CANCELLED, JobStatus.TIMED_OUT, JobStatus.FAILED, JobStatus.PARTIALLY_COMPLETED] } },
+    },
+    orderBy: { createdAt: "asc" },
+    take: Math.max(0, limit),
+  });
+  if (!interrupted.length) return 0;
+
+  return prisma.$transaction(async (tx) => {
+    const inserted = await tx.generationCandidate.createMany({
+      data: interrupted.map((item) => ({
+        runId,
+        source: item.source,
+        sourceRecordId: item.sourceRecordId,
+        segment: `carryover:${item.segment.replace(/^(?:carryover:)+/, "")}`,
+        payload: repairInterruptedPayload(item.payload, item.segment),
+      })),
+      skipDuplicates: true,
+    });
+    await tx.generationCandidate.updateMany({
+      where: { id: { in: interrupted.map(({ id }) => id) }, status: CandidateQueueStatus.PENDING },
+      data: {
+        status: CandidateQueueStatus.PROCESSED,
+        processedAt: new Date(),
+        lastError: `Overgenomen door vervolgrun ${runId}`,
+      },
     });
     return inserted.count;
   });

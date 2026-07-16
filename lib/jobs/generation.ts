@@ -6,7 +6,7 @@ import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-st
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
-import { importDueValidationRetries, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
+import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
 import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
 import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
@@ -235,7 +235,13 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     } else if (domainLead) match = { reason: "duplicate_domain", disposition: "duplicate", leadId: domainLead.id, matchedFields: ["domain"] };
     else if (phoneLead) match = { reason: "duplicate_phone", disposition: "duplicate", leadId: phoneLead.id, matchedFields: ["phone"] };
     else if (addressLead) match = { reason: "duplicate_name_address", disposition: "duplicate", leadId: addressLead.id, matchedFields: ["name", "address"] };
-    else if (["skipped", "rejected"].includes(priorSource?.decision ?? "")) {
+    else if (["skipped", "rejected"].includes(priorSource?.decision ?? "") && [
+      "SKIPPED_PERMANENTLY_CLOSED",
+      "SKIPPED_TEMPORARILY_CLOSED",
+      "SKIPPED_HAS_WEBSITE",
+      "likely_closed",
+      "excluded_category",
+    ].includes(priorSource?.reasonCode ?? "")) {
       match = { reason: priorSource?.reasonCode ?? "previously_rejected", disposition: "rejected", matchedFields: ["source_id"] };
     } else if (strongIdentityFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) {
       match = { reason: "previously_rejected", disposition: "rejected", matchedFields: ["strong_identity"] };
@@ -474,6 +480,18 @@ export async function processGenerationBatch(runId: string) {
     let queued = await prisma.generationCandidate.findMany({
       where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
     });
+
+    if (!queued.length) {
+      const carriedCandidates = await importInterruptedGenerationCandidates(runId, env.GENERATION_BATCH_CANDIDATES);
+      if (carriedCandidates) {
+        stats.found += carriedCandidates;
+        retriedThisBatch += carriedCandidates;
+        queued = await prisma.generationCandidate.findMany({
+          where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+        });
+        batchMessage = `${carriedCandidates} nog niet gecontroleerde kandidaten uit een onderbroken run zijn veilig hervat.`;
+      }
+    }
 
     if (!queued.length) {
       const importedRetries = await importDueValidationRetries(runId, env.GENERATION_BATCH_CANDIDATES);

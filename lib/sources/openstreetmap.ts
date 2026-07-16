@@ -38,6 +38,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     const result = await searchOverpass({
       endpoints,
       country: input.country,
+      city: input.city,
       latitude: input.latitude,
       longitude: input.longitude,
       radius: input.radius,

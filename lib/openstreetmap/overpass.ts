@@ -29,6 +29,7 @@ export type OverpassEvent = {
 type SearchParams = {
   endpoints: string[];
   country: string;
+  city?: string;
   latitude: number;
   longitude: number;
   radius: number;
@@ -115,13 +116,13 @@ function closedSignals(tags: Record<string, string>) {
   return signals;
 }
 
-function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
+function candidatesFrom(elements: OsmElement[], country: string, searchCity?: string): Candidate[] {
   const candidates = elements.flatMap((element): Candidate[] => {
     const tags = element.tags ?? {};
     const latitude = element.lat ?? element.center?.lat;
     const longitude = element.lon ?? element.center?.lon;
     if (!tags.name || latitude == null || longitude == null) return [];
-    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || "Onbekend";
+    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || searchCity || "Onbekend";
     const street = tags["addr:full"]
       || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ")
       || `${city} (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`;
@@ -335,7 +336,7 @@ export async function searchOverpass(params: SearchParams) {
           if (!contentType.includes("json") || /^\s*</.test(raw)) throw new Error("OpenStreetMap gaf HTML of een ongeldig content-type terug.");
           const data = JSON.parse(raw) as { elements?: OsmElement[] };
           if (!Array.isArray(data.elements)) throw new SyntaxError("OpenStreetMap-response bevat geen geldige elementenlijst.");
-          const candidates = candidatesFrom(data.elements, params.country);
+          const candidates = candidatesFrom(data.elements, params.country, params.city);
           recordEndpointSuccess(endpoint);
           await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
           return { candidates, endpoint, query, tile: { ...tile, id: plan.id }, queryType };
