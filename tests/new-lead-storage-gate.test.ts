@@ -16,7 +16,10 @@ import { storeNewLead } from "@/lib/jobs/generation";
 const base: Candidate = {
   externalPlaceId: "source-1", companyName: "Nieuw bedrijf", phoneNumber: "0201234567", businessStatus: "OPERATIONAL",
   country: "NL", category: "winkel", city: "Amsterdam", postalCode: "1011AA", streetAddress: "Damrak 1",
-  latitude: 52.37, longitude: 4.89, googleMapsUrl: "https://maps.google.com/?q=1",
+  formattedAddress: "Damrak 1, 1011 AA Amsterdam, Nederland", language: "nl", languageConfidence: 95,
+  source: "GOOGLE_PLACES", googlePlaceId: "ChIJ-source-1", googleBusinessProfileVerified: true,
+  googleBusinessProfileUrl: "https://www.google.com/maps/place/Nieuw-bedrijf",
+  latitude: 52.37, longitude: 4.89, googleMapsUrl: "https://www.google.com/maps/place/Nieuw-bedrijf",
 };
 const confirmed: WebsiteVerificationResult = { status: "NO_WEBSITE_CONFIRMED", confidence: 95, website: null, reason: "Bevestigd", evidence: [] };
 const unknown: WebsiteVerificationResult = { status: "UNKNOWN", confidence: 40, website: null, reason: "Timeout", evidence: [] };
@@ -31,9 +34,9 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
   });
 
   it.each([
-    [{ ...base, businessStatus: "CLOSED_PERMANENTLY" }, confirmed, "SKIPPED_PERMANENTLY_CLOSED"],
+    [{ ...base, businessStatus: "CLOSED_PERMANENTLY" }, confirmed, "BUSINESS_CLOSED"],
     [{ ...base, rawData: { officialWebsite: "bruna.nl" } }, confirmed, "SKIPPED_HAS_WEBSITE"],
-    [base, unknown, "SKIPPED_WEBSITE_UNKNOWN"],
+    [base, unknown, "WEBSITE_NOT_CONFIRMED_ABSENT"],
   ] as const)("maakt geen Lead-record voor %s", async (candidate, verification, reason) => {
     await expect(storeNewLead(candidate, verification)).resolves.toMatchObject({ stored: false, reason });
     expect(leadCreate).not.toHaveBeenCalled();
@@ -44,6 +47,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     expect(prismaTransaction).toHaveBeenCalledOnce();
     expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
       pipelineStageId: "pipeline-nieuw", isActive: true, isFiltered: false, websiteStatus: "NO_WEBSITE_CONFIRMED",
+      googleBusinessProfileVerified: true, language: "nl", businessStatus: "OPERATIONAL",
     }) }));
     expect(validationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "PROMOTED_TO_LEAD", promotedLeadId: "lead-new" }) }));
     expect(sourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ leadId: "lead-new", decision: "stored" }) }));
@@ -55,7 +59,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
   });
 
   it("slaat een geldig Belgisch bedrijf zonder website eveneens in Nieuw op", async () => {
-    const belgian = { ...base, externalPlaceId: "source-be-1", country: "BE", city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", latitude: 51.0543, longitude: 3.7174 };
+    const belgian = { ...base, externalPlaceId: "source-be-1", googlePlaceId: "ChIJ-source-be-1", country: "BE", province: "Oost-Vlaanderen", city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", formattedAddress: "Korenmarkt 1, 9000 Gent, België", latitude: 51.0543, longitude: 3.7174 };
     await expect(storeNewLead(belgian, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
     expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ country: "BE", pipelineStageId: "pipeline-nieuw" }) }));
   });

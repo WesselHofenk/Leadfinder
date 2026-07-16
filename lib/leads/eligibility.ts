@@ -19,6 +19,9 @@ export type Candidate = {
   rawData?: unknown; sourceData?: unknown; websiteAbsenceConfirmed?: boolean;
   sourceWebsiteFieldsChecked?: boolean;
   email?: string; closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
+  formattedAddress?: string; language?: string; languageConfidence?: number; regionLanguage?: string;
+  googlePlaceId?: string; googleBusinessProfileUrl?: string; googleBusinessProfileVerified?: boolean; googleBusinessStatusVerified?: boolean;
+  description?: string; contactText?: string; reviewSnippets?: string[]; socialUrls?: string[];
 };
 
 export type EligibleBase = Candidate & {

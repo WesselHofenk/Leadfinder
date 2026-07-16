@@ -116,6 +116,14 @@ function closedSignals(tags: Record<string, string>) {
   return signals;
 }
 
+function explicitGoogleProfile(tags: Record<string, string>) {
+  const placeId = tags["google:place_id"] || tags.google_place_id || tags["contact:google:place_id"];
+  const urls = [tags["google:maps"], tags.google_maps, tags["contact:google"], tags["contact:google_maps"], tags["google:business"]]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const profileUrl = urls.find((value) => /^https:\/\/(?:(?:www\.)?(?:google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)|maps\.app\.goo\.gl)(?:\/|\?|$)/i.test(value));
+  return { placeId, profileUrl, verified: Boolean(placeId || profileUrl) };
+}
+
 function candidatesFrom(elements: OsmElement[], country: string, searchCity?: string): Candidate[] {
   const candidates = elements.flatMap((element): Candidate[] => {
     const tags = element.tags ?? {};
@@ -127,7 +135,13 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ")
       || `${city} (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`;
     const category = tags.shop || tags.craft || tags.office || tags.amenity || tags.tourism || tags.healthcare || "bedrijf";
+    const formattedAddress = [
+      tags["addr:full"] || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" "),
+      [tags["addr:postcode"], city].filter(Boolean).join(" "),
+      (tags["addr:country"] || country).toUpperCase(),
+    ].filter(Boolean).join(", ");
     const closureSignals = closedSignals(tags);
+    const googleProfile = explicitGoogleProfile(tags);
     const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"], tags["operator:website"], tags["brand:website"]].filter((value): value is string => Boolean(value));
     const noWebsiteValues = new Set(["no", "none", "nee", "geen", "n.v.t.", "nvt"]);
     const positiveWebsite = rawWebsiteValues.find((value) => !noWebsiteValues.has(value.trim().toLowerCase()));
@@ -136,8 +150,11 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
     const emailAddresses = [tags.email, tags["contact:email"]].filter((value): value is string => Boolean(value));
     const sourceDates = [element.timestamp, tags.check_date, tags["contact:check_date"], tags["opening_hours:check_date"], tags["survey:date"]]
       .filter((value): value is string => Boolean(value)).map((value) => ({ value, time: Date.parse(value) })).filter(({ time }) => Number.isFinite(time)).sort((a, b) => b.time - a.time);
-    const activitySignals = ["opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date", "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram"]
+    const activitySignals = ["opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date", "phone", "contact:phone", "mobile", "contact:mobile", "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram"]
       .filter((key) => Boolean(tags[key]));
+    const socialUrls = [tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]]
+      .filter((value): value is string => Boolean(value));
+    const explicitStatus = [tags.business_status, tags.status, tags["contact:status"]].map((value) => value?.toLowerCase()).find(Boolean);
     return [{
       externalPlaceId: `osm:${element.type}/${element.id}`,
       source: "OPENSTREETMAP",
@@ -151,10 +168,20 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
       sourceWebsiteFieldsChecked: true,
-      businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : "UNKNOWN",
+      businessStatus: closureSignals.length || isPermanentlyClosed(tags)
+        ? "CLOSED_PERMANENTLY"
+        : explicitStatus && /^(operational|open|active|actief|geopend)$/.test(explicitStatus) ? "OPERATIONAL" : "UNKNOWN",
       closureSignals,
       activitySignals,
       rawData: tags,
+      description: tags["description:nl"] || tags.description,
+      contactText: [tags.note, tags.operator, tags["contact:phone"], tags["contact:email"]].filter(Boolean).join(" "),
+      language: tags["name:nl"] || tags["description:nl"] ? "nl" : tags["name:fr"] || tags["description:fr"] ? "fr" : undefined,
+      languageConfidence: tags["name:nl"] || tags["description:nl"] || tags["name:fr"] || tags["description:fr"] ? 95 : undefined,
+      googlePlaceId: googleProfile.placeId,
+      googleBusinessProfileUrl: googleProfile.profileUrl,
+      googleBusinessProfileVerified: googleProfile.verified,
+      socialUrls,
       sourceUpdatedAt: sourceDates[0]?.value,
       country: (tags["addr:country"] || country).toUpperCase(),
       category,
@@ -167,10 +194,11 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       city,
       postalCode: tags["addr:postcode"],
       streetAddress: street,
+      formattedAddress: formattedAddress || undefined,
       houseNumber: tags["addr:housenumber"],
       latitude,
       longitude,
-      googleMapsUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+      googleMapsUrl: googleProfile.profileUrl || `https://www.openstreetmap.org/${element.type}/${element.id}`,
       sourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
       fetchedAt: new Date().toISOString(),
     }];

@@ -155,6 +155,18 @@ describe("timeouts, retries en fallback", () => {
     await expect(searchOverpass({ ...base, endpoints: [base.endpoints[0]], fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("Alle OpenStreetMap-servers");
   });
 
+  it("neemt alleen een expliciete Google-verwijzing over en verzint geen verificatie", async () => {
+    const withGoogle = { ...element, tags: { ...element.tags, "google:place_id": "ChIJ-explicit", "google:maps": "https://www.google.com/maps/place/Testbedrijf", "name:nl": "Testbedrijf", business_status: "operational" } };
+    const result = await searchOverpass({ ...base, fetchImpl: vi.fn(async () => jsonResponse([withGoogle])) as typeof fetch });
+    expect(result.candidates[0]).toMatchObject({
+      googlePlaceId: "ChIJ-explicit",
+      googleBusinessProfileUrl: "https://www.google.com/maps/place/Testbedrijf",
+      googleBusinessProfileVerified: true,
+      language: "nl",
+    });
+    expect(result.candidates[0].googleBusinessStatusVerified).not.toBe(true);
+  });
+
   it("gebruikt de gecontroleerde zoekstad wanneer een OSM-object geen addr:city heeft", async () => {
     const withoutCity = { ...element, id: 99, tags: { ...element.tags, "addr:city": undefined } };
     const result = await searchOverpass({ ...base, city: "Brugge", country: "BE", latitude: 51.2093, longitude: 3.2247, fetchImpl: vi.fn(async () => jsonResponse([withoutCity])) as typeof fetch });

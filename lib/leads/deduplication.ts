@@ -2,7 +2,7 @@ import type { Candidate } from "./eligibility";
 import { normalizeDomain, normalizeEmail, normalizePhone, normalizeText } from "./normalization";
 import { determineWebsiteStatus } from "./website";
 
-export type DedupeKeys = { externalId: string; phone?: string; email?: string; domain?: string; namePostal?: string; nameCityAddress: string; nameCityCategory: string };
+export type DedupeKeys = { externalId: string; googlePlaceId?: string; phone?: string; email?: string; domain?: string; namePostal?: string; nameCityAddress: string; nameCityCategory: string };
 
 export function candidateDedupeKeys(candidate: Candidate): DedupeKeys {
   const name = normalizeText(candidate.companyName);
@@ -11,6 +11,7 @@ export function candidateDedupeKeys(candidate: Candidate): DedupeKeys {
   const email = normalizeEmail(candidate.email) || undefined;
   return {
     externalId: candidate.externalPlaceId,
+    googlePlaceId: candidate.googlePlaceId?.trim() || undefined,
     phone,
     domain,
     email,
@@ -22,13 +23,13 @@ export function candidateDedupeKeys(candidate: Candidate): DedupeKeys {
 
 export function fingerprintValues(keys: DedupeKeys) {
   return [
-    ["external", keys.externalId], ["phone", keys.phone], ["email", keys.email], ["domain", keys.domain],
+    ["external", keys.externalId], ["google_place_id", keys.googlePlaceId], ["phone", keys.phone], ["email", keys.email], ["domain", keys.domain],
     ["postal", keys.namePostal], ["address", keys.nameCityAddress], ["name_city_category", keys.nameCityCategory],
   ].filter((item): item is [string, string] => Boolean(item[1])).map(([kind, value]) => ({ kind, fingerprint: `${kind}:${value}` }));
 }
 
 export function strongIdentityFingerprintValues(keys: DedupeKeys) {
-  const strongKinds = new Set(["external", "phone", "email", "address"]);
+  const strongKinds = new Set(["external", "google_place_id", "phone", "email", "address"]);
   return fingerprintValues(keys).filter(({ kind }) => strongKinds.has(kind));
 }
 

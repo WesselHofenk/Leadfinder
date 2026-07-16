@@ -4,6 +4,8 @@ import { serverEnv } from "@/lib/env";
 import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentityFingerprintValues } from "@/lib/leads/deduplication";
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
+import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
+import { validateStrictLead, type StrictLeadReason } from "@/lib/leads/strict-validation";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
 import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
@@ -214,11 +216,12 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     prisma.lead.findMany({
       where: { OR: [
         { externalPlaceId: { in: entries.map(({ candidate }) => candidate.externalPlaceId) } },
+        { googlePlaceId: { in: entries.flatMap(({ keys }) => keys.googlePlaceId ? [keys.googlePlaceId] : []) } },
         { normalizedPhoneNumber: { in: entries.flatMap(({ keys }) => keys.phone ? [keys.phone] : []) } },
         { normalizedDomain: { in: entries.flatMap(({ keys }) => keys.domain ? [keys.domain] : []) } },
         ...entries.map(({ candidate }) => ({ normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) })),
       ] },
-      select: { id: true, externalPlaceId: true, normalizedPhoneNumber: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
+      select: { id: true, externalPlaceId: true, googlePlaceId: true, normalizedPhoneNumber: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
     }),
     prisma.suppressedLead.findMany({ where: { fingerprint: { in: fingerprints } }, select: { fingerprint: true } }),
     prisma.leadExclusion.findMany({ where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, select: { identityKey: true } }),
@@ -228,19 +231,27 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     let match: KnownCandidateMatch | null = null;
     const priorSource = sourceRecords.find(({ source, sourceRecordId }) => source === (candidate.source ?? "OPENSTREETMAP") && sourceRecordId === candidate.externalPlaceId);
     const sourceLead = leads.find((lead) => lead.externalPlaceId === candidate.externalPlaceId);
+    const googlePlaceLead = keys.googlePlaceId ? leads.find((lead) => lead.googlePlaceId === keys.googlePlaceId) : undefined;
     const domainLead = keys.domain ? leads.find((lead) => lead.normalizedDomain === keys.domain) : undefined;
     const phoneLead = keys.phone ? leads.find((lead) => lead.normalizedPhoneNumber === keys.phone) : undefined;
     const addressLead = leads.find((lead) => lead.normalizedCompanyName === normalizeText(candidate.companyName) && lead.normalizedAddress === normalizeText(candidate.streetAddress));
-    if (sourceLead || priorSource?.leadId || ["stored", "duplicate"].includes(priorSource?.decision ?? "")) {
-      match = { reason: "duplicate_source_id", disposition: "duplicate", leadId: sourceLead?.id ?? priorSource?.leadId ?? undefined, matchedFields: ["source_id"] };
+    if (sourceLead || googlePlaceLead || priorSource?.leadId || ["stored", "duplicate"].includes(priorSource?.decision ?? "")) {
+      match = {
+        reason: googlePlaceLead ? "duplicate_google_place_id" : "duplicate_source_id",
+        disposition: "duplicate",
+        leadId: sourceLead?.id ?? googlePlaceLead?.id ?? priorSource?.leadId ?? undefined,
+        matchedFields: [googlePlaceLead ? "google_place_id" : "source_id"],
+      };
     } else if (domainLead) match = { reason: "duplicate_domain", disposition: "duplicate", leadId: domainLead.id, matchedFields: ["domain"] };
     else if (phoneLead) match = { reason: "duplicate_phone", disposition: "duplicate", leadId: phoneLead.id, matchedFields: ["phone"] };
     else if (addressLead) match = { reason: "duplicate_name_address", disposition: "duplicate", leadId: addressLead.id, matchedFields: ["name", "address"] };
     else if (["skipped", "rejected"].includes(priorSource?.decision ?? "") && [
       "SKIPPED_PERMANENTLY_CLOSED",
       "SKIPPED_HAS_WEBSITE",
-      "likely_closed",
-      "excluded_category",
+      "BUSINESS_CLOSED",
+      "REGION_NOT_ALLOWED",
+      "OWN_WEBSITE_FOUND",
+      "EXCLUDED_CATEGORY",
     ].includes(priorSource?.reasonCode ?? "")) {
       match = { reason: priorSource?.reasonCode ?? "previously_rejected", disposition: "rejected", matchedFields: ["source_id"] };
     } else if (strongIdentityFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) {
@@ -285,6 +296,8 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
 export async function saveValidatedLead(candidate: Candidate, verification: WebsiteVerificationResult) {
   // Existing leads must remain untouched.
   // Validation applies only to newly generated candidates.
+  const strict = validateStrictLead(candidate, verification);
+  if (!strict.valid) return { stored: false, reviewOnly: false, reason: strict.reasons[0], leadId: undefined };
   const gate = evaluateNewLeadGate(candidate, verification);
   if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
   const basic = validateCandidateBasics(candidate);
@@ -306,11 +319,16 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       city: basic.lead.city,
       postalCode: basic.lead.postalCode,
       streetAddress: basic.lead.streetAddress,
+      formattedAddress: candidate.formattedAddress || basic.lead.streetAddress,
       houseNumber: basic.lead.houseNumber,
       normalizedAddress: basic.lead.normalizedAddress,
       latitude: new Prisma.Decimal(basic.lead.latitude),
       longitude: new Prisma.Decimal(basic.lead.longitude),
-      googleMapsUrl: basic.lead.googleMapsUrl,
+      googleMapsUrl: candidate.googleBusinessProfileUrl || basic.lead.googleMapsUrl,
+      googlePlaceId: candidate.googlePlaceId,
+      googleBusinessProfileUrl: candidate.googleBusinessProfileUrl,
+      googleBusinessProfileVerified: true,
+      googleBusinessVerifiedAt: new Date(),
       website: verification.website,
       websiteUrl: verification.website,
       normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
@@ -323,8 +341,14 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       leadType: "NO_WEBSITE",
       opportunityScore: 90,
       conversionQualityScore: 0,
-      businessStatus: basic.lead.businessStatus,
-      source: "OPENSTREETMAP",
+      businessStatus: "OPERATIONAL",
+      statusConfidence: strict.active.confidence,
+      language: "nl",
+      languageConfidence: strict.language.confidence,
+      regionLanguage: candidate.regionLanguage || (candidate.country.toUpperCase() === "BE" ? candidate.province : "Nederlands"),
+      verificationSource: candidate.source ?? "OPENSTREETMAP",
+      socialUrls: (candidate.socialUrls ?? []) as Prisma.InputJsonValue,
+      source: candidate.source ?? "OPENSTREETMAP",
       confidenceScore: basic.lead.confidenceScore,
       confidenceLevel: basic.lead.confidenceLevel,
       pipelineStageId: NEW_PIPELINE_STAGE_ID,
@@ -387,12 +411,35 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
 export const storeNewLead = saveValidatedLead;
 
 function rejectionCode(reason: string) {
-  return ({ niet_operationeel: "likely_closed", keten_of_uitgesloten: "excluded_category", onbetrouwbare_status: "manual_verification_required" } as Record<string, string>)[reason] ?? "invalid_business";
+  return ({
+    niet_operationeel: "BUSINESS_CLOSED",
+    keten_of_uitgesloten: "EXCLUDED_CATEGORY",
+    onbetrouwbare_status: "BUSINESS_NOT_CONFIRMED_ACTIVE",
+  } as Record<string, string>)[reason] ?? (reason || "INVALID_BUSINESS");
+}
+
+function strictReasonMessage(reason: StrictLeadReason) {
+  return ({
+    NO_GOOGLE_BUSINESS_PROFILE: "Geen aantoonbaar Google Bedrijfsprofiel",
+    REGION_NOT_ALLOWED: "Buiten Nederland of Nederlandstalig België",
+    LANGUAGE_NOT_DUTCH: "Niet aantoonbaar Nederlandstalig",
+    BUSINESS_NOT_CONFIRMED_ACTIVE: "Status onbekend of niet positief actief bevestigd",
+    BUSINESS_CLOSED: "Bedrijf is gesloten",
+    ADDRESS_NOT_USABLE: "Geen volledig normaal adres beschikbaar",
+    WEBSITE_NOT_CONFIRMED_ABSENT: "Afwezigheid van een eigen website niet bevestigd",
+    OWN_WEBSITE_FOUND: "Heeft een eigen website",
+  } satisfies Record<StrictLeadReason, string>)[reason];
 }
 
 async function nextSearchArea() {
   const areas = await prisma.coverageArea.findMany({
-    where: { status: { not: "PAUSED" } },
+    where: {
+      status: { not: "PAUSED" },
+      OR: [
+        { country: "NL" },
+        { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen", "Brussel"] } },
+      ],
+    },
     orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
     take: 24,
   });
@@ -564,7 +611,18 @@ export async function processGenerationBatch(runId: string) {
         const sourceDurationMs = Date.now() - sourceStartedAt;
         warnings.push(...result.warnings);
         if (!places.includes(segment)) places.push(segment);
-        const bufferedCandidates = result.candidates.slice(0, env.LEAD_CANDIDATE_BUFFER);
+        const bufferedCandidates = result.candidates
+          .slice()
+          .sort((left, right) => {
+            const quality = (candidate: Candidate) =>
+              (candidate.phoneNumber || candidate.internationalPhoneNumber ? 8 : 0)
+              + (candidate.email ? 3 : 0)
+              + (candidate.formattedAddress && candidate.postalCode ? 4 : 0)
+              + (candidate.googleBusinessProfileVerified ? 20 : 0)
+              + (candidate.businessStatus === "OPERATIONAL" ? 10 : 0);
+            return quality(right) - quality(left);
+          })
+          .slice(0, env.LEAD_CANDIDATE_BUFFER);
         const knownAtSource = bufferedCandidates.length ? await knownCandidateReasons(bufferedCandidates) : new Map<string, KnownCandidateMatch | null>();
         const novelCandidates = bufferedCandidates.filter((candidate) => {
           const known = knownAtSource.get(candidate.externalPlaceId);
@@ -654,7 +712,7 @@ export async function processGenerationBatch(runId: string) {
         continue;
       }
       await prisma.generationCandidate.update({ where: { id: row.id }, data: { attempts: { increment: 1 } } });
-      const candidate = candidateFromQueue(row);
+      let candidate = candidateFromQueue(row);
       if (row.attempts === 0) stats.checked += 1;
       await sourceRecord(candidate);
       if (isPermanentlyClosed(candidate)) {
@@ -666,9 +724,31 @@ export async function processGenerationBatch(runId: string) {
       }
       if (isTemporarilyClosed(candidate)) {
         stats.temporarilyClosed += 1;
-        stats.manualReview += 1;
-        await markDecision(candidate, "retry", "TEMPORARILY_CLOSED");
-        await queueValidationRetry({ runId, candidate, reason: "STATUS_CHECK_FAILED: bron meldt tijdelijk gesloten; later opnieuw controleren." });
+        stats.rejected += 1;
+        await markDecision(candidate, "rejected", "BUSINESS_CLOSED");
+        await markValidationRejected(candidate, "BUSINESS_CLOSED");
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      let strict = validateStrictLead(candidate);
+      const reasonsWithoutAddress = strict.reasons.filter((reason) => reason !== "ADDRESS_NOT_USABLE");
+      if (!reasonsWithoutAddress.length && strict.reasons.includes("ADDRESS_NOT_USABLE")) {
+        candidate = await enrichCandidateAddress(candidate);
+        await sourceRecord(candidate);
+        strict = validateStrictLead(candidate);
+      }
+      if (!strict.valid) {
+        const reason = strict.reasons[0];
+        stats.rejected += 1;
+        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
+          jobId: runId,
+          step: "strict_quality_rejected",
+          sourceRecordId: candidate.externalPlaceId,
+          reasons: strict.reasons,
+          message: strictReasonMessage(reason),
+        }), candidate.city, candidate.category);
+        await markDecision(candidate, "rejected", reason);
+        await markValidationRejected(candidate, reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
@@ -749,9 +829,9 @@ export async function processGenerationBatch(runId: string) {
             await markDecision(candidate, "skipped", gate.reason);
             await markValidationRejected(candidate, gate.reason, verification);
           } else {
-            stats.manualReview += 1;
-            await markDecision(candidate, "retry", gate.reason);
-            await queueValidationRetry({ runId, candidate, verification, reason: `${gate.reason}: ${gate.detail}` });
+            stats.rejected += 1;
+            await markDecision(candidate, "rejected", gate.reason);
+            await markValidationRejected(candidate, gate.reason, verification);
           }
           await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
           continue;

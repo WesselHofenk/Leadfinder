@@ -5,7 +5,7 @@ import { pipelineStages } from "../lib/leads/pipeline";
 const prisma = new PrismaClient();
 const categories = ["aannemer","klusbedrijf","schilder","stukadoor","tegelzetter","installatiebedrijf","dakdekker","loodgieter","elektricien","hovenier","schoonmaakbedrijf","verhuisbedrijf","garage","autobedrijf","rijschool","kapper","schoonheidssalon","nagelstudio","fysiotherapie","wellness","personal trainer","restaurant","café","lunchroom","catering","hotel","bed and breakfast","makelaar","interieurbedrijf","keukenbedrijf","fotograaf","videograaf","drukkerij","boekhouder","consultant","coach","opleidingsbedrijf","kinderopvang","hondenuitlaatservice","hondentrimmer","dierenpension","speciaalzaak","groothandel","verhuurbedrijf"];
 const excluded = ["bus_station","parking","public_bathroom","park","monument","street_address","atm","local_government_office","place_of_worship","event_venue"];
-const alternativeCategories = ["barbier","accountant","lokale winkel","ambachtsbedrijf","couvreur","toiture","peintre","plâtrier","plombier","électricien","jardinier","nettoyage","garage automobile","coiffeur","esthéticienne","photographe","comptable"];
+const alternativeCategories = ["barbier", "accountant", "lokale winkel", "ambachtsbedrijf"];
 const centers = [
   ["NL", "Noord-Holland", "Amsterdam", 52.3676, 4.9041],
   ["NL", "Zuid-Holland", "Rotterdam", 51.9244, 4.4777],

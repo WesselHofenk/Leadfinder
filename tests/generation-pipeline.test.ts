@@ -19,6 +19,11 @@ describe("deduplicatie binnen een run", () => {
   it("dedupliceert dezelfde genormaliseerde naam op exact hetzelfde adres", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys({ ...base, companyName: "De Schilder B.V." })); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "de schilder bv" }))).toBe(true); });
   it("dedupliceert op genormaliseerd domein en e-mail", () => { const first = candidateDedupeKeys({ ...base, website: "https://www.Bedrijf.nl/contact", email: "INFO@BEDRIJF.NL" }); const second = candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "Andere naam", postalCode: "3521 AA", streetAddress: "Andere straat 2", category: "aannemer", website: "http://bedrijf.nl", email: "info@bedrijf.nl" }); const index = new RunDeduplicator(); index.hasOrAdd(first); expect(index.hasOrAdd(second)).toBe(true); expect(fingerprintValues(first).map((item) => item.kind)).toEqual(expect.arrayContaining(["domain", "email"])); });
   it("herstelt bestaande records alleen via sterke identiteitssleutels", () => expect(strongIdentityFingerprintValues(candidateDedupeKeys(base)).map((item) => item.kind)).toEqual(["external", "phone", "address"]));
+  it("dedupliceert over bronnen heen op Google Place ID", () => {
+    const index = new RunDeduplicator();
+    index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "osm:node/1", googlePlaceId: "ChIJ-one" }));
+    expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "ChIJ-one", googlePlaceId: "ChIJ-one", source: "GOOGLE_PLACES", phoneNumber: "06 87654321", streetAddress: "Andere straat 2" }))).toBe(true);
+  });
 });
 
 describe("zoeklus", () => {

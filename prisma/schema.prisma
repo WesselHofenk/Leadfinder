@@ -157,6 +157,7 @@ model Lead {
   city                          String
   postalCode                    String?
   streetAddress                 String
+  formattedAddress              String?
   houseNumber                   String?
   normalizedAddress             String
   latitude                      Decimal                @db.Decimal(10, 7)
@@ -172,6 +173,9 @@ model Lead {
   sourceUrl                     String?
   sourceFetchedAt               DateTime?
   googlePlaceId                 String?                @unique
+  googleBusinessProfileUrl      String?
+  googleBusinessProfileVerified Boolean                @default(false)
+  googleBusinessVerifiedAt      DateTime?
   googleWebsiteCheckAttemptedAt DateTime?
   googleWebsiteVerifiedAt       DateTime?
   googleWebsitePresent          Boolean?
@@ -184,6 +188,12 @@ model Lead {
   doNotContact                  Boolean                @default(false)
   lastWebsiteAnalysisAt         DateTime?
   businessStatus                BusinessStatus
+  statusConfidence              Int                    @default(0)
+  language                      String?
+  languageConfidence            Int                    @default(0)
+  regionLanguage                String?
+  verificationSource            String?
+  socialUrls                    Json                   @default("[]")
   source                        LeadSource             @default(OPENSTREETMAP)
   confidenceScore               Int                    @default(50)
   confidenceLevel               ConfidenceLevel        @default(MEDIUM)
@@ -228,6 +238,7 @@ model Lead {
   @@index([nextFollowUpAt])
   @@index([googleWebsitePresent, googleWebsiteVerifiedAt])
   @@index([googleWebsiteCheckAttemptedAt])
+  @@index([language, country, province])
   @@index([pipelineStageId, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
@@ -566,6 +577,25 @@ model SourceProviderHealth {
   updatedAt           DateTime  @updatedAt
 
   @@index([unhealthyUntil, consecutiveFailures])
+}
+
+model GeocodingCache {
+  cacheKey         String   @id
+  latitude         Decimal  @db.Decimal(10, 7)
+  longitude        Decimal  @db.Decimal(10, 7)
+  formattedAddress String
+  street           String?
+  houseNumber      String?
+  postalCode       String?
+  city             String
+  municipality     String?
+  province         String?
+  country          String
+  provider         String   @default("NOMINATIM")
+  fetchedAt        DateTime @default(now())
+  expiresAt        DateTime
+
+  @@index([expiresAt])
 }
 
 model DuplicateFingerprint {
