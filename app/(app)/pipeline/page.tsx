@@ -18,8 +18,8 @@ export default async function PipelinePage() {
   }));
 
   return <div className="content pipeline-page">
-    <header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Negen vaste fases uit PostgreSQL. Iedere wijziging wordt als activiteit opgeslagen.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header>
-    <div className="pipeline-grid" role="region" aria-label="Pipeline met negen horizontaal scrollbare fases" tabIndex={0}>
+    <header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">{stages.length} vaste fases uit PostgreSQL. Iedere wijziging wordt als activiteit opgeslagen.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header>
+    <div className="pipeline-grid" role="region" aria-label={`Pipeline met ${stages.length} horizontaal scrollbare fases`} tabIndex={0}>
       {stages.map((stage, index) => <section className="pipeline-column" key={stage.id} data-stage-slug={stage.slug} data-stage-position={stage.position}>
         <div className="pipeline-title"><strong>{stage.name}</strong><span className="badge">{groups[index].total}</span></div>
         <div className="pipeline-list">

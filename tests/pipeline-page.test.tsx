@@ -34,6 +34,8 @@ describe("pipelineweergave", () => {
     expect(view.container.querySelectorAll(".pipeline-column")).toHaveLength(10);
     expect([...view.container.querySelectorAll(".pipeline-title .badge")].map((node) => node.textContent)).toEqual(["1","1","1","1","1","1","1","1","1","1"]);
     expect([...view.container.querySelectorAll(".pipeline-title strong")].at(-1)?.textContent).toBe("Terugbel verzoek");
+    expect(view.getByText("10 vaste fases uit PostgreSQL. Iedere wijziging wordt als activiteit opgeslagen.")).toBeTruthy();
+    expect(view.getByRole("region", { name: "Pipeline met 10 horizontaal scrollbare fases" })).toBeTruthy();
     expect(view.container.textContent).not.toMatch(/Te controleren|Geverifieerd|Gebeld|Geen gehoor|Gewonnen/);
   });
 
