@@ -16,7 +16,7 @@ export default async function DashboardPage() {
     prisma.lead.count({where:googleConfirmed}),prisma.lead.count({where:{...googleConfirmed,firstDiscoveredAt:{gte:start}}}),
     prisma.lead.count({where:active}),prisma.lead.count({where:{...reviewQueue,websiteStatus:"SOCIAL_ONLY"}}),
     prisma.lead.count({where:visibleLeadWhere({isSuppressed:false,websiteStatus:"WEBSITE_OUTDATED"})}),prisma.lead.count({where:visibleLeadWhere({isSuppressed:false,websiteStatus:"WEBSITE_BROKEN"})}),
-    prisma.lead.count({where:reviewQueue}),prisma.lead.count({where:{...active,pipelineStage:{is:{slug:{in:["belletje-1","belletje-2","belletje-3","belletje-4","gemaild"]}}}}}),
+    prisma.lead.count({where:reviewQueue}),prisma.lead.count({where:{...active,pipelineStage:{is:{slug:{in:["belletje-1","belletje-2","belletje-3","belletje-4","gemaild","terugbel-verzoek"]}}}}}),
     prisma.lead.count({where:{...active,pipelineStage:{is:{slug:"belletje-3"}}}}),prisma.lead.count({where:{...active,pipelineStage:{is:{slug:"belletje-4"}}}}),prisma.lead.count({where:visibleLeadWhere({pipelineStage:{is:{slug:"deal"}}})}),
     prisma.lead.aggregate({where:visibleLeadWhere(),_sum:{expectedRevenueCents:true,wonRevenueCents:true}}),
     prisma.lead.findMany({where:active,orderBy:[{opportunityScore:"desc"},{firstDiscoveredAt:"desc"}],take:7}),

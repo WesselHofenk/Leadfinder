@@ -6,6 +6,7 @@ const migration = readFileSync(resolve("prisma/migrations/20260716163000_seven_s
 const notInterestedMigration = readFileSync(resolve("prisma/migrations/20260716170000_add_not_interested_pipeline_status/migration.sql"), "utf8");
 const relationalMigration = readFileSync(resolve("prisma/migrations/20260716210000_relational_pipeline_stages/migration.sql"), "utf8");
 const emailedStageMigration = readFileSync(resolve("prisma/migrations/20260716234500_add_emailed_pipeline_stage/migration.sql"), "utf8");
+const callbackRequestStageMigration = readFileSync(resolve("prisma/migrations/20260716235900_add_callback_request_pipeline_stage/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -48,5 +49,14 @@ describe("veilige pipeline-datamigratie", () => {
     expect(emailedStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
     expect(emailedStageMigration).toContain("WHEN 'ingepland' THEN 7");
     expect(emailedStageMigration).toContain("WHEN 'geen-interesse' THEN 9");
+  });
+
+  it("voegt Terugbel verzoek veilig op positie 10 toe zonder bestaande leads te wijzigen", () => {
+    expect(callbackRequestStageMigration).toMatch(/^BEGIN;/);
+    expect(callbackRequestStageMigration.trim()).toMatch(/COMMIT;$/);
+    expect(callbackRequestStageMigration).toContain("('pipeline-terugbel-verzoek', 'terugbel-verzoek', 'Terugbel verzoek', 10");
+    expect(callbackRequestStageMigration).toContain("lead_count_before <> lead_count_after");
+    expect(callbackRequestStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(callbackRequestStageMigration).toContain("callback_stage_count <> 1");
   });
 });

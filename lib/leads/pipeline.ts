@@ -8,6 +8,7 @@ export const pipelineStages = [
   { id: "pipeline-ingepland", slug: "ingepland", label: "Ingepland", position: 7, legacyStatus: "APPOINTMENT" },
   { id: "pipeline-deal", slug: "deal", label: "Deal", position: 8, legacyStatus: "CUSTOMER" },
   { id: "pipeline-geen-interesse", slug: "geen-interesse", label: "Geen interesse", position: 9, legacyStatus: "NOT_INTERESTED" },
+  { id: "pipeline-terugbel-verzoek", slug: "terugbel-verzoek", label: "Terugbel verzoek", position: 10, legacyStatus: "CALL_BACK" },
 ] as const;
 
 export type PipelineStatus = typeof pipelineStages[number]["slug"];

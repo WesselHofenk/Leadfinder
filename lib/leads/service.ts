@@ -37,7 +37,7 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   }
   if (filters.minScore !== undefined || filters.maxScore !== undefined) where.opportunityScore = { ...(filters.minScore !== undefined ? { gte: filters.minScore } : {}), ...(filters.maxScore !== undefined ? { lte: filters.maxScore } : {}) };
   if (filters.minConfidence !== undefined) where.websiteConfidence = { gte: filters.minConfidence };
-  if (filters.called === "yes") where.pipelineStage = { is: { slug: { in: ["belletje-1","belletje-2","belletje-3","belletje-4","gemaild","ingepland","deal"] } } };
+  if (filters.called === "yes") where.pipelineStage = { is: { slug: { in: ["belletje-1","belletje-2","belletje-3","belletje-4","gemaild","ingepland","deal","terugbel-verzoek"] } } };
   if (filters.called === "no") where.pipelineStage = { is: { slug: "nieuw" } };
   if (filters.hasPhone === "yes") where.phoneNumber = { not: "" };
   if (filters.hasPhone === "no") where.phoneNumber = "";
@@ -82,7 +82,7 @@ export async function updateManualLeadFields(leadId: string, userId: string, inp
       pipelineStageId: nextStage.id,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       ...(input.filterReason !== undefined ? { filterReason: input.filterReason.trim() || null } : {}),
-      lastContactAt: input.pipelineStage.startsWith("belletje-") || input.pipelineStage === "gemaild" ? new Date() : undefined,
+      lastContactAt: input.pipelineStage.startsWith("belletje-") || input.pipelineStage === "gemaild" || input.pipelineStage === "terugbel-verzoek" ? new Date() : undefined,
     }, include: { pipelineStage: true } });
     await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "MANUAL_FIELDS_UPDATED", details: {
       previousStage: current.pipelineStage.slug, pipelineStage: nextStage.slug, stageChanged,
