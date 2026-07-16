@@ -3,8 +3,8 @@ import type { Candidate } from "@/lib/leads/eligibility";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 vi.mock("server-only", () => ({}));
-const { leadCreate, sourceUpdate, fingerprintUpsert, validationUpdate, prismaTransaction } = vi.hoisted(() => ({
-  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintUpsert: vi.fn(), validationUpdate: vi.fn(), prismaTransaction: vi.fn(),
+const { leadCreate, sourceUpdate, fingerprintUpsert, validationUpdate, combinationUpdate, prismaTransaction } = vi.hoisted(() => ({
+  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintUpsert: vi.fn(), validationUpdate: vi.fn(), combinationUpdate: vi.fn(), prismaTransaction: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   lead: { create: leadCreate },
@@ -26,7 +26,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     vi.clearAllMocks();
     leadCreate.mockResolvedValue({ id: "lead-new" });
     prismaTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      lead: { create: leadCreate }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { upsert: fingerprintUpsert }, validationCandidate: { updateMany: validationUpdate },
+      lead: { create: leadCreate }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { upsert: fingerprintUpsert }, validationCandidate: { updateMany: validationUpdate }, searchCombination: { updateMany: combinationUpdate },
     }));
   });
 
@@ -43,7 +43,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     await expect(storeNewLead(base, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
     expect(prismaTransaction).toHaveBeenCalledOnce();
     expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
-      status: "NEW", isActive: true, isFiltered: false, websiteStatus: "NO_WEBSITE_CONFIRMED",
+      pipelineStageId: "pipeline-nieuw", isActive: true, isFiltered: false, websiteStatus: "NO_WEBSITE_CONFIRMED",
     }) }));
     expect(validationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "PROMOTED_TO_LEAD", promotedLeadId: "lead-new" }) }));
     expect(sourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ leadId: "lead-new", decision: "stored" }) }));
@@ -57,7 +57,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
   it("slaat een geldig Belgisch bedrijf zonder website eveneens in Nieuw op", async () => {
     const belgian = { ...base, externalPlaceId: "source-be-1", country: "BE", city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", latitude: 51.0543, longitude: 3.7174 };
     await expect(storeNewLead(belgian, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
-    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ country: "BE", status: "NEW" }) }));
+    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ country: "BE", pipelineStageId: "pipeline-nieuw" }) }));
   });
 
   it("promoveert de retrykandidaat niet wanneer de leadtransactie faalt", async () => {

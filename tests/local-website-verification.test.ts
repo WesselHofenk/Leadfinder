@@ -11,6 +11,7 @@ describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();c
   it("herkent een domein zonder protocol",async()=>expect(await verifyWebsiteCandidate({...base,website:"byyoel.nl"})).toMatchObject({status:"WEBSITE_FOUND",confidence:100}));
   it("herkent een website in geneste ruwe brondata",async()=>expect(await verifyWebsiteCandidate({...base,rawData:{contactInfo:{officialWebsite:"bruna.nl"}}})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://bruna.nl"}));
   it("classificeert alleen social als SOCIAL_ONLY maar nog niet als actieve lead",async()=>expect(await verifyWebsiteCandidate({...base,websiteFields:["https://instagram.com/byyoel"]})).toMatchObject({status:"SOCIAL_ONLY",confidence:60}));
+  it("staat social-only toe zodra bronvelden, kaartlocatie en alle domeinprobes betrouwbaar negatief zijn",async()=>expect(await verifyWebsiteCandidate({...base,websiteFields:["https://facebook.com/byyoel"],sourceUpdatedAt:new Date().toISOString(),sourceWebsiteFieldsChecked:true})).toMatchObject({status:"NO_WEBSITE_CONFIRMED",confidence:84,website:null}));
   it("publiceert ontbrekende domeinkandidaten niet zonder Google-controle",async()=>expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"MANUAL_REVIEW_REQUIRED",confidence:55}));
   it("bevestigt meervoudig negatief bewijs alleen voor recent gecontroleerde bronvelden en een kaartlocatie",async()=>{
     const strong={...base,sourceUpdatedAt:new Date().toISOString(),sourceWebsiteFieldsChecked:true};

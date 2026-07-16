@@ -1,6 +1,7 @@
-import { Prisma, type LeadStatus } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import type { LeadFilters } from "./filters";
+import type { PipelineStatus } from "./pipeline";
 import { fingerprintValues, type DedupeKeys } from "./deduplication";
 import { normalizeText } from "./normalization";
 import { getGoogleBusinessUrl } from "./google-business-url";
@@ -9,7 +10,7 @@ import { isNonOwnedWebsite, normalizeWebsite } from "./website";
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   const showFiltered = filters.filtered === "yes";
   const where: Prisma.LeadWhereInput = { isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
-  if (!filters.status && !showFiltered) where.status = { not: "NOT_INTERESTED" };
+  if (!filters.status && !showFiltered) where.pipelineStage = { is: { slug: { not: "geen-interesse" } } };
   if (!filters.businessStatus && !showFiltered) where.businessStatus = { in: ["OPERATIONAL", "UNKNOWN", "FUTURE_OPENING"] };
   if (filters.q) where.OR = ["companyName","contactPersonName","email","phoneNumber","normalizedPhoneNumber","city","postalCode","category"].map((field) => ({ [field]: { contains: filters.q } })) as Prisma.LeadWhereInput[];
   if (filters.country) where.country = filters.country;
@@ -18,7 +19,7 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   if (filters.city) where.city = { contains: filters.city };
   if (filters.postalCode) where.postalCode = { startsWith: filters.postalCode };
   if (filters.category) where.category = { contains: filters.category };
-  if (filters.status) where.status = filters.status;
+  if (filters.status) where.pipelineStage = { is: { slug: filters.status } };
   if (filters.businessStatus) where.businessStatus = filters.businessStatus;
   if (filters.source) where.source = filters.source;
   if (filters.websiteStatus) where.websiteStatus = filters.websiteStatus;
@@ -35,8 +36,8 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   }
   if (filters.minScore !== undefined || filters.maxScore !== undefined) where.opportunityScore = { ...(filters.minScore !== undefined ? { gte: filters.minScore } : {}), ...(filters.maxScore !== undefined ? { lte: filters.maxScore } : {}) };
   if (filters.minConfidence !== undefined) where.websiteConfidence = { gte: filters.minConfidence };
-  if (filters.called === "yes") where.status = { in: ["VOICEMAIL","CALL_BACK","INTERESTED","APPOINTMENT","QUOTE_SENT","CUSTOMER"] };
-  if (filters.called === "no") where.status = "NEW";
+  if (filters.called === "yes") where.pipelineStage = { is: { slug: { in: ["belletje-1","belletje-2","belletje-3","belletje-4","ingepland","deal"] } } };
+  if (filters.called === "no") where.pipelineStage = { is: { slug: "nieuw" } };
   if (filters.hasPhone === "yes") where.phoneNumber = { not: "" };
   if (filters.hasPhone === "no") where.phoneNumber = "";
   if (filters.hasEmail === "yes") where.email = { not: null };
@@ -56,7 +57,7 @@ function orderBy(filters: LeadFilters): Prisma.LeadOrderByWithRelationInput[] {
     case "checked_desc": return [{ lastVerifiedAt: "desc" }, { id: "asc" }];
     case "city": return [{ city: "asc" }, { companyName: "asc" }];
     case "category": return [{ category: "asc" }, { companyName: "asc" }];
-    case "status": return [{ status: "asc" }, { updatedAt: "desc" }];
+    case "status": return [{ pipelineStage: { position: "asc" } }, { updatedAt: "desc" }];
     case "contacts_desc": return [{ email: { sort: "desc", nulls: "last" } }, { phoneNumber: "desc" }];
     default: return [{ firstDiscoveredAt: "desc" }, { id: "asc" }];
   }
@@ -65,22 +66,30 @@ function orderBy(filters: LeadFilters): Prisma.LeadOrderByWithRelationInput[] {
 export async function listLeads(filters: LeadFilters) {
   const { where, skip, take } = buildLeadListQuery(filters);
   const [items, total] = await prisma.$transaction([
-    prisma.lead.findMany({ where, orderBy: orderBy(filters), skip, take }), prisma.lead.count({ where }),
+    prisma.lead.findMany({ where, orderBy: orderBy(filters), skip, take, include: { pipelineStage: true } }), prisma.lead.count({ where }),
   ]);
   return { items, total, page: filters.page, pageSize: filters.pageSize, pages: Math.max(1, Math.ceil(total / filters.pageSize)) };
 }
 
-export async function updateManualLeadFields(leadId: string, userId: string, input: { status: LeadStatus; notes?: string; filterReason?: string }) {
+export async function updateManualLeadFields(leadId: string, userId: string, input: { pipelineStage: PipelineStatus; notes?: string; filterReason?: string }) {
   return prisma.$transaction(async (tx) => {
-    await tx.lead.findUniqueOrThrow({ where: { id: leadId } });
+    const current = await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: { pipelineStage: true } });
+    const nextStage = await tx.pipelineStage.findFirstOrThrow({ where: { slug: input.pipelineStage, isActive: true } });
+    const stageChanged = current.pipelineStageId !== nextStage.id;
     const lead = await tx.lead.update({ where: { id: leadId }, data: {
-      status: input.status,
+      pipelineStageId: nextStage.id,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       ...(input.filterReason !== undefined ? { filterReason: input.filterReason.trim() || null } : {}),
-      lastContactAt: ["VOICEMAIL","CALL_BACK","INTERESTED"].includes(input.status) ? new Date() : undefined,
+      lastContactAt: input.pipelineStage.startsWith("belletje-") ? new Date() : undefined,
+    }, include: { pipelineStage: true } });
+    await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "MANUAL_FIELDS_UPDATED", details: {
+      previousStage: current.pipelineStage.slug, pipelineStage: nextStage.slug, stageChanged,
+    } } });
+    if (stageChanged) await tx.leadActivity.create({ data: {
+      leadId, actorId: userId, type: "PIPELINE_STAGE_CHANGED",
+      summary: `Pipelinefase gewijzigd van ${current.pipelineStage.name} naar ${nextStage.name}.`,
+      details: { previousStageId: current.pipelineStage.id, previousStage: current.pipelineStage.slug, nextStageId: nextStage.id, nextStage: nextStage.slug },
     } });
-    await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "MANUAL_FIELDS_UPDATED", details: { status: input.status } } });
-    await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "STATUS_CHANGED", summary: `Status gewijzigd naar ${input.status}` } });
     if (input.notes?.trim()) { await tx.leadNote.create({ data: { leadId, userId, content: input.notes } }); await tx.leadActivity.create({ data: { leadId, actorId: userId, type: "NOTE_ADDED", summary: "Notitie toegevoegd" } }); }
     return lead;
   });

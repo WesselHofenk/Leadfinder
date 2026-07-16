@@ -28,9 +28,9 @@ export function sourceFailureWarningDue(sourceFailures: number, warningInterval:
   return sourceFailures > 0 && sourceFailures % Math.max(1, warningInterval) === 0;
 }
 
-export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; maxSegments: number; pendingCandidates: number }) {
+export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; sourceFailures?: number; maxSegments: number; pendingCandidates: number }) {
   if (input.usable >= input.target) return "COMPLETE" as const;
-  if (input.processedSegments >= input.maxSegments && input.pendingCandidates === 0) {
+  if (input.processedSegments + (input.sourceFailures ?? 0) >= input.maxSegments && input.pendingCandidates === 0) {
     return input.usable > 0 ? "PARTIALLY_COMPLETED" as const : "FAILED" as const;
   }
   return null;
@@ -38,6 +38,11 @@ export function generationCompletionStatus(input: { usable: number; target: numb
 
 export function candidateRetryStatus(attemptsAfterClaim: number, maxAttempts = 3) {
   return attemptsAfterClaim >= maxAttempts ? "FAILED" as const : "PENDING" as const;
+}
+
+export function generationRetryImportLimit(batchCandidates: number, alreadyRetried: number, maxPerRun = 2) {
+  const batchShare = Math.min(maxPerRun, Math.max(1, Math.floor(batchCandidates / 3)));
+  return Math.max(0, batchShare - alreadyRetried);
 }
 
 export function generationProgress(input: { stored: number; target: number; candidatesChecked?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {

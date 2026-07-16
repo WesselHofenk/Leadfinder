@@ -32,7 +32,9 @@ const publicEmailDomains = new Set([
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.nl", "live.com", "live.nl", "yahoo.com",
   "icloud.com", "proton.me", "protonmail.com", "ziggo.nl", "kpnmail.nl", "planet.nl", "xs4all.nl", "telenet.be", "skynet.be",
 ]);
-const strongAbsenceFreshnessMs = 2 * 365.25 * 24 * 60 * 60 * 1000;
+// Eligibility already rejects OSM records older than six years. Requiring a
+// second, unrelated two-year cutoff caused valid records to stay in retry forever.
+const strongAbsenceFreshnessMs = 6 * 365.25 * 24 * 60 * 60 * 1000;
 
 function websiteValues(candidate: Candidate) {
   return extractWebsiteEntries(candidate).map(({ rawValue }) => rawValue);
@@ -189,7 +191,9 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
     status: "NO_WEBSITE_CONFIRMED", confidence: explicitAbsence ? 90 : 84, website: null,
     reason: explicitAbsence
       ? "De openbare bron markeert de website expliciet als afwezig en alle begrensde domeincontroles waren negatief."
-      : "Een recent en contacteerbaar bedrijfsrecord bevat geen website; alle uitgebreide bedrijfs-, merk-, plaats- en e-maildomeincontroles waren negatief.",
+      : normalized.length
+        ? "De bron bevat alleen een sociaal of extern profiel, geen eigen website; alle plausibele bedrijfsdomeinen zijn negatief gecontroleerd."
+        : "Een recent openbaar bedrijfsrecord bevat geen website; alle uitgebreide bedrijfs-, merk-, plaats- en e-maildomeincontroles waren negatief.",
     evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: explicitAbsence ? "ABSENT_CONFIRMED" : "ABSENT_AFTER_STRONG_CHECKS", confidence: explicitAbsence ? 90 : 84,
       shortExplanation: explicitAbsence ? "Expliciete bronwaarde voor geen website." : "Niet alleen een leeg veld: recente bronmetadata, aanvullende activiteitssignalen en uitgebreide domeincontroles ondersteunen de afwezigheid." },
       ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: explicitAbsence ? 90 : 84, evidenceUrl: `https://${check.domain}`, shortExplanation: "Plausibele domeinkandidaat bestaat niet." }))],

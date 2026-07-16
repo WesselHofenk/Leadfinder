@@ -26,7 +26,7 @@ describe("rotatie van gratis OSM-providers", () => {
     await adapter.searchBusinesses({ ...input, tileCursor: 0 });
     expect(searchOverpass).toHaveBeenCalledWith(expect.objectContaining({
       endpoints: ["https://overpass-api.de/api/interpreter", "https://overpass.kumi.systems/api/interpreter"],
-      totalTimeoutMs: 18_000,
+      totalTimeoutMs: 12_000,
     }));
   });
 

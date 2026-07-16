@@ -1,9 +1,11 @@
 import Link from "next/link";
 import { Download, ExternalLink, Filter, MapPin, Search } from "lucide-react";
-import { parseLeadFilters, leadStatuses } from "@/lib/leads/filters";
+import { parseLeadFilters } from "@/lib/leads/filters";
 import { listLeads } from "@/lib/leads/service";
+import { toPipelineOptions } from "@/lib/leads/pipeline";
+import { prisma } from "@/lib/prisma";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
-import { dateFormatter, numberFormatter, statusLabels, websiteStatusLabels } from "@/lib/format";
+import { dateFormatter, numberFormatter, websiteStatusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
 import { GenerationButton } from "@/components/generation-button";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -14,7 +16,11 @@ export default async function LeadsPage({
 }) {
   const raw = await searchParams;
   const filters = parseLeadFilters(raw);
-  const { items, total, pages, page } = await listLeads(filters);
+  const [{ items, total, pages, page }, stages] = await Promise.all([
+    listLeads(filters),
+    prisma.pipelineStage.findMany({ where: { isActive: true }, orderBy: { position: "asc" } }),
+  ]);
+  const stageOptions = toPipelineOptions(stages);
   const qs = new URLSearchParams(
     Object.entries(raw).flatMap(([k, v]) =>
       v ? [[k, Array.isArray(v) ? v[0] : v]] : [],
@@ -85,7 +91,7 @@ export default async function LeadsPage({
             label="Status"
             name="status"
             value={filters.status}
-            options={leadStatuses.map((v) => [v, statusLabels[v]])}
+            options={stageOptions.map((stage) => [stage.slug, stage.name])}
           />
           <TextFilter label="Plaats" name="city" value={filters.city} />
           <TextFilter
@@ -252,7 +258,7 @@ export default async function LeadsPage({
                         {lead.websiteStatusReason || lead.filterReason || "Handmatige controle nodig"}
                       </td>
                       <td>
-                        <QuickStatus leadId={lead.id} status={lead.status} />
+                        <QuickStatus leadId={lead.id} stageSlug={lead.pipelineStage.slug} stages={stageOptions} />
                       </td>
                       <td>{dateFormatter.format(lead.firstDiscoveredAt)}</td>
                       <td>

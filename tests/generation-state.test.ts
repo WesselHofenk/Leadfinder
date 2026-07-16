@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
+import { candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -39,6 +39,11 @@ describe("persistente generatiejobstatus", () => {
     expect(sourceAttemptDelta(false)).toEqual({ processedSegments: 0, sourceFailures: 1 });
   });
 
+  it("begrensd ook een run waarin alle bronsegmenten falen", () => {
+    expect(generationCompletionStatus({ usable: 0, target: 50, processedSegments: 2, sourceFailures: 10, maxSegments: 12, pendingCandidates: 0 })).toBe("FAILED");
+    expect(generationCompletionStatus({ usable: 4, target: 50, processedSegments: 2, sourceFailures: 10, maxSegments: 12, pendingCandidates: 0 })).toBe("PARTIALLY_COMPLETED");
+  });
+
   it("beweegt zichtbaar voorbij 5% na een echte maar mislukte bronpoging", () => {
     expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
     expect(generationProgress({ stored: 0, sourceFailures: 2, target: 50, processedSegments: 0, maxSegments: 1000 }))
@@ -68,5 +73,11 @@ describe("persistente generatiejobstatus", () => {
     expect(candidateRetryStatus(1)).toBe("PENDING");
     expect(candidateRetryStatus(2)).toBe("PENDING");
     expect(candidateRetryStatus(3)).toBe("FAILED");
+  });
+
+  it("laat de retryqueue nooit een hele nieuwe run opslokken", () => {
+    expect(generationRetryImportLimit(8, 0)).toBe(2);
+    expect(generationRetryImportLimit(8, 1)).toBe(1);
+    expect(generationRetryImportLimit(8, 2)).toBe(0);
   });
 });

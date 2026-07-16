@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   generationCreateMany: vi.fn(),
   generationUpdateMany: vi.fn(),
   validationUpdateMany: vi.fn(),
+  validationExhaustedUpdateMany: vi.fn(),
   transaction: vi.fn(),
 }));
 
@@ -18,6 +19,7 @@ vi.mock("@/lib/prisma", () => ({
       findUnique: mocks.validationFindUnique,
       upsert: mocks.validationUpsert,
       findMany: mocks.validationFindMany,
+      updateMany: mocks.validationExhaustedUpdateMany,
     },
     generationCandidate: { findMany: mocks.generationFindMany },
     $transaction: mocks.transaction,
@@ -63,7 +65,7 @@ describe("duurzame validatie-retryqueue", () => {
       create: expect.objectContaining({
         originRunId: "run-1",
         sourceRecordId: "osm:node/123",
-        status: "RETRY_REQUIRED",
+        status: "RETRY_SCHEDULED",
         failureReason: "Websitecontrole tijdelijk geblokkeerd",
         nextRetryAt: new Date(now.getTime() + validationRetryDelayMs(0)),
       }),
@@ -83,7 +85,7 @@ describe("duurzame validatie-retryqueue", () => {
       data: [expect.objectContaining({ runId: "run-2", sourceRecordId: candidate.externalPlaceId, segment: "retry:retry-1" })],
     }));
     expect(mocks.validationUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
-      data: { status: "PENDING_VALIDATION", retryCount: { increment: 1 } },
+      data: { status: "VALIDATING", retryCount: { increment: 1 }, lastCheckedAt: new Date("2026-07-16T10:00:00Z") },
     }));
   });
 

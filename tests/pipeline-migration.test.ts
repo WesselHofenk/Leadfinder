@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(resolve("prisma/migrations/20260716163000_seven_stage_sales_pipeline/migration.sql"), "utf8");
 const notInterestedMigration = readFileSync(resolve("prisma/migrations/20260716170000_add_not_interested_pipeline_status/migration.sql"), "utf8");
+const relationalMigration = readFileSync(resolve("prisma/migrations/20260716210000_relational_pipeline_stages/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -24,5 +25,17 @@ describe("veilige pipeline-datamigratie", () => {
   it("voegt Niet geïnteresseerd toe zonder bestaande leads te wijzigen of verwijderen", () => {
     expect(notInterestedMigration).toContain("ADD VALUE IF NOT EXISTS 'NOT_INTERESTED'");
     expect(notInterestedMigration).not.toMatch(/UPDATE|DELETE\s+FROM|TRUNCATE/i);
+  });
+  it("maakt exact acht canonieke relationele fases in een transactie", () => {
+    expect(relationalMigration).toMatch(/^BEGIN;/);
+    expect(relationalMigration.trim()).toMatch(/COMMIT;$/);
+    for (const slug of ["nieuw","belletje-1","belletje-2","belletje-3","belletje-4","ingepland","deal","geen-interesse"]) expect(relationalMigration).toContain(`'${slug}'`);
+    expect(relationalMigration).toContain("active_stages <> 8");
+  });
+
+  it("bewaakt het leadaantal en verwijdert of overschrijft geen lead", () => {
+    expect(relationalMigration).toContain("before_total <> after_total");
+    expect(relationalMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(relationalMigration).toContain('CREATE TABLE IF NOT EXISTS "PipelineMigrationAudit"');
   });
 });

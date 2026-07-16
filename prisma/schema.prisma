@@ -13,7 +13,7 @@ enum UserRole {
   USER
 }
 
-enum LeadStatus {
+enum LegacyLeadStatus {
   NEW
   VOICEMAIL
   CALL_BACK
@@ -22,6 +22,8 @@ enum LeadStatus {
   QUOTE_SENT
   CUSTOMER
   NOT_INTERESTED
+
+  @@map("LeadStatus")
 }
 
 enum LeadType {
@@ -71,10 +73,13 @@ enum CandidateQueueStatus {
 
 enum ValidationCandidateStatus {
   PENDING_VALIDATION
+  RETRY_SCHEDULED
+  VALIDATING
   RETRY_REQUIRED
   VALIDATED
   REJECTED
   PROMOTED_TO_LEAD
+  EXHAUSTED
 }
 
 enum JobType {
@@ -188,7 +193,9 @@ model Lead {
   lastVerifiedAt                DateTime               @default(now())
   createdAt                     DateTime               @default(now())
   updatedAt                     DateTime               @updatedAt
-  status                        LeadStatus             @default(NEW)
+  legacyStatus                  LegacyLeadStatus       @default(NEW) @map("status")
+  pipelineStageId               String                 @default("pipeline-nieuw")
+  pipelineStage                 PipelineStage          @relation(fields: [pipelineStageId], references: [id], onDelete: Restrict)
   notes                         String                 @default("")
   lastContactAt                 DateTime?
   nextFollowUpAt                DateTime?
@@ -221,9 +228,33 @@ model Lead {
   @@index([nextFollowUpAt])
   @@index([googleWebsitePresent, googleWebsiteVerifiedAt])
   @@index([googleWebsiteCheckAttemptedAt])
-  @@index([status, isFiltered, leadType])
+  @@index([pipelineStageId, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
+}
+
+model PipelineStage {
+  id        String   @id
+  slug      String   @unique
+  name      String
+  position  Int
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leads     Lead[]
+
+  @@index([isActive, position])
+}
+
+model PipelineMigrationAudit {
+  migrationKey       String   @id
+  totalBefore        Int
+  totalAfter         Int
+  migratedLeads      Int
+  unknownStages      Int
+  distributionBefore Json
+  distributionAfter  Json
+  createdAt          DateTime @default(now())
 }
 
 model GenerationRun {
@@ -322,7 +353,12 @@ model ValidationCandidate {
   totalConfidence      Int       @default(0)
   failureReason        String
   retryCount           Int       @default(0)
+  maxRetries           Int       @default(5)
   nextRetryAt          DateTime
+  lastErrorCode        String?
+  lastErrorMessage     String?
+  lastProvider         String?
+  lastCheckedAt        DateTime?
   payload              Json
   verificationEvidence Json?
   promotedLeadId       String?
@@ -489,23 +525,47 @@ model JobLock {
 }
 
 model SearchCombination {
-  id              String    @id @default(cuid())
-  country         String
-  city            String
-  category        String
-  source          String
-  useCount        Int       @default(0)
-  candidatesFound Int       @default(0)
-  validLeads      Int       @default(0)
-  lastUsedAt      DateTime?
-  lastError       String?
-  tileCursor      Int       @default(0)
-  lastTile        String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                String    @id @default(cuid())
+  country           String
+  city              String
+  category          String
+  source            String
+  region            String?
+  searchTerm        String?
+  provider          String?
+  useCount          Int       @default(0)
+  candidatesFound   Int       @default(0)
+  validLeads        Int       @default(0)
+  errorCount        Int       @default(0)
+  totalDurationMs   BigInt    @default(0)
+  averageDurationMs Int       @default(0)
+  lastUsedAt        DateTime?
+  lastError         String?
+  tileCursor        Int       @default(0)
+  lastTile          String?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   @@unique([country, city, category, source])
   @@index([lastUsedAt, source])
+}
+
+model SourceProviderHealth {
+  provider            String    @id
+  consecutiveFailures Int       @default(0)
+  totalFailures       Int       @default(0)
+  totalSuccesses      Int       @default(0)
+  unhealthyUntil      DateTime?
+  lastErrorCode       String?
+  lastErrorMessage    String?
+  lastDurationMs      Int?
+  averageDurationMs   Int       @default(0)
+  lastCheckedAt       DateTime?
+  lastSuccessAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([unhealthyUntil, consecutiveFailures])
 }
 
 model DuplicateFingerprint {

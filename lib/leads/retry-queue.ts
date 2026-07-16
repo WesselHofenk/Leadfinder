@@ -6,6 +6,16 @@ import type { WebsiteVerificationResult } from "./website-verification";
 
 const baseRetryDelayMs = 15 * 60_000;
 const maxRetryDelayMs = 24 * 60 * 60_000;
+export const defaultMaxValidationRetries = 5;
+
+export function validationErrorCode(reason: string) {
+  if (/429|rate.?limit/i.test(reason)) return "RATE_LIMIT";
+  if (/timeout|timed out|abort/i.test(reason)) return "TIMEOUT";
+  if (/database/i.test(reason)) return "DATABASE_ERROR";
+  if (/status|temporar/i.test(reason)) return "STATUS_CHECK_FAILED";
+  if (/website|dns|domain|ssl|network|blocked/i.test(reason)) return "WEBSITE_CHECK_FAILED";
+  return "VALIDATION_CONFLICT";
+}
 
 function json(value: unknown) {
   return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
@@ -41,10 +51,13 @@ export async function queueValidationRetry(input: {
   const now = input.now ?? new Date();
   const existing = await prisma.validationCandidate.findUnique({
     where: { source_sourceRecordId: { source, sourceRecordId: candidate.externalPlaceId } },
-    select: { retryCount: true },
+    select: { retryCount: true, maxRetries: true },
   });
   const retryCount = existing?.retryCount ?? 0;
+  const maxRetries = existing?.maxRetries ?? defaultMaxValidationRetries;
   const confidence = validationConfidence(candidate, verification);
+  const errorCode = validationErrorCode(input.reason);
+  const exhausted = retryCount >= maxRetries;
   const values = {
     originRunId: runId,
     companyName: candidate.companyName,
@@ -62,10 +75,15 @@ export async function queueValidationRetry(input: {
     businessConfidence: confidence.business,
     totalConfidence: confidence.total,
     failureReason: input.reason.slice(0, 500),
-    nextRetryAt: new Date(now.getTime() + validationRetryDelayMs(retryCount)),
+    maxRetries,
+    nextRetryAt: exhausted ? now : new Date(now.getTime() + validationRetryDelayMs(retryCount)),
+    lastErrorCode: errorCode,
+    lastErrorMessage: input.reason.slice(0, 500),
+    lastProvider: source,
+    lastCheckedAt: now,
     payload: json(candidate),
     verificationEvidence: verification ? json(verification.evidence) : Prisma.JsonNull,
-    status: ValidationCandidateStatus.RETRY_REQUIRED,
+    status: exhausted ? ValidationCandidateStatus.EXHAUSTED : ValidationCandidateStatus.RETRY_SCHEDULED,
     promotedLeadId: null,
     validatedAt: null,
     rejectedAt: null,
@@ -78,8 +96,19 @@ export async function queueValidationRetry(input: {
 }
 
 export async function importDueValidationRetries(runId: string, limit: number, now = new Date()) {
+  await prisma.validationCandidate.updateMany({
+    where: {
+      status: { in: [ValidationCandidateStatus.RETRY_REQUIRED, ValidationCandidateStatus.RETRY_SCHEDULED] },
+      retryCount: { gte: defaultMaxValidationRetries },
+    },
+    data: { status: ValidationCandidateStatus.EXHAUSTED, lastCheckedAt: now },
+  });
   const due = await prisma.validationCandidate.findMany({
-    where: { status: ValidationCandidateStatus.RETRY_REQUIRED, nextRetryAt: { lte: now } },
+    where: {
+      status: { in: [ValidationCandidateStatus.RETRY_REQUIRED, ValidationCandidateStatus.RETRY_SCHEDULED] },
+      nextRetryAt: { lte: now },
+      retryCount: { lt: defaultMaxValidationRetries },
+    },
     orderBy: [{ nextRetryAt: "asc" }, { createdAt: "asc" }],
     take: Math.max(0, limit),
   });
@@ -103,8 +132,8 @@ export async function importDueValidationRetries(runId: string, limit: number, n
       skipDuplicates: true,
     });
     await tx.validationCandidate.updateMany({
-      where: { id: { in: selected.map(({ id }) => id) }, status: ValidationCandidateStatus.RETRY_REQUIRED },
-      data: { status: ValidationCandidateStatus.PENDING_VALIDATION, retryCount: { increment: 1 } },
+      where: { id: { in: selected.map(({ id }) => id) }, status: { in: [ValidationCandidateStatus.RETRY_REQUIRED, ValidationCandidateStatus.RETRY_SCHEDULED] } },
+      data: { status: ValidationCandidateStatus.VALIDATING, retryCount: { increment: 1 }, lastCheckedAt: now },
     });
     return inserted.count;
   });

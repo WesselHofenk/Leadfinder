@@ -14,13 +14,14 @@ describe("snelle pipelinewijziging", () => {
   it("toont Niet geïnteresseerd direct en ververst na succesvolle opslag", async () => {
     let finish!: (response: Response) => void;
     vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
-    const view = render(<QuickStatus leadId="lead-1" status="NEW" />);
+    const stages=[{id:"pipeline-nieuw",slug:"nieuw",name:"Nieuw",position:1},{id:"pipeline-geen-interesse",slug:"geen-interesse",name:"Geen interesse",position:8}];
+    const view = render(<QuickStatus leadId="lead-1" stageSlug="nieuw" stages={stages} />);
     const select = view.getByLabelText("Pipelinefase") as HTMLSelectElement;
 
-    fireEvent.change(select, { target: { value: "NOT_INTERESTED" } });
-    expect(select.value).toBe("NOT_INTERESTED");
+    fireEvent.change(select, { target: { value: "geen-interesse" } });
+    expect(select.value).toBe("geen-interesse");
 
-    finish(new Response(JSON.stringify({ lead: { status: "NOT_INTERESTED" } }), { status: 200 }));
+    finish(new Response(JSON.stringify({ lead: { pipelineStage: { slug: "geen-interesse" } } }), { status: 200 }));
     await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
   });
 });

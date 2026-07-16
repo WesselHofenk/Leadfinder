@@ -6,11 +6,11 @@ describe("Niet geïnteresseerd in leadfilters", () => {
   it("staat niet standaard tussen actieve verkoopleads", () => {
     expect(activeLeadWhere(parseLeadFilters({}))).toMatchObject({
       isActive: true,
-      status: { not: "NOT_INTERESTED" },
+      pipelineStage: { is: { slug: { not: "geen-interesse" } } },
     });
   });
 
   it("blijft via de expliciete statusfilter bereikbaar", () => {
-    expect(activeLeadWhere(parseLeadFilters({ status: "NOT_INTERESTED" })).status).toBe("NOT_INTERESTED");
+    expect(activeLeadWhere(parseLeadFilters({ status: "geen-interesse" })).pipelineStage).toEqual({ is: { slug: "geen-interesse" } });
   });
 });

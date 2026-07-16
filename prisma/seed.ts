@@ -1,9 +1,11 @@
 import { hash } from "bcryptjs";
 import { PrismaClient } from "@prisma/client";
+import { pipelineStages } from "../lib/leads/pipeline";
 
 const prisma = new PrismaClient();
 const categories = ["aannemer","klusbedrijf","schilder","stukadoor","tegelzetter","installatiebedrijf","dakdekker","loodgieter","elektricien","hovenier","schoonmaakbedrijf","verhuisbedrijf","garage","autobedrijf","rijschool","kapper","schoonheidssalon","nagelstudio","fysiotherapie","wellness","personal trainer","restaurant","café","lunchroom","catering","hotel","bed and breakfast","makelaar","interieurbedrijf","keukenbedrijf","fotograaf","videograaf","drukkerij","boekhouder","consultant","coach","opleidingsbedrijf","kinderopvang","hondenuitlaatservice","hondentrimmer","dierenpension","speciaalzaak","groothandel","verhuurbedrijf"];
 const excluded = ["bus_station","parking","public_bathroom","park","monument","street_address","atm","local_government_office","place_of_worship","event_venue"];
+const alternativeCategories = ["barbier","accountant","lokale winkel","ambachtsbedrijf","couvreur","toiture","peintre","plâtrier","plombier","électricien","jardinier","nettoyage","garage automobile","coiffeur","esthéticienne","photographe","comptable"];
 const centers = [
   ["NL", "Noord-Holland", "Amsterdam", 52.3676, 4.9041],
   ["NL", "Zuid-Holland", "Rotterdam", 51.9244, 4.4777],
@@ -29,6 +31,11 @@ const centers = [
   ["NL", "Noord-Brabant", "Den Bosch", 51.6978, 5.3037],
   ["NL", "Zuid-Holland", "Dordrecht", 51.8133, 4.6901],
   ["NL", "Zuid-Holland", "Zoetermeer", 52.0607, 4.4940],
+  ["NL", "Zuid-Holland", "Den Haag", 52.0705, 4.3007],
+  ["NL", "Zuid-Holland", "Leiden", 52.1601, 4.4970],
+  ["NL", "Zuid-Holland", "Delft", 52.0116, 4.3571],
+  ["NL", "Overijssel", "Deventer", 52.2661, 6.1552],
+  ["NL", "Limburg", "Maastricht", 50.8514, 5.6910],
   ["BE", "Antwerpen", "Antwerpen", 51.2194, 4.4025],
   ["BE", "Brussel", "Brussel", 50.8503, 4.3517],
   ["BE", "Oost-Vlaanderen", "Gent", 51.0543, 3.7174],
@@ -48,22 +55,30 @@ const centers = [
   ["BE", "Antwerpen", "Turnhout", 51.3225, 4.9447],
   ["BE", "West-Vlaanderen", "Oostende", 51.2300, 2.9200],
   ["BE", "West-Vlaanderen", "Roeselare", 50.9465, 3.1227],
+  ["BE", "Henegouwen", "Charleroi", 50.4108, 4.4446],
 ] as const;
 
 async function main() {
+  for (const stage of pipelineStages) {
+    await prisma.pipelineStage.upsert({
+      where: { id: stage.id },
+      create: { id: stage.id, slug: stage.slug, name: stage.label, position: stage.position },
+      update: { slug: stage.slug, name: stage.label, position: stage.position, isActive: true },
+    });
+  }
   const username = process.env.INITIAL_ADMIN_USERNAME?.trim().toLowerCase();
   const password = process.env.INITIAL_ADMIN_PASSWORD;
   if (username && password) {
     const email = `${username}@leadfinder.local`;
     await prisma.user.upsert({ where: { username }, update: {}, create: { username, email, name: "Sitora", role: "ADMIN", passwordHash: await hash(password, 12) } });
   }
-  for (const name of categories) {
+  for (const name of [...categories, ...alternativeCategories]) {
     const slug = name.replaceAll(" ", "-");
     await prisma.category.upsert({ where: { slug }, create: { slug, name }, update: { name } });
   }
   for (const slug of excluded) await prisma.excludedCategory.upsert({ where:{slug}, update:{}, create:{slug,name:slug.replaceAll("_"," "),reason:"Geen relevante commerciële websitelead"} });
   for (const [country, region, city, latitude, longitude] of centers) {
-    for (const category of categories) {
+    for (const category of [...categories, ...alternativeCategories]) {
       await prisma.coverageArea.upsert({
         where: { country_city_category_latitude_longitude: { country, city, category, latitude, longitude } },
         create: { country, region, city, latitude, longitude, radius: 12000, category },

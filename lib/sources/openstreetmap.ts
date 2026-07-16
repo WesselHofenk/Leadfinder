@@ -2,6 +2,7 @@ import "server-only";
 
 import { serverEnv } from "@/lib/env";
 import { searchOverpass } from "@/lib/openstreetmap/overpass";
+import { healthySourceEndpoints, recordSourceProviderEvent } from "./provider-health";
 import type { BusinessSourceAdapter, SourceSearch } from "./types";
 
 export class OpenStreetMapAdapter implements BusinessSourceAdapter {
@@ -34,7 +35,8 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     const rotated = [...this.endpoints.slice(start), ...this.endpoints.slice(0, start)];
     // Try two independent hosts per short serverless batch. The next tile rotates
     // to another pair, so one request never exhausts every public host.
-    const endpoints = rotated.slice(0, Math.min(2, rotated.length));
+    const healthy = await healthySourceEndpoints(rotated);
+    const endpoints = healthy.slice(0, Math.min(2, healthy.length));
     const result = await searchOverpass({
       endpoints,
       country: input.country,
@@ -44,11 +46,15 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       radius: input.radius,
       category: input.category,
       tileCursor: input.tileCursor,
-      timeoutMs: this.timeoutMs,
-      totalTimeoutMs: this.totalTimeoutMs,
+      timeoutMs: Math.min(8_000, this.timeoutMs),
+      totalTimeoutMs: Math.min(12_000, this.totalTimeoutMs),
       maxResponseBytes: this.maxResponseBytes,
       signal: input.signal,
-      onEvent: input.onEvent,
+      retriesPerEndpoint: 2,
+      onEvent: async (event) => {
+        await recordSourceProviderEvent(event).catch(() => undefined);
+        await input.onEvent?.(event);
+      },
     });
     return { candidates: result.candidates, source: this.id, sourceUrl: result.endpoint, warnings: [], tile: result.tile.id, queryType: result.queryType };
   }

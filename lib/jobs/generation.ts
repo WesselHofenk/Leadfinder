@@ -6,6 +6,7 @@ import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-st
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
+import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
 import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
 import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
@@ -13,7 +14,7 @@ import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, ty
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, generationProgress, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
+import { candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 
 type Stats = {
   found: number;
@@ -237,7 +238,6 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     else if (addressLead) match = { reason: "duplicate_name_address", disposition: "duplicate", leadId: addressLead.id, matchedFields: ["name", "address"] };
     else if (["skipped", "rejected"].includes(priorSource?.decision ?? "") && [
       "SKIPPED_PERMANENTLY_CLOSED",
-      "SKIPPED_TEMPORARILY_CLOSED",
       "SKIPPED_HAS_WEBSITE",
       "likely_closed",
       "excluded_category",
@@ -327,7 +327,7 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       source: "OPENSTREETMAP",
       confidenceScore: basic.lead.confidenceScore,
       confidenceLevel: basic.lead.confidenceLevel,
-      status: "NEW",
+      pipelineStageId: NEW_PIPELINE_STAGE_ID,
       isActive: true,
       isFiltered: false,
       filterReason: null,
@@ -368,6 +368,13 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
         rejectedAt: null,
       },
     });
+    await tx.searchCombination.updateMany({
+      where: {
+        country: candidate.country.toUpperCase(), city: candidate.city,
+        category: candidate.category, source: candidate.source ?? "OPENSTREETMAP",
+      },
+      data: { validLeads: { increment: 1 } },
+    });
     await Promise.all(fingerprintValues(candidateDedupeKeys(candidate)).map((item) => tx.duplicateFingerprint.upsert({
       where: { fingerprint: item.fingerprint },
       create: { ...item, leadId: lead.id },
@@ -384,15 +391,31 @@ function rejectionCode(reason: string) {
 }
 
 async function nextSearchArea() {
-  const area = await prisma.coverageArea.findFirst({
+  const areas = await prisma.coverageArea.findMany({
     where: { status: { not: "PAUSED" } },
     orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
+    take: 24,
   });
-  if (!area) return null;
+  if (!areas.length) return null;
+  const unseen = areas.find((area) => !area.lastScannedAt);
+  let area = unseen ?? areas[0];
+  if (!unseen) {
+    const combinations = await prisma.searchCombination.findMany({
+      where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
+      select: { country: true, city: true, category: true, validLeads: true, useCount: true },
+    });
+    const yields = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item.validLeads / Math.max(1, item.useCount)]));
+    // Choose a productive combination only inside the 24 least-recently-used
+    // candidates. This exploits proven segments without sacrificing rotation.
+    area = areas.slice().sort((left, right) =>
+      (yields.get(`${right.country}:${right.city}:${right.category}`) ?? 0)
+      - (yields.get(`${left.country}:${left.city}:${left.category}`) ?? 0),
+    )[0];
+  }
   const combination = await prisma.searchCombination.upsert({
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
-    create: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" },
-    update: {},
+    create: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP", region: area.region, searchTerm: area.category, provider: "OPENSTREETMAP" },
+    update: { region: area.region, searchTerm: area.category },
   });
   return { area, combination, tileCursor: combination.tileCursor % OSM_SEARCH_CURSOR_COUNT };
 }
@@ -481,8 +504,10 @@ export async function processGenerationBatch(runId: string) {
       where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
     });
 
-    if (!queued.length) {
-      const carriedCandidates = await importInterruptedGenerationCandidates(runId, env.GENERATION_BATCH_CANDIDATES);
+    let retryQuotaRemaining = generationRetryImportLimit(env.GENERATION_BATCH_CANDIDATES, run.retriedCandidates);
+
+    if (!queued.length && retryQuotaRemaining > 0) {
+      const carriedCandidates = await importInterruptedGenerationCandidates(runId, retryQuotaRemaining);
       if (carriedCandidates) {
         stats.found += carriedCandidates;
         retriedThisBatch += carriedCandidates;
@@ -490,11 +515,12 @@ export async function processGenerationBatch(runId: string) {
           where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
         });
         batchMessage = `${carriedCandidates} nog niet gecontroleerde kandidaten uit een onderbroken run zijn veilig hervat.`;
+        retryQuotaRemaining -= carriedCandidates;
       }
     }
 
-    if (!queued.length) {
-      const importedRetries = await importDueValidationRetries(runId, env.GENERATION_BATCH_CANDIDATES);
+    if (!queued.length && retryQuotaRemaining > 0) {
+      const importedRetries = await importDueValidationRetries(runId, retryQuotaRemaining);
       if (importedRetries) {
         retriedThisBatch += importedRetries;
         queued = await prisma.generationCandidate.findMany({
@@ -505,7 +531,7 @@ export async function processGenerationBatch(runId: string) {
     }
 
     if (!queued.length) {
-      if (run.processedSegments >= env.GENERATION_MAX_SOURCE_CALLS) {
+      if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
         return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; de ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt.`);
       }
@@ -518,6 +544,7 @@ export async function processGenerationBatch(runId: string) {
       const region = `${area.city}, ${area.country}`;
       const tileLabel = overpassSearchPlan(tileCursor).id;
       const segment = `${area.country}:${area.city}:${area.category}:${tileLabel}`;
+      const sourceStartedAt = Date.now();
 
       run.progress = Math.max(run.progress, phaseProgress("source"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
@@ -534,29 +561,43 @@ export async function processGenerationBatch(runId: string) {
           onEvent: (event) => logOverpassEvent(runId, area.city, area.category, event),
         });
         const attemptDelta = sourceAttemptDelta(true);
+        const sourceDurationMs = Date.now() - sourceStartedAt;
         warnings.push(...result.warnings);
         if (!places.includes(segment)) places.push(segment);
+        const bufferedCandidates = result.candidates.slice(0, env.LEAD_CANDIDATE_BUFFER);
+        const knownAtSource = bufferedCandidates.length ? await knownCandidateReasons(bufferedCandidates) : new Map<string, KnownCandidateMatch | null>();
+        const novelCandidates = bufferedCandidates.filter((candidate) => {
+          const known = knownAtSource.get(candidate.externalPlaceId);
+          if (!known) return true;
+          if (known.disposition === "rejected") stats.rejected += 1;
+          else { stats.duplicates += 1; stats.existing += 1; }
+          return false;
+        });
         const queuedResult = await prisma.$transaction(async (tx) => {
           const inserted = await tx.generationCandidate.createMany({
-            data: result.candidates.map((candidate) => ({
+            data: novelCandidates.map((candidate) => ({
               runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
               payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
             })),
             skipDuplicates: true,
           });
-          await tx.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: inserted.count } } });
+          await tx.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: result.candidates.length } } });
           await tx.searchCombination.update({ where: { id: combination.id }, data: {
-            useCount: { increment: 1 }, candidatesFound: { increment: inserted.count }, lastUsedAt: new Date(),
+            useCount: { increment: 1 }, candidatesFound: { increment: result.candidates.length }, lastUsedAt: new Date(),
+            region: area.region, searchTerm: area.category, provider: result.sourceUrl ?? adapter.id,
+            totalDurationMs: { increment: BigInt(sourceDurationMs) },
+            averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
             tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null,
           } });
           await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, lastError: null } });
           return inserted;
         });
-        stats.found += queuedResult.count;
+        stats.found += result.candidates.length;
         run.processedSegments += attemptDelta.processedSegments;
-        batchMessage = `${queuedResult.count} nieuwe kandidaten zijn duurzaam in de controlequeue gezet.`;
+        batchMessage = `${result.candidates.length} kandidaten gevonden; ${queuedResult.count} nog onbekende kandidaten zijn duurzaam in de controlequeue gezet.`;
       } catch (error) {
         const message = errorMessage(error);
+        const sourceDurationMs = Date.now() - sourceStartedAt;
         const attemptDelta = sourceAttemptDelta(false);
         stats.sourceFailures += attemptDelta.sourceFailures;
         errors.push(`${adapter.id} / ${region} / ${area.category}: ${message}`);
@@ -564,7 +605,13 @@ export async function processGenerationBatch(runId: string) {
         await Promise.all([
           logSource(runId, adapter.id, "ERROR", JSON.stringify({ jobId: runId, batchNumber: run.batchNumber, step: "source_failed", region, category: area.category, tile: tileLabel, errorCode: "SOURCE_ERROR", message }), area.city, area.category),
           prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date() } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message } }),
+          prisma.searchCombination.update({ where: { id: combination.id }, data: {
+            useCount: { increment: 1 }, errorCount: { increment: 1 }, lastUsedAt: new Date(),
+            region: area.region, searchTerm: area.category, provider: adapter.id,
+            totalDurationMs: { increment: BigInt(sourceDurationMs) },
+            averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
+            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message,
+          } }),
           prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
         ]);
         if (sourceFailureWarningDue(stats.sourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
@@ -619,8 +666,9 @@ export async function processGenerationBatch(runId: string) {
       }
       if (isTemporarilyClosed(candidate)) {
         stats.temporarilyClosed += 1;
-        await markDecision(candidate, "skipped", "SKIPPED_TEMPORARILY_CLOSED");
-        await markValidationRejected(candidate, "SKIPPED_TEMPORARILY_CLOSED");
+        stats.manualReview += 1;
+        await markDecision(candidate, "retry", "TEMPORARILY_CLOSED");
+        await queueValidationRetry({ runId, candidate, reason: "STATUS_CHECK_FAILED: bron meldt tijdelijk gesloten; later opnieuw controleren." });
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
@@ -743,7 +791,7 @@ export async function processGenerationBatch(runId: string) {
     const state = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { cancelRequested: true, status: true } });
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
     const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
-    const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
+    const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
     if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten blijven veilig in de PostgreSQL-retryqueue.`);
     if (completionStatus) {
       const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : completionStatus === "FAILED" ? JobStatus.FAILED : JobStatus.COMPLETE;
