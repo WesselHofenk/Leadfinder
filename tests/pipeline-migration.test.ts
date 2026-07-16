@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const migration = readFileSync(resolve("prisma/migrations/20260716163000_seven_stage_sales_pipeline/migration.sql"), "utf8");
 const notInterestedMigration = readFileSync(resolve("prisma/migrations/20260716170000_add_not_interested_pipeline_status/migration.sql"), "utf8");
 const relationalMigration = readFileSync(resolve("prisma/migrations/20260716210000_relational_pipeline_stages/migration.sql"), "utf8");
+const emailedStageMigration = readFileSync(resolve("prisma/migrations/20260716234500_add_emailed_pipeline_stage/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -37,5 +38,15 @@ describe("veilige pipeline-datamigratie", () => {
     expect(relationalMigration).toContain("before_total <> after_total");
     expect(relationalMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
     expect(relationalMigration).toContain('CREATE TABLE IF NOT EXISTS "PipelineMigrationAudit"');
+  });
+
+  it("voegt Gemaild veilig op positie 6 toe zonder bestaande leads te wijzigen", () => {
+    expect(emailedStageMigration).toMatch(/^BEGIN;/);
+    expect(emailedStageMigration.trim()).toMatch(/COMMIT;$/);
+    expect(emailedStageMigration).toContain("('pipeline-gemaild', 'gemaild', 'Gemaild', 6");
+    expect(emailedStageMigration).toContain("lead_count_before <> lead_count_after");
+    expect(emailedStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(emailedStageMigration).toContain("WHEN 'ingepland' THEN 7");
+    expect(emailedStageMigration).toContain("WHEN 'geen-interesse' THEN 9");
   });
 });

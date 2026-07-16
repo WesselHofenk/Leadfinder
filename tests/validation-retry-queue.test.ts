@@ -40,10 +40,11 @@ const candidate: Candidate = {
   businessStatus: "UNKNOWN",
   country: "BE",
   category: "kapper",
-  city: "Gent",
-  streetAddress: "Gent",
-  latitude: 51.05,
-  longitude: 3.72,
+  city: "Antwerpen",
+  postalCode: "2000",
+  streetAddress: "Meir 1, 2000 Antwerpen",
+  latitude: 51.2194,
+  longitude: 4.4025,
   googleMapsUrl: "https://www.openstreetmap.org/node/123",
 };
 
@@ -86,6 +87,22 @@ describe("duurzame validatie-retryqueue", () => {
     }));
     expect(mocks.validationUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: { status: "VALIDATING", retryCount: { increment: 1 }, lastCheckedAt: new Date("2026-07-16T10:00:00Z") },
+    }));
+  });
+
+  it("importeert een geblokkeerde Brusselse retry nooit opnieuw", async () => {
+    const now = new Date("2026-07-16T10:00:00Z");
+    mocks.validationFindMany.mockResolvedValue([{
+      id: "retry-brussels", source: "OPENSTREETMAP", sourceRecordId: "osm:node/999",
+      payload: { ...candidate, externalPlaceId: "osm:node/999", city: "Bruxelles", postalCode: "1000" },
+      nextRetryAt: new Date("2026-07-16T09:00:00Z"), createdAt: new Date("2026-07-16T08:00:00Z"),
+    }]);
+    mocks.generationFindMany.mockResolvedValue([]);
+    await expect(importDueValidationRetries("run-2", 5, now)).resolves.toBe(0);
+    expect(mocks.generationCreateMany).not.toHaveBeenCalled();
+    expect(mocks.validationExhaustedUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: { in: ["retry-brussels"] } },
+      data: expect.objectContaining({ status: "REJECTED", failureReason: "BLOCKED_LOCATION" }),
     }));
   });
 

@@ -37,8 +37,6 @@ const centers = [
   ["NL", "Overijssel", "Deventer", 52.2661, 6.1552],
   ["NL", "Limburg", "Maastricht", 50.8514, 5.6910],
   ["BE", "Antwerpen", "Antwerpen", 51.2194, 4.4025],
-  ["BE", "Brussel", "Brussel", 50.8503, 4.3517],
-  ["BE", "Oost-Vlaanderen", "Gent", 51.0543, 3.7174],
   ["BE", "West-Vlaanderen", "Brugge", 51.2093, 3.2247],
   ["BE", "Luik", "Luik", 50.6326, 5.5797],
   ["BE", "Limburg", "Hasselt", 50.9307, 5.3325],

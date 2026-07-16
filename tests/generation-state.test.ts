@@ -3,9 +3,9 @@ import { candidateRetryStatus, generationCompletionStatus, generationProgress, g
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
-    expect(phaseProgress("queued")).toBe(2);
-    expect(phaseProgress("source")).toBe(15);
-    expect(phaseProgress("candidates")).toBe(45);
+    expect(phaseProgress("queued")).toBe(5);
+    expect(phaseProgress("source")).toBe(30);
+    expect(phaseProgress("candidates")).toBe(50);
     expect(phaseProgress("done")).toBe(100);
   });
 

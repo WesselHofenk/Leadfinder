@@ -5,7 +5,7 @@ export function isTerminalGenerationStatus(status: string) {
 }
 
 export function phaseProgress(phase: "queued" | "validate" | "location" | "source" | "candidates" | "websites" | "dedupe" | "saving" | "done") {
-  return { queued: 2, validate: 5, location: 10, source: 15, candidates: 45, websites: 70, dedupe: 85, saving: 92, done: 100 }[phase];
+  return { queued: 5, validate: 15, location: 30, source: 30, candidates: 50, websites: 65, dedupe: 88, saving: 95, done: 100 }[phase];
 }
 
 export function isStaleGenerationRun(updatedAt: Date, now = new Date(), watchdogSeconds = 60) {

@@ -7,6 +7,7 @@ import { dateFormatter, statusLabels } from "@/lib/format";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
 import { toPipelineOptions } from "@/lib/leads/pipeline";
 import { prisma } from "@/lib/prisma";
+import { isBlockedLocation } from "@/lib/leads/blocked-location";
 
 function readableAddress(streetAddress: string, formattedAddress: string | null) {
   const value = (formattedAddress || streetAddress).trim();
@@ -36,7 +37,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
     }),
     prisma.pipelineStage.findMany({ where: { isActive: true }, orderBy: { position: "asc" } }),
   ]);
-  if (!lead) notFound();
+  if (!lead || isBlockedLocation(lead as typeof lead & Record<string, unknown>)) notFound();
 
   const address = readableAddress(lead.streetAddress, lead.formattedAddress);
   const socials = socialLinks(lead.socialUrls);

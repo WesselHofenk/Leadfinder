@@ -268,6 +268,32 @@ model PipelineMigrationAudit {
   createdAt          DateTime @default(now())
 }
 
+model BlockedLocationCleanupAudit {
+  id            String   @id
+  cleanupKey    String   @unique
+  totalChecked  Int
+  brusselsFound Int
+  ghentFound    Int
+  removed       Int
+  reasons       Json
+  backupTable   String
+  createdAt     DateTime @default(now())
+}
+
+model BlockedLocationLeadBackup {
+  id              String   @id
+  cleanupRunId    String
+  originalLeadId  String
+  area            String
+  reason          String
+  leadSnapshot    Json
+  relatedSnapshot Json
+  createdAt       DateTime @default(now())
+
+  @@unique([cleanupRunId, originalLeadId])
+  @@index([cleanupRunId, area])
+}
+
 model GenerationRun {
   id                  String                @id @default(cuid())
   status              JobStatus             @default(PENDING)
@@ -287,6 +313,10 @@ model GenerationRun {
   outdatedWebsite     Int                   @default(0)
   improvableWebsite   Int                   @default(0)
   sourceFailures      Int                   @default(0)
+  blockedBrussels     Int                   @default(0)
+  blockedGhent        Int                   @default(0)
+  invalidPhone        Int                   @default(0)
+  languageRejected    Int                   @default(0)
   estimatedCostCents  Int                   @default(0)
   placesUsed          Json                  @default("[]")
   branchesUsed        Json                  @default("[]")

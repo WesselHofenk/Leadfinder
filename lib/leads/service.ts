@@ -6,10 +6,11 @@ import { fingerprintValues, type DedupeKeys } from "./deduplication";
 import { normalizeText } from "./normalization";
 import { getGoogleBusinessUrl } from "./google-business-url";
 import { isNonOwnedWebsite, normalizeWebsite } from "./website";
+import { blockedLeadWhere, isBlockedLocation } from "./blocked-location";
 
 export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   const showFiltered = filters.filtered === "yes";
-  const where: Prisma.LeadWhereInput = { isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
+  const where: Prisma.LeadWhereInput = { AND: [{ NOT: blockedLeadWhere }], isActive: showFiltered ? undefined : true, isFiltered: showFiltered ? true : false, isSuppressed: false };
   if (!filters.status && !showFiltered) where.pipelineStage = { is: { slug: { not: "geen-interesse" } } };
   if (!filters.businessStatus && !showFiltered) where.businessStatus = { in: ["OPERATIONAL", "UNKNOWN", "FUTURE_OPENING"] };
   if (filters.q) where.OR = ["companyName","contactPersonName","email","phoneNumber","normalizedPhoneNumber","city","postalCode","category"].map((field) => ({ [field]: { contains: filters.q } })) as Prisma.LeadWhereInput[];
@@ -36,7 +37,7 @@ export function activeLeadWhere(filters: LeadFilters): Prisma.LeadWhereInput {
   }
   if (filters.minScore !== undefined || filters.maxScore !== undefined) where.opportunityScore = { ...(filters.minScore !== undefined ? { gte: filters.minScore } : {}), ...(filters.maxScore !== undefined ? { lte: filters.maxScore } : {}) };
   if (filters.minConfidence !== undefined) where.websiteConfidence = { gte: filters.minConfidence };
-  if (filters.called === "yes") where.pipelineStage = { is: { slug: { in: ["belletje-1","belletje-2","belletje-3","belletje-4","ingepland","deal"] } } };
+  if (filters.called === "yes") where.pipelineStage = { is: { slug: { in: ["belletje-1","belletje-2","belletje-3","belletje-4","gemaild","ingepland","deal"] } } };
   if (filters.called === "no") where.pipelineStage = { is: { slug: "nieuw" } };
   if (filters.hasPhone === "yes") where.phoneNumber = { not: "" };
   if (filters.hasPhone === "no") where.phoneNumber = "";
@@ -74,13 +75,14 @@ export async function listLeads(filters: LeadFilters) {
 export async function updateManualLeadFields(leadId: string, userId: string, input: { pipelineStage: PipelineStatus; notes?: string; filterReason?: string }) {
   return prisma.$transaction(async (tx) => {
     const current = await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: { pipelineStage: true } });
+    if (isBlockedLocation(current as typeof current & Record<string, unknown>)) throw new Error("Deze lead is geblokkeerd omdat de locatie Brussel of Gent is.");
     const nextStage = await tx.pipelineStage.findFirstOrThrow({ where: { slug: input.pipelineStage, isActive: true } });
     const stageChanged = current.pipelineStageId !== nextStage.id;
     const lead = await tx.lead.update({ where: { id: leadId }, data: {
       pipelineStageId: nextStage.id,
       ...(input.notes !== undefined ? { notes: input.notes } : {}),
       ...(input.filterReason !== undefined ? { filterReason: input.filterReason.trim() || null } : {}),
-      lastContactAt: input.pipelineStage.startsWith("belletje-") ? new Date() : undefined,
+      lastContactAt: input.pipelineStage.startsWith("belletje-") || input.pipelineStage === "gemaild" ? new Date() : undefined,
     }, include: { pipelineStage: true } });
     await tx.leadHistory.create({ data: { leadId, actorId: userId, event: "MANUAL_FIELDS_UPDATED", details: {
       previousStage: current.pipelineStage.slug, pipelineStage: nextStage.slug, stageChanged,
@@ -102,6 +104,7 @@ export async function reviewLeadWebsite(
 ) {
   return prisma.$transaction(async (tx) => {
     const lead = await tx.lead.findUniqueOrThrow({ where: { id: leadId } });
+    if (isBlockedLocation(lead as typeof lead & Record<string, unknown>)) throw new Error("Deze lead is geblokkeerd omdat de locatie Brussel of Gent is.");
     const checkedAt = new Date();
     const evidenceUrl = getGoogleBusinessUrl(lead);
     if (input.websiteReview === "NO_WEBSITE_CONFIRMED") {

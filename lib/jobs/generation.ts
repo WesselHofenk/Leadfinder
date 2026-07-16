@@ -6,6 +6,7 @@ import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-st
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
 import { validateStrictLead, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
 import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
@@ -35,6 +36,10 @@ type Stats = {
   outdatedWebsite: number;
   improvableWebsite: number;
   sourceFailures: number;
+  blockedBrussels: number;
+  blockedGhent: number;
+  invalidPhone: number;
+  languageRejected: number;
 };
 
 const terminalStatuses = new Set<JobStatus>(terminalGenerationStatuses as readonly JobStatus[]);
@@ -59,6 +64,10 @@ function statsFromRun(run: GenerationRun): Stats {
     outdatedWebsite: run.outdatedWebsite,
     improvableWebsite: run.improvableWebsite,
     sourceFailures: run.sourceFailures,
+    blockedBrussels: run.blockedBrussels,
+    blockedGhent: run.blockedGhent,
+    invalidPhone: run.invalidPhone,
+    languageRejected: run.languageRejected,
   };
 }
 
@@ -81,6 +90,10 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     outdatedWebsite: stats.outdatedWebsite,
     improvableWebsite: stats.improvableWebsite,
     sourceFailures: stats.sourceFailures,
+    blockedBrussels: stats.blockedBrussels,
+    blockedGhent: stats.blockedGhent,
+    invalidPhone: stats.invalidPhone,
+    languageRejected: stats.languageRejected,
     estimatedCostCents: 0,
     placesUsed: places,
     branchesUsed: branches,
@@ -94,7 +107,7 @@ function capacity(stats: Pick<Stats, "stored">) { return stats.stored; }
 
 export async function createGenerationRun() {
   const target = Number(process.env.LEAD_GENERATION_TARGET || 50);
-  return prisma.generationRun.create({
+  const run = await prisma.generationRun.create({
     data: {
       targetCount: Math.min(50, Math.max(1, target)),
       currentPhase: "Zoekopdracht klaarzetten",
@@ -103,6 +116,12 @@ export async function createGenerationRun() {
       heartbeatAt: new Date(),
     },
   });
+  const event = { jobId: run.id, step: "job_started", startedAt: run.createdAt.toISOString(), targetCount: run.targetCount, sources: ["OPENSTREETMAP"] };
+  console.info(JSON.stringify(event));
+  await logSource(run.id, "GENERATION", "INFO", JSON.stringify(event)).catch((error) => {
+    console.warn(JSON.stringify({ jobId: run.id, step: "job_start_log_failed", message: errorMessage(error) }));
+  });
+  return run;
 }
 
 export async function markStaleGenerationRuns(now = new Date()) {
@@ -158,6 +177,35 @@ async function logOverpassEvent(runId: string, city: string, category: string, e
   const level = event.errorType ? "ERROR" : "INFO";
   console.info(JSON.stringify(entry));
   await logSource(runId, "OPENSTREETMAP", level, JSON.stringify(entry), city, category);
+}
+
+async function recordBlockedCandidates(runId: string, candidates: Candidate[]) {
+  if (!candidates.length) return;
+  const rows = candidates.map((candidate) => ({
+    candidate,
+    detected: detectBlockedLocation(candidate as Candidate & Record<string, unknown>),
+  }));
+  await prisma.sourceLog.createMany({ data: rows.map(({ candidate, detected }) => ({
+    runId, source: candidate.source ?? "OPENSTREETMAP", level: "INFO", city: candidate.city, category: candidate.category,
+    message: JSON.stringify({ jobId: runId, step: "blocked_location_rejected", sourceRecordId: candidate.externalPlaceId,
+      area: detected.area, reason: detected.reason, matchedField: detected.matchedField }).slice(0, 500),
+  })) });
+  await Promise.allSettled(rows.map(({ candidate, detected }) => prisma.sourceRecord.upsert({
+    where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
+    create: {
+      source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId,
+      sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl, rawName: candidate.companyName,
+      rawAddress: candidate.formattedAddress ?? candidate.streetAddress,
+      rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawWebsite: candidate.website, rawBusinessStatus: candidate.businessStatus,
+      decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+      processedAt: new Date(), payload: JSON.parse(JSON.stringify(candidate)),
+    },
+    update: {
+      decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+      processedAt: new Date(), payload: JSON.parse(JSON.stringify(candidate)),
+    },
+  })));
 }
 
 async function sourceRecord(candidate: Candidate) {
@@ -252,6 +300,8 @@ async function knownCandidateReasons(candidates: Candidate[]) {
       "REGION_NOT_ALLOWED",
       "OWN_WEBSITE_FOUND",
       "EXCLUDED_CATEGORY",
+      "BLOCKED_BRUSSELS",
+      "BLOCKED_GHENT",
     ].includes(priorSource?.reasonCode ?? "")) {
       match = { reason: priorSource?.reasonCode ?? "previously_rejected", disposition: "rejected", matchedFields: ["source_id"] };
     } else if (strongIdentityFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) {
@@ -303,11 +353,17 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
   const basic = validateCandidateBasics(candidate);
   if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
   return prisma.$transaction(async (tx) => {
+    const finalLocation = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+    if (finalLocation.blocked) return {
+      stored: false, reviewOnly: false,
+      reason: finalLocation.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+      leadId: undefined,
+    };
     const lead = await tx.lead.create({ data: {
       externalPlaceId: basic.lead.externalPlaceId,
       companyName: basic.lead.companyName,
       normalizedCompanyName: basic.lead.normalizedCompanyName,
-      phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber || "",
+      phoneNumber: basic.lead.normalizedPhoneNumber!,
       normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
       internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber || null,
       email: basic.lead.email,
@@ -327,8 +383,8 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       googleMapsUrl: candidate.googleBusinessProfileUrl || basic.lead.googleMapsUrl,
       googlePlaceId: candidate.googlePlaceId,
       googleBusinessProfileUrl: candidate.googleBusinessProfileUrl,
-      googleBusinessProfileVerified: true,
-      googleBusinessVerifiedAt: new Date(),
+      googleBusinessProfileVerified: Boolean(candidate.googleBusinessProfileVerified),
+      googleBusinessVerifiedAt: candidate.googleBusinessProfileVerified ? new Date() : null,
       website: verification.website,
       websiteUrl: verification.website,
       normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
@@ -420,7 +476,10 @@ function rejectionCode(reason: string) {
 
 function strictReasonMessage(reason: StrictLeadReason) {
   return ({
-    NO_GOOGLE_BUSINESS_PROFILE: "Geen aantoonbaar Google Bedrijfsprofiel",
+    BLOCKED_BRUSSELS: "Bedrijf ligt in Brussel of het Brussels Hoofdstedelijk Gewest",
+    BLOCKED_GHENT: "Bedrijf ligt in Gent of een Gentse deelgemeente",
+    PHONE_REQUIRED: "Geen geldig openbaar telefoonnummer",
+    NO_PUBLIC_BUSINESS_PROFILE: "Geen aantoonbare openbare bedrijfsvermelding",
     REGION_NOT_ALLOWED: "Buiten Nederland of Nederlandstalig België",
     LANGUAGE_NOT_DUTCH: "Niet aantoonbaar Nederlandstalig",
     BUSINESS_NOT_CONFIRMED_ACTIVE: "Status onbekend of niet positief actief bevestigd",
@@ -432,17 +491,23 @@ function strictReasonMessage(reason: StrictLeadReason) {
 }
 
 async function nextSearchArea() {
-  const areas = await prisma.coverageArea.findMany({
+  const candidates = await prisma.coverageArea.findMany({
     where: {
       status: { not: "PAUSED" },
       OR: [
         { country: "NL" },
-        { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen", "Brussel"] } },
+        { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen"] } },
       ],
     },
     orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
-    take: 24,
+    take: 48,
   });
+  const blockedAreaIds = candidates.filter((area) => detectBlockedLocation(area as typeof area & Record<string, unknown>).blocked).map(({ id }) => id);
+  if (blockedAreaIds.length) await prisma.coverageArea.updateMany({
+    where: { id: { in: blockedAreaIds } },
+    data: { status: "PAUSED", errorMessage: "Uitgesloten door harde locatieblokkade: Brussel/Gent" },
+  });
+  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id)).slice(0, 24);
   if (!areas.length) return null;
   const unseen = areas.find((area) => !area.lastScannedAt);
   let area = unseen ?? areas[0];
@@ -468,16 +533,25 @@ async function nextSearchArea() {
 }
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
+  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, startedAt: true, createdAt: true } });
+  const summary = `Resultaten: kandidaten ${stats.found}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
+  const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
+  const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
+  const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
+  console.info(JSON.stringify(event));
+  await logSource(runId, "GENERATION", status === JobStatus.FAILED ? "ERROR" : "INFO", JSON.stringify(event)).catch((error) => {
+    console.warn(JSON.stringify({ jobId: runId, step: "job_end_log_failed", message: errorMessage(error) }));
+  });
   return prisma.generationRun.update({
     where: { id: runId },
     data: {
       ...runData(stats, places, errors, warnings),
       status,
       progress: 100,
-      exhausted: (status === JobStatus.COMPLETE || status === JobStatus.PARTIALLY_COMPLETED) && stats.stored < (await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true } })).targetCount,
+      exhausted: (status === JobStatus.COMPLETE || status === JobStatus.PARTIALLY_COMPLETED) && stats.stored < current.targetCount,
       currentPhase: status === JobStatus.CANCELLED ? "Geannuleerd" : status === JobStatus.TIMED_OUT ? "Tijdslimiet bereikt" : status === JobStatus.FAILED ? "Mislukt" : status === JobStatus.PARTIALLY_COMPLETED ? "Gedeeltelijk afgerond" : "Voltooid",
-      message: reason,
-      stopReason: reason,
+      message: finalReason,
+      stopReason: finalReason,
       finishedAt: new Date(),
     },
   });
@@ -611,8 +685,19 @@ export async function processGenerationBatch(runId: string) {
         const sourceDurationMs = Date.now() - sourceStartedAt;
         warnings.push(...result.warnings);
         if (!places.includes(segment)) places.push(segment);
-        const bufferedCandidates = result.candidates
-          .slice()
+        const normalizedCandidates = result.candidates.map((candidate) => ({
+          ...candidate,
+          province: candidate.province || area.region,
+          municipality: candidate.municipality || area.municipality || undefined,
+          regionLanguage: candidate.regionLanguage || (area.country === "BE" ? "Vlaanderen" : "Nederland"),
+        }));
+        const blockedCandidates = normalizedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).blocked);
+        const allowedCandidates = normalizedCandidates.filter((candidate) => !detectBlockedLocation(candidate as Candidate & Record<string, unknown>).blocked);
+        stats.blockedBrussels += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "BRUSSELS").length;
+        stats.blockedGhent += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "GHENT").length;
+        stats.rejected += blockedCandidates.length;
+        await recordBlockedCandidates(runId, blockedCandidates);
+        const bufferedCandidates = allowedCandidates
           .sort((left, right) => {
             const quality = (candidate: Candidate) =>
               (candidate.phoneNumber || candidate.internationalPhoneNumber ? 8 : 0)
@@ -652,7 +737,7 @@ export async function processGenerationBatch(runId: string) {
         });
         stats.found += result.candidates.length;
         run.processedSegments += attemptDelta.processedSegments;
-        batchMessage = `${result.candidates.length} kandidaten gevonden; ${queuedResult.count} nog onbekende kandidaten zijn duurzaam in de controlequeue gezet.`;
+        batchMessage = `${result.candidates.length} kandidaten gevonden; ${blockedCandidates.length} uit Brussel/Gent afgewezen en ${queuedResult.count} nog onbekende kandidaten duurzaam in de controlequeue gezet.`;
       } catch (error) {
         const message = errorMessage(error);
         const sourceDurationMs = Date.now() - sourceStartedAt;
@@ -739,6 +824,10 @@ export async function processGenerationBatch(runId: string) {
       }
       if (!strict.valid) {
         const reason = strict.reasons[0];
+        if (strict.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
+        if (strict.reasons.includes("BLOCKED_GHENT")) stats.blockedGhent += 1;
+        if (strict.reasons.includes("PHONE_REQUIRED")) stats.invalidPhone += 1;
+        if (strict.reasons.includes("LANGUAGE_NOT_DUTCH")) stats.languageRejected += 1;
         stats.rejected += 1;
         await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
           jobId: runId,
@@ -828,6 +917,13 @@ export async function processGenerationBatch(runId: string) {
             stats.permanentlyClosed += 1;
             await markDecision(candidate, "skipped", gate.reason);
             await markValidationRejected(candidate, gate.reason, verification);
+          } else if (gate.reason === "SKIPPED_WEBSITE_UNKNOWN") {
+            if (row.attempts === 0) stats.manualReview += 1;
+            retriedThisBatch += 1;
+            await markDecision(candidate, "retry", gate.reason);
+            await queueValidationRetry({ runId, candidate, verification, reason: `${gate.reason}: ${gate.detail}` });
+            await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, gate.detail);
+            continue;
           } else {
             stats.rejected += 1;
             await markDecision(candidate, "rejected", gate.reason);

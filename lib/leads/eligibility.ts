@@ -2,6 +2,7 @@ import { confidenceLevel, excludedBusinessValues } from "./config";
 import { isPermanentlyClosed, isTemporarilyClosed } from "./company-status";
 import { evaluateNewLeadGate } from "./intake-gate";
 import { normalizeDomain, normalizeEmails, normalizePhones, normalizePostalCode, normalizeText } from "./normalization";
+import { detectBlockedLocation } from "./blocked-location";
 import { determineWebsiteStatus, isNonOwnedWebsite } from "./website";
 
 export type Candidate = {
@@ -20,6 +21,7 @@ export type Candidate = {
   sourceWebsiteFieldsChecked?: boolean;
   email?: string; closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
   formattedAddress?: string; language?: string; languageConfidence?: number; regionLanguage?: string;
+  locality?: string; town?: string; village?: string; suburb?: string; district?: string; county?: string; region?: string;
   googlePlaceId?: string; googleBusinessProfileUrl?: string; googleBusinessProfileVerified?: boolean; googleBusinessStatusVerified?: boolean;
   description?: string; contactText?: string; reviewSnippets?: string[]; socialUrls?: string[];
 };
@@ -57,12 +59,15 @@ export function hasRecentSourceEvidence(candidate: Candidate, now = Date.now()) 
 
 export function validateCandidateBasics(candidate: Candidate): { ok: true; lead: EligibleBase } | { ok: false; reason: string } {
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
+  const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+  if (blocked.blocked) return { ok: false, reason: blocked.reason ?? "blocked_location" };
   if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
   if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
   if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
   const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0] ?? null;
+  if (!normalizedPhoneNumber) return { ok: false, reason: "invalid_phone" };
   const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
   let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
   if (status === "UNKNOWN") confidenceScore -= 10;

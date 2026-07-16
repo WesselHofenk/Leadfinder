@@ -191,6 +191,13 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       operator: tags.operator,
       province: tags["addr:province"] || tags["addr:state"],
       municipality: tags["addr:municipality"],
+      locality: tags["addr:locality"],
+      town: tags["addr:town"],
+      village: tags["addr:village"],
+      suburb: tags["addr:suburb"],
+      district: tags["addr:district"],
+      county: tags["addr:county"],
+      region: tags["addr:region"] || tags["is_in:region"],
       city,
       postalCode: tags["addr:postcode"],
       streetAddress: street,
@@ -250,9 +257,10 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
+  const phoneFields = ['["phone"]', '["contact:phone"]', '["mobile"]', '["contact:mobile"]', '["telephone"]', '["contact:telephone"]'];
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const statements = filters
-    .map((filter) => `${around}${filter}[name]${noOfficialWebsite};`)
+    .flatMap((filter) => phoneFields.map((phone) => `${around}${filter}[name]${phone}${noOfficialWebsite};`))
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;

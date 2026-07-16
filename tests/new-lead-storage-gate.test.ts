@@ -53,15 +53,23 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     expect(sourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ leadId: "lead-new", decision: "stored" }) }));
   });
 
-  it("slaat ook zonder telefoon op en gebruikt dan een nullable unieke waarde", async () => {
-    await expect(storeNewLead({ ...base, phoneNumber: undefined }, confirmed)).resolves.toMatchObject({ stored: true });
-    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ phoneNumber: "", normalizedPhoneNumber: null }) }));
+  it("weigert ook vlak voor opslag een kandidaat zonder geldig telefoonnummer", async () => {
+    await expect(storeNewLead({ ...base, phoneNumber: undefined }, confirmed)).resolves.toMatchObject({ stored: false, reason: "PHONE_REQUIRED" });
+    expect(leadCreate).not.toHaveBeenCalled();
   });
 
   it("slaat een geldig Belgisch bedrijf zonder website eveneens in Nieuw op", async () => {
-    const belgian = { ...base, externalPlaceId: "source-be-1", googlePlaceId: "ChIJ-source-be-1", country: "BE", province: "Oost-Vlaanderen", city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", formattedAddress: "Korenmarkt 1, 9000 Gent, België", latitude: 51.0543, longitude: 3.7174 };
+    const belgian = { ...base, externalPlaceId: "source-be-1", googlePlaceId: "ChIJ-source-be-1", phoneNumber: "+32 3 123 45 67", country: "BE", province: "Antwerpen", city: "Antwerpen", postalCode: "2000", streetAddress: "Meir 1", formattedAddress: "Meir 1, 2000 Antwerpen, België", latitude: 51.2194, longitude: 4.4025 };
     await expect(storeNewLead(belgian, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
     expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ country: "BE", pipelineStageId: "pipeline-nieuw" }) }));
+  });
+
+  it.each([
+    [{ ...base, city: "Brussel", postalCode: "1000", streetAddress: "Anspachlaan 1", formattedAddress: "Anspachlaan 1, 1000 Brussel" }, "BLOCKED_BRUSSELS"],
+    [{ ...base, city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", formattedAddress: "Korenmarkt 1, 9000 Gent" }, "BLOCKED_GHENT"],
+  ] as const)("blokkeert %s opnieuw in de laatste databasebarrière", async (candidate, reason) => {
+    await expect(storeNewLead(candidate, confirmed)).resolves.toMatchObject({ stored: false, reason });
+    expect(leadCreate).not.toHaveBeenCalled();
   });
 
   it("promoveert de retrykandidaat niet wanneer de leadtransactie faalt", async () => {

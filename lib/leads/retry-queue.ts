@@ -3,6 +3,7 @@ import { CandidateQueueStatus, JobStatus, Prisma, ValidationCandidateStatus } fr
 import { prisma } from "@/lib/prisma";
 import type { Candidate } from "./eligibility";
 import type { WebsiteVerificationResult } from "./website-verification";
+import { isBlockedLocation } from "./blocked-location";
 
 const baseRetryDelayMs = 15 * 60_000;
 const maxRetryDelayMs = 24 * 60 * 60_000;
@@ -118,7 +119,12 @@ export async function importDueValidationRetries(runId: string, limit: number, n
     select: { source: true, sourceRecordId: true },
   });
   const existingKeys = new Set(existing.map(({ source, sourceRecordId }) => `${source}:${sourceRecordId}`));
-  const selected = due.filter(({ source, sourceRecordId }) => !existingKeys.has(`${source}:${sourceRecordId}`));
+  const blocked = due.filter((item) => isBlockedLocation(item.payload as unknown as Candidate & Record<string, unknown>));
+  if (blocked.length) await prisma.validationCandidate.updateMany({
+    where: { id: { in: blocked.map(({ id }) => id) } },
+    data: { status: ValidationCandidateStatus.REJECTED, failureReason: "BLOCKED_LOCATION", lastErrorCode: "BLOCKED_LOCATION", rejectedAt: now },
+  });
+  const selected = due.filter(({ id, source, sourceRecordId }) => !blocked.some((item) => item.id === id) && !existingKeys.has(`${source}:${sourceRecordId}`));
   if (!selected.length) return 0;
   return prisma.$transaction(async (tx) => {
     const inserted = await tx.generationCandidate.createMany({
@@ -172,15 +178,18 @@ export async function importInterruptedGenerationCandidates(runId: string, limit
     take: Math.max(0, limit),
   });
   if (!interrupted.length) return 0;
+  const repaired = interrupted.map((item) => ({ item, payload: repairInterruptedPayload(item.payload, item.segment) }));
+  const blockedIds = repaired.filter(({ payload }) => isBlockedLocation(payload as unknown as Candidate & Record<string, unknown>)).map(({ item }) => item.id);
+  const allowed = repaired.filter(({ item }) => !blockedIds.includes(item.id));
 
   return prisma.$transaction(async (tx) => {
     const inserted = await tx.generationCandidate.createMany({
-      data: interrupted.map((item) => ({
+      data: allowed.map(({ item, payload }) => ({
         runId,
         source: item.source,
         sourceRecordId: item.sourceRecordId,
         segment: `carryover:${item.segment.replace(/^(?:carryover:)+/, "")}`,
-        payload: repairInterruptedPayload(item.payload, item.segment),
+        payload,
       })),
       skipDuplicates: true,
     });
@@ -189,7 +198,7 @@ export async function importInterruptedGenerationCandidates(runId: string, limit
       data: {
         status: CandidateQueueStatus.PROCESSED,
         processedAt: new Date(),
-        lastError: `Overgenomen door vervolgrun ${runId}`,
+        lastError: `Overgenomen of door locatieblokkade afgewezen in vervolgrun ${runId}`,
       },
     });
     return inserted.count;

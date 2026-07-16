@@ -2,14 +2,15 @@ import type { Candidate } from "./eligibility";
 import { hasRecentSourceEvidence } from "./eligibility";
 import { isPermanentlyClosed, isTemporarilyClosed, normalizeBusinessStatusText } from "./company-status";
 import type { WebsiteVerificationResult } from "./website-verification";
+import { detectBlockedLocation } from "./blocked-location";
+import { normalizePhones } from "./normalization";
 
 export type StrictLeadReason =
-  | "NO_GOOGLE_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
+  | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
   | "BUSINESS_NOT_CONFIRMED_ACTIVE" | "BUSINESS_CLOSED" | "ADDRESS_NOT_USABLE"
   | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND";
 
 const flemishRegions = new Set(["antwerpen", "limburg", "oost vlaanderen", "vlaams brabant", "west vlaanderen"]);
-const brusselsRegions = new Set(["brussel", "brussels hoofdstedelijk gewest", "bruxelles capitale"]);
 const dutchWords = /\b(de|het|een|en|voor|van|met|winkel|bedrijf|kapper|schilder|loodgieter|open|gesloten|afspraak|contact|welkom)\b/gi;
 const frenchWords = /\b(le|la|les|des|une|et|pour|avec|entreprise|magasin|coiffeur|peintre|plombier|ouvert|ferme|rendez vous)\b/gi;
 
@@ -39,36 +40,46 @@ export function detectDutchBusinessLanguage(candidate: Candidate) {
   const fr = content.match(frenchWords)?.length ?? 0;
   if (nl >= 2 && nl >= fr + 1) return { language: "nl", confidence: Math.min(90, 65 + nl * 5) };
   if (fr >= 2 && fr >= nl + 1) return { language: "fr", confidence: Math.min(90, 65 + fr * 5) };
+  const phone = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
+  const region = normalized(candidate.province || candidate.regionLanguage || "");
+  if (fr === 0 && candidate.country.toUpperCase() === "NL" && phone?.startsWith("+31")) return { language: "nl", confidence: 80 };
+  if (fr === 0 && candidate.country.toUpperCase() === "BE" && phone?.startsWith("+32") && flemishRegions.has(region)) return { language: "nl", confidence: 75 };
   return { language: "unknown", confidence: 0 };
 }
 
-export function allowedDutchRegion(candidate: Candidate, language = detectDutchBusinessLanguage(candidate)) {
+export function allowedDutchRegion(candidate: Candidate) {
   const country = candidate.country.toUpperCase();
   if (country === "NL") return true;
   if (country !== "BE") return false;
   const region = normalized(candidate.province || candidate.regionLanguage || candidate.municipality || "");
   if (flemishRegions.has(region)) return true;
-  return brusselsRegions.has(region) && language.language === "nl" && language.confidence >= 80;
+  return false;
 }
 
-export function hasVerifiedGoogleBusinessProfile(candidate: Candidate) {
+export function hasVerifiedPublicBusinessProfile(candidate: Candidate) {
   const url = candidate.googleBusinessProfileUrl?.trim();
   const validUrl = Boolean(url && /^https:\/\/(?:(?:www\.)?(?:google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)|maps\.app\.goo\.gl)(?:\/|\?|$)/i.test(url));
   const explicitPlaceId = Boolean(candidate.googlePlaceId?.trim());
-  return Boolean(
+  const google = Boolean(
     (candidate.source === "GOOGLE_PLACES" && explicitPlaceId)
     || (candidate.googleBusinessProfileVerified && (validUrl || explicitPlaceId)),
   );
+  const osm = candidate.source === "OPENSTREETMAP"
+    && /^osm:(?:node|way|relation)\//.test(candidate.externalPlaceId)
+    && /^https:\/\/www\.openstreetmap\.org\/(?:node|way|relation)\//.test(candidate.sourceUrl || candidate.googleMapsUrl);
+  return google || osm;
 }
 
 export function confirmedActiveStatus(candidate: Candidate) {
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { active: false, confidence: 100, status: "closed" as const };
   const status = normalizeBusinessStatusText(candidate.businessStatus);
-  const googleStatusConfirmed = candidate.source === "GOOGLE_PLACES" || candidate.googleBusinessStatusVerified === true;
-  if (googleStatusConfirmed && ["operational", "open", "active", "actief", "geopend"].includes(status)) return { active: true, confidence: 95, status: "active" as const };
+  const sourceStatusConfirmed = candidate.source === "GOOGLE_PLACES" || candidate.googleBusinessStatusVerified === true || candidate.source === "OPENSTREETMAP";
+  const sourceTime = candidate.sourceUpdatedAt ? Date.parse(candidate.sourceUpdatedAt) : Number.NaN;
+  const currentSource = candidate.source !== "OPENSTREETMAP" || (Number.isFinite(sourceTime) && Date.now() - sourceTime <= 2 * 365.25 * 86_400_000);
+  if (sourceStatusConfirmed && currentSource && ["operational", "open", "active", "actief", "geopend"].includes(status) && hasRecentSourceEvidence(candidate)) return { active: true, confidence: 95, status: "active" as const };
   const positiveSignals = new Set(candidate.activitySignals ?? []);
   const hasCurrentActivity = [...positiveSignals].some((signal) => /opening_hours|check_date|survey|phone|email|facebook|instagram/.test(signal));
-  if (googleStatusConfirmed && hasCurrentActivity && hasRecentSourceEvidence(candidate)) return { active: true, confidence: 80, status: "likely_active" as const };
+  if (sourceStatusConfirmed && currentSource && hasCurrentActivity && hasRecentSourceEvidence(candidate)) return { active: true, confidence: 80, status: "likely_active" as const };
   return { active: false, confidence: 0, status: "insufficient" as const };
 }
 
@@ -80,10 +91,14 @@ export function hasReadableAddress(candidate: Candidate) {
 
 export function validateStrictLead(candidate: Candidate, verification?: WebsiteVerificationResult) {
   const reasons: StrictLeadReason[] = [];
+  const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   const language = detectDutchBusinessLanguage(candidate);
   const active = confirmedActiveStatus(candidate);
-  if (!hasVerifiedGoogleBusinessProfile(candidate)) reasons.push("NO_GOOGLE_BUSINESS_PROFILE");
-  if (!allowedDutchRegion(candidate, language)) reasons.push("REGION_NOT_ALLOWED");
+  if (blocked.area === "BRUSSELS") reasons.push("BLOCKED_BRUSSELS");
+  if (blocked.area === "GHENT") reasons.push("BLOCKED_GHENT");
+  if (!normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
+  if (!hasVerifiedPublicBusinessProfile(candidate)) reasons.push("NO_PUBLIC_BUSINESS_PROFILE");
+  if (!allowedDutchRegion(candidate)) reasons.push("REGION_NOT_ALLOWED");
   if (language.language !== "nl" || language.confidence < 70) reasons.push("LANGUAGE_NOT_DUTCH");
   if (active.status === "closed") reasons.push("BUSINESS_CLOSED");
   else if (!active.active) reasons.push("BUSINESS_NOT_CONFIRMED_ACTIVE");
@@ -92,5 +107,5 @@ export function validateStrictLead(candidate: Candidate, verification?: WebsiteV
     if (["WEBSITE_FOUND", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status)) reasons.push("OWN_WEBSITE_FOUND");
     else if (verification.status !== "NO_WEBSITE_CONFIRMED") reasons.push("WEBSITE_NOT_CONFIRMED_ABSENT");
   }
-  return { valid: reasons.length === 0, reasons, language, active };
+  return { valid: reasons.length === 0, reasons, language, active, blocked };
 }

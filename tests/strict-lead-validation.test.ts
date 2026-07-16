@@ -19,6 +19,7 @@ const base: Candidate = {
   googleBusinessProfileUrl: "https://www.google.com/maps/place/Voorbeeldbedrijf",
   googleBusinessProfileVerified: true,
   companyName: "De Lokale Schilder",
+  phoneNumber: "+31 30 123 45 67",
   description: "Schilderbedrijf voor onderhoud en renovatie",
   language: "nl",
   languageConfidence: 95,
@@ -53,8 +54,8 @@ describe("centrale strikte leadvalidatie", () => {
     expect(result.reasons).toEqual(expect.arrayContaining(["REGION_NOT_ALLOWED", "LANGUAGE_NOT_DUTCH"]));
   });
 
-  it("wijst een bedrijf zonder bevestigd Google Bedrijfsprofiel af", () => {
-    expect(validateStrictLead({ ...base, source: "OPENSTREETMAP", googlePlaceId: undefined, googleBusinessProfileUrl: undefined, googleBusinessProfileVerified: false }, noWebsite).reasons).toContain("NO_GOOGLE_BUSINESS_PROFILE");
+  it("wijst een bedrijf zonder aantoonbare openbare bedrijfsvermelding af", () => {
+    expect(validateStrictLead({ ...base, source: "OPENSTREETMAP", externalPlaceId: "onbekend", googlePlaceId: undefined, googleBusinessProfileUrl: undefined, googleBusinessProfileVerified: false, googleMapsUrl: "", sourceUrl: undefined }, noWebsite).reasons).toContain("NO_PUBLIC_BUSINESS_PROFILE");
   });
 
   it("accepteert een losse Google-link niet als bevestiging van een actuele Google-status", () => {
@@ -72,13 +73,18 @@ describe("centrale strikte leadvalidatie", () => {
   });
 
   it("accepteert een actief Nederlandstalig Vlaams bedrijf", () => {
-    const candidate = { ...base, country: "BE", province: "Oost-Vlaanderen", city: "Gent", postalCode: "9000", streetAddress: "Korenmarkt 1", formattedAddress: "Korenmarkt 1, 9000 Gent, België", latitude: 51.05, longitude: 3.72 };
+    const candidate = { ...base, phoneNumber: "+32 3 123 45 67", country: "BE", province: "Antwerpen", city: "Antwerpen", postalCode: "2000", streetAddress: "Meir 1", formattedAddress: "Meir 1, 2000 Antwerpen, België", latitude: 51.2194, longitude: 4.4025 };
     expect(validateStrictLead(candidate, noWebsite)).toMatchObject({ valid: true });
   });
 
-  it("laat Brussel alleen toe met sterk expliciet Nederlands bewijs", () => {
+  it("blokkeert Brussel altijd, ook met sterk expliciet Nederlands bewijs", () => {
     const brussels = { ...base, country: "BE", province: "Brussel", city: "Brussel", postalCode: "1000", streetAddress: "Anspachlaan 1", formattedAddress: "Anspachlaan 1, 1000 Brussel, België", latitude: 50.85, longitude: 4.35 };
     expect(validateStrictLead({ ...brussels, language: "fr", languageConfidence: 95, description: "Entreprise de peinture" }, noWebsite).valid).toBe(false);
-    expect(validateStrictLead(brussels, noWebsite).valid).toBe(true);
+    expect(validateStrictLead(brussels, noWebsite).reasons).toContain("BLOCKED_BRUSSELS");
+  });
+
+  it("blokkeert Gent en deelgemeenten altijd", () => {
+    const gent = { ...base, country: "BE", province: "Oost-Vlaanderen", city: "Gentbrugge", postalCode: "9050", streetAddress: "Brusselsesteenweg 1", formattedAddress: "Brusselsesteenweg 1, 9050 Gentbrugge, België" };
+    expect(validateStrictLead(gent, noWebsite).reasons).toContain("BLOCKED_GHENT");
   });
 });

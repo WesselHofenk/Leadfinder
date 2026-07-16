@@ -24,6 +24,10 @@ type Run = {
   permanentlyClosed: number;
   temporarilyClosed: number;
   sourceFailures: number;
+  blockedBrussels: number;
+  blockedGhent: number;
+  invalidPhone: number;
+  languageRejected: number;
   pendingCandidates: number;
   retriedCandidates: number;
   batchNumber: number;
@@ -212,6 +216,8 @@ export function GenerationButton() {
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
+        <Metric label="Brussel afgewezen" value={run?.blockedBrussels ?? 0}/><Metric label="Gent afgewezen" value={run?.blockedGhent ?? 0}/>
+        <Metric label="Zonder geldig telefoonnummer" value={run?.invalidPhone ?? 0}/><Metric label="Niet Nederlandstalig" value={run?.languageRejected ?? 0}/>
         <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/>
         <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>

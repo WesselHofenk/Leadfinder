@@ -4,9 +4,10 @@ export const pipelineStages = [
   { id: "pipeline-belletje-2", slug: "belletje-2", label: "Belletje 2", position: 3, legacyStatus: "CALL_BACK" },
   { id: "pipeline-belletje-3", slug: "belletje-3", label: "Belletje 3", position: 4, legacyStatus: "INTERESTED" },
   { id: "pipeline-belletje-4", slug: "belletje-4", label: "Belletje 4", position: 5, legacyStatus: "QUOTE_SENT" },
-  { id: "pipeline-ingepland", slug: "ingepland", label: "Ingepland", position: 6, legacyStatus: "APPOINTMENT" },
-  { id: "pipeline-deal", slug: "deal", label: "Deal", position: 7, legacyStatus: "CUSTOMER" },
-  { id: "pipeline-geen-interesse", slug: "geen-interesse", label: "Geen interesse", position: 8, legacyStatus: "NOT_INTERESTED" },
+  { id: "pipeline-gemaild", slug: "gemaild", label: "Gemaild", position: 6, legacyStatus: "QUOTE_SENT" },
+  { id: "pipeline-ingepland", slug: "ingepland", label: "Ingepland", position: 7, legacyStatus: "APPOINTMENT" },
+  { id: "pipeline-deal", slug: "deal", label: "Deal", position: 8, legacyStatus: "CUSTOMER" },
+  { id: "pipeline-geen-interesse", slug: "geen-interesse", label: "Geen interesse", position: 9, legacyStatus: "NOT_INTERESTED" },
 ] as const;
 
 export type PipelineStatus = typeof pipelineStages[number]["slug"];

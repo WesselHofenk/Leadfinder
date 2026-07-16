@@ -5,7 +5,7 @@ import { listLeads } from "@/lib/leads/service";
 import { toPipelineOptions } from "@/lib/leads/pipeline";
 import { prisma } from "@/lib/prisma";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
-import { dateFormatter, numberFormatter, websiteStatusLabels } from "@/lib/format";
+import { numberFormatter, statusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
 import { GenerationButton } from "@/components/generation-button";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
@@ -196,23 +196,23 @@ export default async function LeadsPage({
               <table>
                 <thead>
                   <tr>
-                    <th>Branche</th>
                     <th>Bedrijf</th>
-                    <th>Contact</th>
-                    <th>Locatie</th>
-                    <th>Type</th>
-                    <th>Score</th>
-                    <th>Confidence</th>
-                    <th>Belangrijkste reden</th>
-                    <th>Status</th>
-                    <th>Gevonden</th>
+                    <th>Telefoon</th>
+                    <th>Adres</th>
+                    <th>Plaats</th>
+                    <th>Branche</th>
+                    <th>Land</th>
+                    <th>Bedrijfsstatus</th>
+                    <th>Website</th>
+                    <th>Taal</th>
+                    <th>Bron</th>
+                    <th>Pipeline</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
                   {items.map((lead) => (
                     <tr key={lead.id}>
-                      <td>{lead.category.replaceAll("_", " ")}</td>
                       <td>
                         <Link className="company" href={`/leads/${lead.id}`}>
                           {lead.companyName}
@@ -221,46 +221,18 @@ export default async function LeadsPage({
                           {lead.contactPersonName || "Contactpersoon onbekend"}
                         </div>
                       </td>
-                      <td>
-                        <strong>{lead.normalizedPhoneNumber || "Niet beschikbaar"}</strong>
-                        <div className="small muted">
-                          {lead.email || "Geen e-mail"}
-                        </div>
-                      </td>
-                      <td>
-                        {lead.city}
-                        <div className="small muted">{lead.country}</div>
-                      </td>
-                      <td>
-                        <span
-                          className={`badge ${lead.websiteStatus === "NO_WEBSITE_CONFIRMED" ? "badge-green" : "badge-amber"}`}
-                        >
-                          {websiteStatusLabels[lead.websiteStatus]}
-                        </span>
-                        <div className="small muted">{lead.googleWebsiteVerifiedAt ? "Google handmatig bevestigd" : "Automatisch gevalideerd · Google-controle aanbevolen"}</div>
-                      </td>
-                      <td>
-                        <strong
-                          style={{
-                            fontSize: 17,
-                            color:
-                              lead.opportunityScore >= 70
-                                ? "var(--brand)"
-                                : "var(--warning)",
-                          }}
-                        >
-                          {lead.opportunityScore}
-                        </strong>
-                        /100
-                      </td>
-                      <td><strong>{lead.websiteConfidence}</strong>/100<div className="small muted">websitebewijs</div></td>
-                      <td className="small">
-                        {lead.websiteStatusReason || lead.filterReason || "Handmatige controle nodig"}
-                      </td>
+                       <td>{lead.normalizedPhoneNumber || lead.phoneNumber ? <a className="text-link" href={`tel:${lead.normalizedPhoneNumber || lead.phoneNumber}`}>{lead.normalizedPhoneNumber || lead.phoneNumber}</a> : "Niet beschikbaar"}</td>
+                      <td><a className="text-link" href={getGoogleBusinessUrl(lead)} target="_blank" rel="noopener noreferrer">{lead.formattedAddress || lead.streetAddress}</a></td>
+                      <td>{lead.city}</td>
+                      <td>{lead.category.replaceAll("_", " ")}</td>
+                      <td>{lead.country}</td>
+                      <td>{lead.businessStatus === "OPERATIONAL" ? "Actief" : statusLabels[lead.businessStatus]}</td>
+                      <td>Geen eigen website</td>
+                      <td>{lead.language === "nl" ? "Nederlands" : lead.language || "Onbekend"}</td>
+                      <td>{statusLabels[lead.source]}</td>
                       <td>
                         <QuickStatus leadId={lead.id} stageSlug={lead.pipelineStage.slug} stages={stageOptions} />
                       </td>
-                      <td>{dateFormatter.format(lead.firstDiscoveredAt)}</td>
                       <td>
                         <div style={{ display: "flex", gap: 5 }}>
                           <a
