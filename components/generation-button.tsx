@@ -41,7 +41,7 @@ type Run = {
 };
 
 function resultMessage(run: Run) {
-  if (run.status === "COMPLETE") return `${run.stored} bevestigde leads opgeslagen; ${run.manualReview} onzekere kandidaten zijn veilig overgeslagen. ${run.stopReason || "De zoekrun is afgerond."}`;
+  if (run.status === "COMPLETE") return `${run.stored} bevestigde leads opgeslagen; ${run.manualReview} onzekere kandidaten blijven veilig in de PostgreSQL-retryqueue. ${run.stopReason || "De zoekrun is afgerond."}`;
   if (run.status === "PARTIALLY_COMPLETED") return run.stopReason || `De generatie is gedeeltelijk afgerond; ${run.stored} bevestigde resultaten zijn veilig opgeslagen.`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
   if (run.status === "TIMED_OUT") return run.stopReason || "De zoekrun is na de maximale verwerkingstijd gestopt. Probeer opnieuw.";
@@ -212,11 +212,11 @@ export function GenerationButton() {
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
-        <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker overgeslagen" value={run?.manualReview ?? 0}/>
+        <Metric label="Bestaand" value={run?.existingLeads ?? 0}/><Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/>
         <Metric label="Afgewezen" value={run?.rejected ?? 0}/><Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
-      <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten veilig in PostgreSQL · onzekere kandidaten worden niet opgeslagen · {run?.sourceFailures ?? 0} bronfouten</p>
+      <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten</p>
       <button className="button button-secondary generation-cancel" onClick={cancel}><Square size={13}/>Zoekrun annuleren</button>
     </section>}
     {message && <p className={["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") ? "success-message" : "alert"} role="status">{["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") && <CheckCircle2 size={15}/>} {message}</p>}

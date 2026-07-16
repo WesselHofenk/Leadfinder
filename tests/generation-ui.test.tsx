@@ -76,7 +76,7 @@ describe("frontend polling en eindstatus", () => {
     }));
     render(<GenerationButton/>);
     fireEvent.click(await screen.findByRole("button", { name: "Nieuwe leads genereren" }));
-    expect(await screen.findByText("Onzeker overgeslagen")).toBeTruthy();
+    expect(await screen.findByText("Onzeker in retryqueue")).toBeTruthy();
     expect(await screen.findByText("2/50")).toBeTruthy();
     expect(screen.queryByText("7/50")).toBeNull();
   });

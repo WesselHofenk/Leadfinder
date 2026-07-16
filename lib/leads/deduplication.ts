@@ -28,16 +28,24 @@ export function fingerprintValues(keys: DedupeKeys) {
 }
 
 export function strongIdentityFingerprintValues(keys: DedupeKeys) {
-  const strongKinds = new Set(["external", "phone", "postal", "address"]);
+  const strongKinds = new Set(["external", "phone", "email", "address"]);
   return fingerprintValues(keys).filter(({ kind }) => strongKinds.has(kind));
 }
 
 export class RunDeduplicator {
-  private values = new Set<string>();
+  private values = new Map<string, string>();
+  matchOrAdd(keys: DedupeKeys) {
+    const values = strongIdentityFingerprintValues(keys);
+    const matches = values.filter(({ fingerprint }) => this.values.has(fingerprint));
+    if (matches.length) return {
+      duplicate: true,
+      matchedExternalId: this.values.get(matches[0].fingerprint),
+      matchedFields: matches.map(({ kind }) => kind),
+    };
+    values.forEach(({ fingerprint }) => this.values.set(fingerprint, keys.externalId));
+    return { duplicate: false, matchedExternalId: undefined, matchedFields: [] as string[] };
+  }
   hasOrAdd(keys: DedupeKeys) {
-    const values = fingerprintValues(keys).map((item) => item.fingerprint);
-    if (values.some((value) => this.values.has(value))) return true;
-    values.forEach((value) => this.values.add(value));
-    return false;
+    return this.matchOrAdd(keys).duplicate;
   }
 }

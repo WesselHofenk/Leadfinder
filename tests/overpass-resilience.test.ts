@@ -48,7 +48,7 @@ describe("gerichte Overpass-query", () => {
     expect(tile.radius).toBe(2_400);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
-    expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
+    expect(query).not.toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
     expect(query).toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
@@ -79,6 +79,7 @@ describe("gerichte Overpass-query", () => {
       phoneNumbers: ["ongeldig; +31 20 765 43 21", "+31 6 12345678"],
       emailAddresses: ["info@voorbeeld.nl; sales@voorbeeld.nl"],
       websiteAbsenceConfirmed: true,
+      sourceWebsiteFieldsChecked: true,
       sourceUpdatedAt: "2026-07-01T10:00:00Z",
     });
   });

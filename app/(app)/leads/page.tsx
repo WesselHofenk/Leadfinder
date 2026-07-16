@@ -216,7 +216,7 @@ export default async function LeadsPage({
                         </div>
                       </td>
                       <td>
-                        <strong>{lead.normalizedPhoneNumber}</strong>
+                        <strong>{lead.normalizedPhoneNumber || "Niet beschikbaar"}</strong>
                         <div className="small muted">
                           {lead.email || "Geen e-mail"}
                         </div>

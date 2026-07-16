@@ -69,6 +69,14 @@ enum CandidateQueueStatus {
   FAILED
 }
 
+enum ValidationCandidateStatus {
+  PENDING_VALIDATION
+  RETRY_REQUIRED
+  VALIDATED
+  REJECTED
+  PROMOTED_TO_LEAD
+}
+
 enum JobType {
   DISCOVERY
   REVERIFY
@@ -134,7 +142,7 @@ model Lead {
   contactPersonName             String?
   email                         String?
   phoneNumber                   String
-  normalizedPhoneNumber         String                 @unique
+  normalizedPhoneNumber         String?                @unique
   internationalPhoneNumber      String?
   category                      String
   subCategory                   String?
@@ -291,6 +299,44 @@ model GenerationCandidate {
   @@unique([runId, source, sourceRecordId])
   @@index([runId, status, createdAt])
   @@index([status, claimedAt])
+}
+
+model ValidationCandidate {
+  id                   String    @id @default(cuid())
+  originRunId          String?
+  source               String
+  sourceRecordId       String
+  companyName          String
+  streetAddress        String
+  city                 String
+  country              String
+  phone                String?
+  email                String?
+  possibleWebsite      String?
+  websiteStatus        String
+  businessStatus       String
+  identityConfidence   Int       @default(0)
+  locationConfidence   Int       @default(0)
+  websiteConfidence    Int       @default(0)
+  businessConfidence   Int       @default(0)
+  totalConfidence      Int       @default(0)
+  failureReason        String
+  retryCount           Int       @default(0)
+  nextRetryAt          DateTime
+  payload              Json
+  verificationEvidence Json?
+  promotedLeadId       String?
+  validatedAt          DateTime?
+  rejectedAt           DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  status ValidationCandidateStatus @default(RETRY_REQUIRED)
+
+  @@unique([source, sourceRecordId])
+  @@index([status, nextRetryAt])
+  @@index([originRunId, createdAt])
+  @@index([promotedLeadId])
 }
 
 model WebsiteAnalysis {

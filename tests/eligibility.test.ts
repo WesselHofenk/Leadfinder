@@ -9,7 +9,7 @@ describe("leadkwalificatie",()=>{
   it("weigert ontbrekende website-afwezigheidsbevestiging",()=>expect(qualifyCandidate(candidate)).toMatchObject({ok:false,reason:"website_onzeker"}));
   it("weigert een bedrijf met een eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"},confirmed)).toMatchObject({ok:false,reason:"eigen_website"}));
   it("telt een socialmediaprofiel niet als eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://facebook.com/degoodeloodgieter"},confirmed)).toMatchObject({ok:true,lead:{leadType:"NO_WEBSITE",website:undefined}}));
-  it("weigert bedrijf zonder telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined},confirmed)).toMatchObject({ok:false,reason:"ongeldig_nummer"}));
+  it("accepteert een geldig bedrijf zonder optioneel telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined},confirmed)).toMatchObject({ok:true,lead:{normalizedPhoneNumber:null}}));
   it("weigert permanent gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_PERMANENTLY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
   it("weigert tijdelijk gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_TEMPORARILY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
   it("weigert een privé/onvolledig adres",()=>expect(qualifyCandidate({...candidate,companyName:""},confirmed)).toMatchObject({ok:false,reason:"onvolledig"}));
@@ -19,8 +19,8 @@ describe("leadkwalificatie",()=>{
     expect(qualifyCandidate({...candidate,source:"OPENSTREETMAP"},confirmed)).toMatchObject({ok:false,reason:"verouderde_bron"});
   });
   it("accepteert actuele OSM-metadata als onderdeel van de betrouwbaarheidstoets",()=>expect(hasRecentSourceEvidence({...candidate,source:"OPENSTREETMAP",sourceUpdatedAt:new Date().toISOString()})).toBe(true));
-  it("weigert ongeldige postcodes, huisnummers en coördinaten",()=>{
-    expect(hasPlausibleBusinessLocation({...candidate,streetAddress:"Damrak",postalCode:"1012 LG"})).toBe(false);
+  it("accepteert een bruikbare kaartlocatie maar weigert ongeldige coördinaten",()=>{
+    expect(hasPlausibleBusinessLocation({...candidate,streetAddress:"Damrak",postalCode:"1012 LG"})).toBe(true);
     expect(hasPlausibleBusinessLocation({...candidate,latitude:0,longitude:0,postalCode:"1012 LG"})).toBe(false);
   });
   it("weigert een keten die alleen via het merkveld herkenbaar is",()=>expect(qualifyCandidate({...candidate,brand:"Albert Heijn"},confirmed)).toMatchObject({ok:false,reason:"keten_of_uitgesloten"}));

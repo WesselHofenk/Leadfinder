@@ -136,7 +136,7 @@ export function buildLeadListQuery(filters: LeadFilters) { return { where: activ
 export async function suppressLead(leadId: string, userId: string, reason = "Handmatig verwijderd en geblokkeerd") {
   return prisma.$transaction(async (tx) => {
     const lead = await tx.lead.findUniqueOrThrow({ where: { id: leadId } });
-    const keys: DedupeKeys = { externalId: lead.externalPlaceId, phone: lead.normalizedPhoneNumber, email: lead.email ?? undefined, domain: lead.normalizedDomain ?? undefined,
+    const keys: DedupeKeys = { externalId: lead.externalPlaceId, phone: lead.normalizedPhoneNumber ?? undefined, email: lead.email ?? undefined, domain: lead.normalizedDomain ?? undefined,
       namePostal: lead.postalCode ? `${lead.normalizedCompanyName}|${normalizeText(lead.postalCode)}` : undefined,
       nameCityAddress: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.streetAddress)}`,
       nameCityCategory: `${lead.normalizedCompanyName}|${normalizeText(lead.city)}|${normalizeText(lead.category)}` };

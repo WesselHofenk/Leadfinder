@@ -121,8 +121,10 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
     const latitude = element.lat ?? element.center?.lat;
     const longitude = element.lon ?? element.center?.lon;
     if (!tags.name || latitude == null || longitude == null) return [];
-    const street = tags["addr:full"] || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ");
     const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || "Onbekend";
+    const street = tags["addr:full"]
+      || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ")
+      || `${city} (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`;
     const category = tags.shop || tags.craft || tags.office || tags.amenity || tags.tourism || tags.healthcare || "bedrijf";
     const closureSignals = closedSignals(tags);
     const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"], tags["operator:website"], tags["brand:website"]].filter((value): value is string => Boolean(value));
@@ -147,6 +149,7 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       website: positiveWebsite,
       websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
+      sourceWebsiteFieldsChecked: true,
       businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : "UNKNOWN",
       closureSignals,
       activitySignals,
@@ -217,11 +220,10 @@ export function overpassTile(latitude: number, longitude: number, radius: number
 export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy }) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
-  const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const statements = filters
-    .map((filter) => `${around}${filter}[name]${contactFilter}${noOfficialWebsite};`)
+    .map((filter) => `${around}${filter}[name]${noOfficialWebsite};`)
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;

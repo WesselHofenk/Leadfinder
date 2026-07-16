@@ -71,7 +71,13 @@ export function candidateDomains(candidate: Candidate) {
 export function hasStrongAutomaticAbsenceEvidence(candidate: Candidate, now = Date.now()) {
   const updatedAt = candidate.sourceUpdatedAt ? Date.parse(candidate.sourceUpdatedAt) : Number.NaN;
   const recent = Number.isFinite(updatedAt) && updatedAt <= now + 86_400_000 && now - updatedAt <= strongAbsenceFreshnessMs;
-  return candidate.source === "OPENSTREETMAP" && recent && Boolean(candidate.activitySignals?.length);
+  const mappedLocation = Number.isFinite(candidate.latitude) && Number.isFinite(candidate.longitude)
+    && Boolean(candidate.city?.trim()) && normalizeText(candidate.city) !== "onbekend";
+  return candidate.source === "OPENSTREETMAP"
+    && candidate.sourceWebsiteFieldsChecked === true
+    && recent
+    && mappedLocation
+    && Boolean(candidate.companyName?.trim());
 }
 
 function dnsAbsent(error: unknown) {

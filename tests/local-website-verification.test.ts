@@ -12,8 +12,8 @@ describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();c
   it("herkent een website in geneste ruwe brondata",async()=>expect(await verifyWebsiteCandidate({...base,rawData:{contactInfo:{officialWebsite:"bruna.nl"}}})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://bruna.nl"}));
   it("classificeert alleen social als SOCIAL_ONLY maar nog niet als actieve lead",async()=>expect(await verifyWebsiteCandidate({...base,websiteFields:["https://instagram.com/byyoel"]})).toMatchObject({status:"SOCIAL_ONLY",confidence:60}));
   it("publiceert ontbrekende domeinkandidaten niet zonder Google-controle",async()=>expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"MANUAL_REVIEW_REQUIRED",confidence:55}));
-  it("bevestigt meervoudig negatief bewijs alleen voor een recent record met extra activiteitssignalen",async()=>{
-    const strong={...base,sourceUpdatedAt:new Date().toISOString(),activitySignals:["opening_hours"]};
+  it("bevestigt meervoudig negatief bewijs alleen voor recent gecontroleerde bronvelden en een kaartlocatie",async()=>{
+    const strong={...base,sourceUpdatedAt:new Date().toISOString(),sourceWebsiteFieldsChecked:true};
     expect(hasStrongAutomaticAbsenceEvidence(strong)).toBe(true);
     expect(await verifyWebsiteCandidate(strong)).toMatchObject({status:"NO_WEBSITE_CONFIRMED",confidence:84});
     expect(hasStrongAutomaticAbsenceEvidence({...strong,sourceUpdatedAt:"2020-01-01T00:00:00Z"})).toBe(false);
