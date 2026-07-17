@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -79,5 +79,11 @@ describe("persistente generatiejobstatus", () => {
     expect(generationRetryImportLimit(8, 0)).toBe(2);
     expect(generationRetryImportLimit(8, 1)).toBe(1);
     expect(generationRetryImportLimit(8, 2)).toBe(0);
+  });
+
+  it("reserveert nooit meer dan 1.000 unieke kandidaten", () => {
+    expect(candidateReservationLimit(1000, 990, 50)).toBe(10);
+    expect(candidateReservationLimit(1000, 1000, 50)).toBe(0);
+    expect(candidateReservationLimit(1000, 400, 25)).toBe(25);
   });
 });

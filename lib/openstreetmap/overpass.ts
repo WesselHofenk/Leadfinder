@@ -278,18 +278,19 @@ function qlLiteral(value: string) {
 }
 
 export function buildOverpassIdentityQuery(candidate: Candidate, timeoutSeconds = 7) {
-  const latitude = Number(candidate.latitude);
-  const longitude = Number(candidate.longitude);
   const raw = candidate.rawData && typeof candidate.rawData === "object" ? candidate.rawData as Record<string, unknown> : {};
   const contactKeys: OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
   const statements = new Set<string>();
-  const around = `nwr(around:250000,${latitude.toFixed(7)},${longitude.toFixed(7)})`;
-  statements.add(`${around}["name"="${qlLiteral(candidate.companyName)}"];`);
+  // Exact indexed tag lookups inside both allowed countries are materially
+  // cheaper and more complete than the former 250 km around-query.
+  const areas = 'area["ISO3166-1"~"^(NL|BE)$"][admin_level="2"]->.allowedCountries;';
+  const insideAllowedCountries = "nwr(area.allowedCountries)";
+  statements.add(`${insideAllowedCountries}["name"="${qlLiteral(candidate.companyName)}"];`);
   for (const key of contactKeys) {
     const rawValue = typeof raw[key] === "string" ? raw[key].trim() : "";
-    if (rawValue) statements.add(`${around}["${key}"="${qlLiteral(rawValue)}"];`);
+    if (rawValue) statements.add(`${insideAllowedCountries}["${key}"="${qlLiteral(rawValue)}"];`);
   }
-  return `[out:json][timeout:${Math.min(10, Math.max(5, timeoutSeconds))}];(${[...statements].join("")});out meta center qt;`;
+  return `[out:json][timeout:${Math.min(8, Math.max(4, timeoutSeconds))}];${areas}(${[...statements].join("")});out meta center qt;`;
 }
 
 function errorType(error: unknown) {
@@ -360,8 +361,8 @@ export async function searchOverpass(params: SearchParams) {
   const configuredEndpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
   const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
-  const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));
-  const totalTimeoutMs = Math.min(18_000, Math.max(8_000, params.totalTimeoutMs ?? 18_000));
+  const timeoutMs = Math.min(15_000, Math.max(2_500, params.timeoutMs ?? 10_000));
+  const totalTimeoutMs = Math.min(18_000, Math.max(4_000, params.totalTimeoutMs ?? 18_000));
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);

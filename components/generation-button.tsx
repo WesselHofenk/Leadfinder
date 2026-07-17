@@ -9,10 +9,15 @@ type Run = {
   id: string;
   status: string;
   targetCount: number;
+  maxCandidates: number;
+  candidatesReserved: number;
   progress: number;
   message?: string;
   candidatesFound: number;
   candidatesChecked: number;
+  cheapRejected: number;
+  externallyValidated: number;
+  cacheHits: number;
   stored: number;
   withoutWebsite: number;
   manualReview: number;
@@ -216,10 +221,12 @@ export function GenerationButton() {
     {pending && <section className="generation-progress" aria-live="polite" aria-label="Voortgang leadgeneratie">
       <div className="generation-progress-head"><span>{run?.currentPhase || "Zoekopdracht valideren"}</span><strong>{Math.round(progress)}%</strong></div>
       <div className={`progress${activity ? " progress-active" : ""}`}><span style={{ width: `${progress}%` }}/></div>
-      <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0} · {elapsed}</p>
+      <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0} · {elapsed} / 15:00</p>
       <p className="generation-source-note">{run?.message || "De eerste kleine zoekbatch start binnen enkele seconden."}</p>
       <div className="generation-metrics">
-        <Metric label="Kandidaten" value={run?.candidatesFound ?? 0}/><Metric label="Gecontroleerd" value={run?.candidatesChecked ?? 0}/>
+        <Metric label="Ruw gevonden" value={run?.candidatesFound ?? 0}/><Metric label="Uniek gereserveerd" value={`${run?.candidatesReserved ?? 0}/${run?.maxCandidates ?? 1000}`}/>
+        <Metric label="Gecontroleerd" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? 1000}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
+        <Metric label="Extern gevalideerd" value={run?.externallyValidated ?? 0}/><Metric label="Cachehits" value={run?.cacheHits ?? 0}/>
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>

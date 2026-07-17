@@ -2,6 +2,7 @@ import { CandidateQueueStatus, JobStatus, Prisma, ValidationCandidateStatus } fr
 
 import { prisma } from "@/lib/prisma";
 import type { Candidate } from "./eligibility";
+import { candidateQualityScore } from "./candidate-score";
 import type { WebsiteVerificationResult } from "./website-verification";
 import { isBlockedLocation } from "./blocked-location";
 
@@ -134,6 +135,7 @@ export async function importDueValidationRetries(runId: string, limit: number, n
         sourceRecordId: item.sourceRecordId,
         segment: `retry:${item.id}`,
         payload: item.payload as Prisma.InputJsonValue,
+        qualityScore: candidateQualityScore(item.payload as unknown as Candidate),
       })),
       skipDuplicates: true,
     });
@@ -190,6 +192,7 @@ export async function importInterruptedGenerationCandidates(runId: string, limit
         sourceRecordId: item.sourceRecordId,
         segment: `carryover:${item.segment.replace(/^(?:carryover:)+/, "")}`,
         payload,
+        qualityScore: candidateQualityScore(payload as unknown as Candidate),
       })),
       skipDuplicates: true,
     });

@@ -5,10 +5,11 @@ import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentity
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
-import { hasReadableAddress, validateStrictLead, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { hasReadableAddress, validateStrictLead, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
 import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizePhones, normalizeText } from "@/lib/leads/normalization";
+import { candidateQualityScore } from "@/lib/leads/candidate-score";
 import { applySingleLocationDecision, assessSingleLocation, directSingleLocationSignal, organizationNameKey, type SingleLocationDecision, type SingleLocationReason } from "@/lib/leads/single-location";
 import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
 import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
@@ -18,11 +19,14 @@ import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, ty
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 
 type Stats = {
   found: number;
   checked: number;
+  cheapRejected: number;
+  externallyValidated: number;
+  cacheHits: number;
   withoutWebsite: number;
   duplicates: number;
   existing: number;
@@ -54,10 +58,60 @@ const terminalStatuses = new Set<JobStatus>(terminalGenerationStatuses as readon
 const errorMessage = (error: unknown) => error instanceof Error ? error.message.slice(0, 300) : "Onbekende bronfout";
 const stringArray = (value: Prisma.JsonValue): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+export class DuplicateIdentityError extends Error {
+  constructor(readonly fingerprint: string, readonly existingLeadId: string) {
+    super(`Identiteitsvingerafdruk ${fingerprint} hoort al bij lead ${existingLeadId}.`);
+    this.name = "DuplicateIdentityError";
+  }
+}
+
+export function databaseErrorEvidence(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const meta = error.meta && typeof error.meta === "object" ? error.meta as Record<string, unknown> : {};
+    return {
+      code: error.code,
+      model: typeof meta.modelName === "string" ? meta.modelName : undefined,
+      constraint: typeof meta.constraint === "string" ? meta.constraint : undefined,
+      target: Array.isArray(meta.target) ? meta.target.map(String) : typeof meta.target === "string" ? [meta.target] : undefined,
+      field: typeof meta.field_name === "string" ? meta.field_name : undefined,
+      message: errorMessage(error),
+    };
+  }
+  return { code: error instanceof DuplicateIdentityError ? "DUPLICATE_IDENTITY" : "DATABASE_ERROR", message: errorMessage(error) };
+}
+
+function decisionEvidence(candidate: Candidate, extra?: Record<string, unknown>): Prisma.InputJsonValue {
+  const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+  return JSON.parse(JSON.stringify({
+    sourceRecordId: candidate.externalPlaceId,
+    sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl,
+    country: candidate.country,
+    province: candidate.province,
+    municipality: candidate.municipality,
+    city: candidate.city,
+    postalCode: candidate.postalCode,
+    streetAddress: candidate.streetAddress,
+    normalizedPhones: normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country),
+    businessStatus: candidate.businessStatus,
+    language: candidate.language,
+    languageConfidence: candidate.languageConfidence,
+    sourceUpdatedAt: candidate.sourceUpdatedAt,
+    blockedArea: blocked.area,
+    blockedField: blocked.matchedField,
+    singleLocationStatus: candidate.singleLocationStatus,
+    singleLocationReason: candidate.singleLocationReason,
+    locationEvidence: candidate.locationEvidence,
+    ...extra,
+  }));
+}
+
 function statsFromRun(run: GenerationRun): Stats {
   return {
     found: run.candidatesFound,
     checked: run.candidatesChecked,
+    cheapRejected: run.cheapRejected,
+    externallyValidated: run.externallyValidated,
+    cacheHits: run.cacheHits,
     withoutWebsite: run.withoutWebsite,
     duplicates: run.duplicates,
     existing: run.existingLeads,
@@ -91,6 +145,9 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   return {
     candidatesFound: stats.found,
     candidatesChecked: stats.checked,
+    cheapRejected: stats.cheapRejected,
+    externallyValidated: stats.externallyValidated,
+    cacheHits: stats.cacheHits,
     withoutWebsite: stats.withoutWebsite,
     duplicates: stats.duplicates,
     existingLeads: stats.existing,
@@ -128,10 +185,12 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
 function capacity(stats: Pick<Stats, "stored">) { return stats.stored; }
 
 export async function createGenerationRun() {
-  const target = Number(process.env.LEAD_GENERATION_TARGET || 50);
+  const env = serverEnv();
+  const target = env.LEAD_GENERATION_TARGET;
   const run = await prisma.generationRun.create({
     data: {
       targetCount: Math.min(50, Math.max(1, target)),
+      maxCandidates: env.GENERATION_MAX_CANDIDATES,
       currentPhase: "Zoekopdracht klaarzetten",
       progress: phaseProgress("queued"),
       message: "De zoekopdracht is gevalideerd en staat klaar.",
@@ -150,8 +209,8 @@ export async function markStaleGenerationRuns(now = new Date()) {
   const env = serverEnv();
   const staleBefore = new Date(now.getTime() - env.GENERATION_WATCHDOG_SECONDS * 1000);
   await prisma.generationCandidate.updateMany({
-    where: { status: "PROCESSING", claimedAt: { lt: staleBefore } },
-    data: { status: "PENDING", claimedAt: null, lastError: "Onderbroken batch automatisch vrijgegeven." },
+    where: { status: "PROCESSING", OR: [{ leaseExpiresAt: { lt: now } }, { leaseExpiresAt: null, claimedAt: { lt: staleBefore } }] },
+    data: { status: "PENDING", claimedAt: null, leaseOwner: null, leaseExpiresAt: null, lastError: "Onderbroken batch automatisch vrijgegeven." },
   });
   return prisma.generationRun.updateMany({
     where: { status: JobStatus.RUNNING, updatedAt: { lt: staleBefore } },
@@ -221,11 +280,11 @@ async function recordBlockedCandidates(runId: string, candidates: Candidate[]) {
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
       rawWebsite: candidate.website, rawBusinessStatus: candidate.businessStatus,
       decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
-      processedAt: new Date(), payload: JSON.parse(JSON.stringify(candidate)),
+      processedAt: new Date(), decisionEvidence: decisionEvidence(candidate, { blockedReason: detected.reason }), payload: JSON.parse(JSON.stringify(candidate)),
     },
     update: {
       decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
-      processedAt: new Date(), payload: JSON.parse(JSON.stringify(candidate)),
+      processedAt: new Date(), decisionEvidence: decisionEvidence(candidate, { blockedReason: detected.reason }), payload: JSON.parse(JSON.stringify(candidate)),
     },
   })));
 }
@@ -258,10 +317,10 @@ async function sourceRecord(candidate: Candidate) {
   });
 }
 
-async function markDecision(candidate: Candidate, decision: string, reasonCode: string, leadId?: string) {
+async function markDecision(candidate: Candidate, decision: string, reasonCode: string, leadId?: string, extraEvidence?: Record<string, unknown>) {
   await prisma.sourceRecord.update({
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: { decision, reasonCode, processedAt: new Date(), leadId },
+    data: { decision, reasonCode, decisionEvidence: decisionEvidence(candidate, extraEvidence), processedAt: new Date(), leadId },
   });
   if (reasonCode.startsWith("SKIPPED_")) {
     console.info(JSON.stringify({ step: "candidate_skipped", source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId, companyName: candidate.companyName, reasonCode }));
@@ -428,22 +487,22 @@ async function databaseLocationEvidence(candidate: Candidate) {
 
 async function verifySingleLocationForRun(runId: string, candidate: Candidate) {
   const direct = directSingleLocationSignal(candidate);
-  if (direct) return { candidate: applySingleLocationDecision(candidate, direct), decision: direct };
+  if (direct) return { candidate: applySingleLocationDecision(candidate, direct), decision: direct, externallyValidated: false };
   try {
     const database = await databaseLocationEvidence(candidate);
     const adapter = enabledSourceAdapters().find((source) => source.id === candidate.source && source.findIdentityMatches);
     if (!adapter?.findIdentityMatches) {
       const decision = assessSingleLocation(candidate, database, false);
-      return { candidate: applySingleLocationDecision(candidate, decision), decision };
+      return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: false };
     }
     const sourceMatches = await adapter.findIdentityMatches(candidate, (event) => logOverpassEvent(runId, candidate.city, candidate.category, event));
     const related = [...new Map([...database, ...sourceMatches].map((item) => [item.externalPlaceId, item])).values()];
     const decision = assessSingleLocation(candidate, related, true);
-    return { candidate: applySingleLocationDecision(candidate, decision), decision };
+    return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: true };
   } catch (error) {
     const decision = assessSingleLocation(candidate, [], false);
     decision.evidence.push(`Identiteitscontrole mislukt: ${errorMessage(error)}`);
-    return { candidate: applySingleLocationDecision(candidate, decision), decision };
+    return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: true };
   }
 }
 
@@ -600,13 +659,18 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       },
       data: { validLeads: { increment: 1 } },
     });
-    await Promise.all(fingerprintValues(candidateDedupeKeys(candidate)).map((item) => tx.duplicateFingerprint.upsert({
-      where: { fingerprint: item.fingerprint },
-      create: { ...item, leadId: lead.id },
-      update: { leadId: lead.id },
-    })));
+    const fingerprints = fingerprintValues(candidateDedupeKeys(candidate));
+    await tx.duplicateFingerprint.createMany({
+      data: fingerprints.map((item) => ({ ...item, leadId: lead.id })),
+      skipDuplicates: true,
+    });
+    const conflictingIdentity = await tx.duplicateFingerprint.findFirst({
+      where: { fingerprint: { in: fingerprints.map(({ fingerprint }) => fingerprint) }, NOT: { leadId: lead.id } },
+      select: { fingerprint: true, leadId: true },
+    });
+    if (conflictingIdentity?.leadId) throw new DuplicateIdentityError(conflictingIdentity.fingerprint, conflictingIdentity.leadId);
     return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
-  });
+  }, { maxWait: 5_000, timeout: 20_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }
 
 export const storeNewLead = saveValidatedLead;
@@ -679,8 +743,8 @@ async function nextSearchArea() {
 }
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
-  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, startedAt: true, createdAt: true } });
-  const summary = `Resultaten: kandidaten ${stats.found}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens ${stats.chainRejected}; franchises ${stats.franchiseRejected}; zelfde naam op meerdere adressen ${stats.sameNameMultipleAddresses}; zelfde telefoon op meerdere adressen ${stats.samePhoneMultipleAddresses}; vestigingsaantal onzeker ${stats.locationCountUncertain}; dubbele vermeldingen samengevoegd ${stats.duplicateListingsMerged}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
+  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, maxCandidates: true, candidatesReserved: true, startedAt: true, createdAt: true } });
+  const summary = `Resultaten: ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; goedkoop afgewezen ${stats.cheapRejected}; extern gevalideerd ${stats.externallyValidated}; cachehits ${stats.cacheHits}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens ${stats.chainRejected}; franchises ${stats.franchiseRejected}; zelfde naam op meerdere adressen ${stats.sameNameMultipleAddresses}; zelfde telefoon op meerdere adressen ${stats.samePhoneMultipleAddresses}; vestigingsaantal onzeker ${stats.locationCountUncertain}; dubbele vermeldingen samengevoegd ${stats.duplicateListingsMerged}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
   const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
   const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
   const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
@@ -712,13 +776,21 @@ function candidateFromQueue(row: GenerationCandidate): Candidate {
 async function finishQueueItem(id: string, status: CandidateQueueStatus, lastError?: string) {
   await prisma.generationCandidate.update({
     where: { id },
-    data: { status, lastError: lastError?.slice(0, 300) ?? null, claimedAt: null, processedAt: status === CandidateQueueStatus.PROCESSED || status === CandidateQueueStatus.FAILED ? new Date() : null },
+    data: {
+      status,
+      lastError: lastError?.slice(0, 300) ?? null,
+      claimedAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      nextEligibleAt: status === CandidateQueueStatus.PENDING ? new Date(Date.now() + 15 * 60_000) : new Date(),
+      processedAt: status === CandidateQueueStatus.PROCESSED || status === CandidateQueueStatus.FAILED ? new Date() : null,
+    },
   });
 }
 
 async function releaseQueueItems(ids: string[], reason: string) {
   if (!ids.length) return;
-  await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, lastError: reason } });
+  await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, leaseOwner: null, leaseExpiresAt: null, lastError: reason } });
 }
 
 export async function processGenerationBatch(runId: string) {
@@ -727,7 +799,7 @@ export async function processGenerationBatch(runId: string) {
   let run = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
   if (terminalStatuses.has(run.status)) return run;
   const batchStartedAt = Date.now();
-  const deadline = batchStartedAt + env.GENERATION_BATCH_DURATION_SECONDS * 1000;
+  let deadline = batchStartedAt + env.GENERATION_BATCH_DURATION_SECONDS * 1000;
   const lock = await acquireJobLock(`lead-generation:${runId}`, (env.GENERATION_BATCH_DURATION_SECONDS + 10) * 1000);
   if (!lock) return run;
 
@@ -754,6 +826,8 @@ export async function processGenerationBatch(runId: string) {
         heartbeatAt: new Date(),
       },
     });
+    const runDeadline = (run.startedAt ?? new Date()).getTime() + env.GENERATION_MAX_RUN_MINUTES * 60_000;
+    deadline = Math.min(deadline, runDeadline - 30_000);
     if (run.cancelRequested) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd.");
     if (isGenerationRunExpired(run.startedAt, env.GENERATION_MAX_RUN_MINUTES)) {
       return terminalRun(
@@ -766,20 +840,25 @@ export async function processGenerationBatch(runId: string) {
         `${stats.stored} bevestigde leads opgeslagen. De ingestelde maximale zoektijd van ${env.GENERATION_MAX_RUN_MINUTES} minuten is bereikt na ${run.processedSegments} succesvolle zoeksegmenten en ${stats.sourceFailures} bronfouten; ${stats.manualReview} onzekere kandidaten blijven in de PostgreSQL-retryqueue.`,
       );
     }
+    if (Date.now() >= runDeadline - 30_000) {
+      return terminalRun(runId, JobStatus.TIMED_OUT, stats, places, errors, warnings, `De zachte afsluitgrens is bereikt. Er worden geen nieuwe externe controles gestart; resterende kandidaten blijven bewaard voor een volgende run.`);
+    }
 
     let queued = await prisma.generationCandidate.findMany({
-      where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+      where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
     });
 
-    let retryQuotaRemaining = generationRetryImportLimit(env.GENERATION_BATCH_CANDIDATES, run.retriedCandidates);
+    let retryQuotaRemaining = generationRetryImportLimit(env.GENERATION_BATCH_CANDIDATES, run.retriedCandidates, Math.min(2, Math.max(0, run.maxCandidates - run.candidatesReserved)));
 
     if (!queued.length && retryQuotaRemaining > 0) {
       const carriedCandidates = await importInterruptedGenerationCandidates(runId, retryQuotaRemaining);
       if (carriedCandidates) {
         stats.found += carriedCandidates;
         retriedThisBatch += carriedCandidates;
+        run.candidatesReserved += carriedCandidates;
+        await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: carriedCandidates } } });
         queued = await prisma.generationCandidate.findMany({
-          where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+          where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
         });
         batchMessage = `${carriedCandidates} nog niet gecontroleerde kandidaten uit een onderbroken run zijn veilig hervat.`;
         retryQuotaRemaining -= carriedCandidates;
@@ -790,14 +869,20 @@ export async function processGenerationBatch(runId: string) {
       const importedRetries = await importDueValidationRetries(runId, retryQuotaRemaining);
       if (importedRetries) {
         retriedThisBatch += importedRetries;
+        run.candidatesReserved += importedRetries;
+        await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: importedRetries } } });
         queued = await prisma.generationCandidate.findMany({
-          where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+          where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
         });
         batchMessage = `${importedRetries} onzekere kandidaten zijn uit de duurzame retryqueue opnieuw ingepland.`;
       }
     }
 
     if (!queued.length) {
+      if (run.candidatesReserved >= run.maxCandidates) {
+        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
+        return terminalRun(runId, status, stats, places, errors, warnings, `De maximale reservering van ${run.maxCandidates} unieke kandidaten is volledig verwerkt.`);
+      }
       if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
         return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; de ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt.`);
@@ -844,29 +929,25 @@ export async function processGenerationBatch(runId: string) {
         stats.rejected += blockedCandidates.length;
         await recordBlockedCandidates(runId, blockedCandidates);
         const bufferedCandidates = allowedCandidates
-          .sort((left, right) => {
-            const quality = (candidate: Candidate) =>
-              (candidate.phoneNumber || candidate.internationalPhoneNumber ? 8 : 0)
-              + (candidate.email ? 3 : 0)
-              + (candidate.formattedAddress && candidate.postalCode ? 4 : 0)
-              + (candidate.googleBusinessProfileVerified ? 20 : 0)
-              + (candidate.businessStatus === "OPERATIONAL" ? 10 : 0);
-            return quality(right) - quality(left);
-          })
+          .sort((left, right) => candidateQualityScore(right) - candidateQualityScore(left))
           .slice(0, env.LEAD_CANDIDATE_BUFFER);
         const knownAtSource = bufferedCandidates.length ? await knownCandidateReasons(bufferedCandidates) : new Map<string, KnownCandidateMatch | null>();
-        const novelCandidates = bufferedCandidates.filter((candidate) => {
+        const novelCandidatesBeforeCap = bufferedCandidates.filter((candidate) => {
           const known = knownAtSource.get(candidate.externalPlaceId);
           if (!known) return true;
           if (known.disposition === "rejected") stats.rejected += 1;
           else { stats.duplicates += 1; stats.existing += 1; }
           return false;
         });
+        stats.cacheHits += bufferedCandidates.length - novelCandidatesBeforeCap.length;
+        stats.cheapRejected += bufferedCandidates.length - novelCandidatesBeforeCap.length;
+        const novelCandidates = novelCandidatesBeforeCap.slice(0, candidateReservationLimit(run.maxCandidates, run.candidatesReserved, novelCandidatesBeforeCap.length));
         const queuedResult = await prisma.$transaction(async (tx) => {
           const inserted = await tx.generationCandidate.createMany({
             data: novelCandidates.map((candidate) => ({
               runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
               payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
+              qualityScore: candidateQualityScore(candidate),
             })),
             skipDuplicates: true,
           });
@@ -878,12 +959,16 @@ export async function processGenerationBatch(runId: string) {
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
             tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null,
           } });
-          await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, lastError: null } });
+          await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, candidatesReserved: { increment: inserted.count }, lastError: null } });
           return inserted;
         });
+        const queueDuplicates = Math.max(0, novelCandidates.length - queuedResult.count);
+        stats.duplicates += queueDuplicates;
+        stats.existing += queueDuplicates;
         stats.found += result.candidates.length;
         run.processedSegments += attemptDelta.processedSegments;
-        batchMessage = `${result.candidates.length} kandidaten gevonden; ${blockedCandidates.length} uit Brussel/Gent afgewezen en ${queuedResult.count} nog onbekende kandidaten duurzaam in de controlequeue gezet.`;
+        run.candidatesReserved += queuedResult.count;
+        batchMessage = `${result.candidates.length} kandidaten gevonden; ${blockedCandidates.length} uit Brussel/Gent afgewezen, ${queueDuplicates} reeds in deze run aanwezig en ${queuedResult.count} nog onbekende kandidaten duurzaam in de controlequeue gezet.`;
       } catch (error) {
         const message = errorMessage(error);
         const sourceDurationMs = Date.now() - sourceStartedAt;
@@ -909,7 +994,7 @@ export async function processGenerationBatch(runId: string) {
       }
 
       queued = await prisma.generationCandidate.findMany({
-        where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+        where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
       });
     }
 
@@ -921,7 +1006,7 @@ export async function processGenerationBatch(runId: string) {
       } });
       await prisma.generationCandidate.updateMany({
         where: { id: { in: queued.map(({ id }) => id) }, status: CandidateQueueStatus.PENDING },
-        data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date() },
+        data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date(), leaseOwner: `${runId}:${run.batchNumber}`, leaseExpiresAt: new Date(deadline + 10_000) },
       });
     }
 
@@ -935,10 +1020,11 @@ export async function processGenerationBatch(runId: string) {
     }
 
     const verificationWork: Array<{ row: GenerationCandidate; candidate: Candidate }> = [];
+    const locationWork: Array<{ row: GenerationCandidate; candidate: Candidate }> = [];
     const releaseIds: string[] = [];
     const knownReasons = queued.length ? await knownCandidateReasons(queued.map(candidateFromQueue)) : new Map<string, KnownCandidateMatch | null>();
     for (const row of queued) {
-      if (isBatchDeadlineNear(deadline) || verificationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + verificationWork.length >= run.targetCount) {
+      if (isBatchDeadlineNear(deadline) || locationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + locationWork.length >= run.targetCount) {
         releaseIds.push(row.id);
         continue;
       }
@@ -948,6 +1034,7 @@ export async function processGenerationBatch(runId: string) {
       await sourceRecord(candidate);
       if (isPermanentlyClosed(candidate)) {
         stats.permanentlyClosed += 1;
+        stats.cheapRejected += 1;
         await markDecision(candidate, "skipped", "SKIPPED_PERMANENTLY_CLOSED");
         await markValidationRejected(candidate, "SKIPPED_PERMANENTLY_CLOSED");
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
@@ -956,6 +1043,7 @@ export async function processGenerationBatch(runId: string) {
       if (isTemporarilyClosed(candidate)) {
         stats.temporarilyClosed += 1;
         stats.rejected += 1;
+        stats.cheapRejected += 1;
         await markDecision(candidate, "rejected", "BUSINESS_CLOSED");
         await markValidationRejected(candidate, "BUSINESS_CLOSED");
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
@@ -965,49 +1053,31 @@ export async function processGenerationBatch(runId: string) {
         candidate = await enrichCandidateAddress(candidate);
         await sourceRecord(candidate);
       }
-      const singleLocation = await verifySingleLocationForRun(runId, candidate);
-      candidate = singleLocation.candidate;
-      await sourceRecord(candidate);
-      if (row.attempts === 0) countSingleLocationDecision(stats, singleLocation.decision);
-      if (singleLocation.decision.status === "MULTIPLE") {
+      // Reject deterministic failures and known identities before spending a
+      // remote request on the nationwide single-location lookup.
+      const preliminary = validateStrictLeadBeforeLocation(candidate);
+      if (!preliminary.valid) {
+        const reason = preliminary.reasons[0];
+        if (preliminary.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
+        if (preliminary.reasons.includes("BLOCKED_GHENT")) stats.blockedGhent += 1;
+        if (preliminary.reasons.includes("PHONE_REQUIRED")) stats.invalidPhone += 1;
+        if (preliminary.reasons.includes("LANGUAGE_NOT_DUTCH")) stats.languageRejected += 1;
         stats.rejected += 1;
+        stats.cheapRejected += 1;
+        const evidence = {
+          reasons: preliminary.reasons,
+          language: preliminary.language.language,
+          languageConfidence: preliminary.language.confidence,
+          activeStatus: preliminary.active.status,
+          activeConfidence: preliminary.active.confidence,
+          blockedArea: preliminary.blocked.area,
+          blockedField: preliminary.blocked.matchedField,
+        };
         await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
-          jobId: runId,
-          step: "multiple_locations_rejected",
-          sourceRecordId: candidate.externalPlaceId,
-          reason: singleLocation.decision.reason,
-          evidence: singleLocation.decision.evidence,
+          jobId: runId, step: "strict_quality_rejected", sourceRecordId: candidate.externalPlaceId,
+          reasons: preliminary.reasons, message: strictReasonMessage(reason), evidence,
         }), candidate.city, candidate.category);
-        await excludeSingleLocation(candidate, singleLocation.decision.reason);
-        await markDecision(candidate, "rejected", singleLocation.decision.reason);
-        await markValidationRejected(candidate, singleLocation.decision.reason);
-        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
-        continue;
-      }
-      if (singleLocation.decision.status === "UNCERTAIN") {
-        if (row.attempts === 0) stats.manualReview += 1;
-        retriedThisBatch += 1;
-        await markDecision(candidate, "retry", "onzeker_aantal_vestigingen");
-        await queueValidationRetry({ runId, candidate, reason: `onzeker_aantal_vestigingen: ${singleLocation.decision.evidence.join(" ")}` });
-        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, "onzeker_aantal_vestigingen");
-        continue;
-      }
-      const strict = validateStrictLead(candidate);
-      if (!strict.valid) {
-        const reason = strict.reasons[0];
-        if (strict.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
-        if (strict.reasons.includes("BLOCKED_GHENT")) stats.blockedGhent += 1;
-        if (strict.reasons.includes("PHONE_REQUIRED")) stats.invalidPhone += 1;
-        if (strict.reasons.includes("LANGUAGE_NOT_DUTCH")) stats.languageRejected += 1;
-        stats.rejected += 1;
-        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
-          jobId: runId,
-          step: "strict_quality_rejected",
-          sourceRecordId: candidate.externalPlaceId,
-          reasons: strict.reasons,
-          message: strictReasonMessage(reason),
-        }), candidate.city, candidate.category);
-        await markDecision(candidate, "rejected", reason);
+        await markDecision(candidate, "rejected", reason, undefined, evidence);
         await markValidationRejected(candidate, reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
@@ -1015,7 +1085,8 @@ export async function processGenerationBatch(runId: string) {
       const basic = validateCandidateBasics(candidate);
       if (!basic.ok) {
         stats.rejected += 1;
-        await markDecision(candidate, "rejected", rejectionCode(basic.reason));
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", rejectionCode(basic.reason), undefined, { basicReason: basic.reason });
         await markValidationRejected(candidate, rejectionCode(basic.reason));
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
@@ -1028,8 +1099,9 @@ export async function processGenerationBatch(runId: string) {
           evidence: [{ checkType: "SOURCE_WEBSITE", result: "FOUND", confidence: 100, evidenceUrl: sourceWebsite, shortExplanation: "Bronveld bevat een officieel bedrijfsdomein." }],
         };
         stats.websitesFound += 1; stats.rejected += 1;
+        stats.cheapRejected += 1;
         await excludeCandidate(candidate, verification);
-        await markDecision(candidate, "skipped", "SKIPPED_HAS_WEBSITE");
+        await markDecision(candidate, "skipped", "SKIPPED_HAS_WEBSITE", undefined, { website: sourceWebsite, websiteEvidence: verification.evidence });
         await markValidationRejected(candidate, "SKIPPED_HAS_WEBSITE", verification);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
@@ -1043,10 +1115,63 @@ export async function processGenerationBatch(runId: string) {
           : knownMatch!;
         if (!batchMatch.duplicate && knownMatch?.disposition === "rejected") stats.rejected += 1;
         else { stats.duplicates += 1; stats.existing += 1; }
+        stats.cheapRejected += 1;
+        if (knownMatch) stats.cacheHits += 1;
         await logDuplicateMatch(runId, candidate, match);
-        await markDecision(candidate, knownMatch?.disposition === "rejected" ? "rejected" : "duplicate", match.reason);
+        await markDecision(candidate, knownMatch?.disposition === "rejected" ? "rejected" : "duplicate", match.reason, undefined, {
+          matchedFields: match.matchedFields,
+          matchedLeadId: "leadId" in match ? match.leadId : undefined,
+          matchedCandidateId: "matchedExternalId" in match ? match.matchedExternalId : undefined,
+        });
         await markValidationRejected(candidate, match.reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      locationWork.push({ row, candidate });
+    }
+
+    // Location-count lookups are the slowest pre-website step. Run only the
+    // bounded high-score work set concurrently; endpoint-level locks and
+    // circuit breakers still protect every public provider independently.
+    const locationStarted = Date.now();
+    const locationResults = await Promise.allSettled(locationWork.map(({ candidate }) => verifySingleLocationForRun(runId, candidate)));
+    validationDurationMs += Date.now() - locationStarted;
+    for (let index = 0; index < locationWork.length; index += 1) {
+      const { row } = locationWork[index];
+      const locationResult = locationResults[index];
+      if (locationResult.status === "rejected") {
+        const message = errorMessage(locationResult.reason);
+        retriedThisBatch += 1;
+        await queueValidationRetry({ runId, candidate: locationWork[index].candidate, reason: `LOCATION_CHECK_FAILED: ${message}` });
+        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
+        continue;
+      }
+      const singleLocation = locationResult.value;
+      if (singleLocation.externallyValidated && row.attempts === 0) stats.externallyValidated += 1;
+      const candidate = singleLocation.candidate;
+      await sourceRecord(candidate);
+      if (row.attempts === 0) countSingleLocationDecision(stats, singleLocation.decision);
+      if (singleLocation.decision.status === "MULTIPLE") {
+        stats.rejected += 1;
+        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
+          jobId: runId,
+          step: "multiple_locations_rejected",
+          sourceRecordId: candidate.externalPlaceId,
+          reason: singleLocation.decision.reason,
+          evidence: singleLocation.decision.evidence,
+        }), candidate.city, candidate.category);
+        await excludeSingleLocation(candidate, singleLocation.decision.reason);
+        await markDecision(candidate, "rejected", singleLocation.decision.reason, undefined, { locationEvidence: singleLocation.decision.evidence, duplicateExternalIds: singleLocation.decision.duplicateExternalIds });
+        await markValidationRejected(candidate, singleLocation.decision.reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      if (singleLocation.decision.status === "UNCERTAIN") {
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", "onzeker_aantal_vestigingen", undefined, { locationEvidence: singleLocation.decision.evidence, retryAttempt: row.attempts + 1 });
+        await queueValidationRetry({ runId, candidate, reason: `onzeker_aantal_vestigingen: ${singleLocation.decision.evidence.join(" ")}` });
+        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, "onzeker_aantal_vestigingen");
         continue;
       }
       verificationWork.push({ row, candidate });
@@ -1110,7 +1235,7 @@ export async function processGenerationBatch(runId: string) {
           const saved = await saveValidatedLead(candidate, verification);
           if (saved.stored) {
             stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1;
-            await markDecision(candidate, "stored", "no_website_confirmed", saved.leadId);
+            await markDecision(candidate, "stored", "no_website_confirmed", saved.leadId, { websiteStatus: verification.status, websiteConfidence: verification.confidence, websiteEvidence: verification.evidence });
           } else {
             stats.rejected += 1;
             await markDecision(candidate, "skipped", saved.reason.startsWith("SKIPPED_") ? saved.reason : rejectionCode(saved.reason));
@@ -1118,16 +1243,20 @@ export async function processGenerationBatch(runId: string) {
           }
           await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         } catch (error) {
-          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          if ((error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") || error instanceof DuplicateIdentityError) {
             stats.duplicates += 1; stats.existing += 1;
-            await markDecision(candidate, "duplicate", "race_condition_duplicate");
+            await markDecision(candidate, "duplicate", "race_condition_duplicate", undefined, databaseErrorEvidence(error));
             await markValidationRejected(candidate, "race_condition_duplicate", verification);
             await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
           } else {
             const message = errorMessage(error);
+            const evidence = databaseErrorEvidence(error);
             retriedThisBatch += 1;
-            errors.push(`${candidate.companyName}: DATABASE_ERROR: ${message}`);
-            await markDecision(candidate, "retry", "database_error");
+            errors.push(`${candidate.companyName}: DATABASE_ERROR ${JSON.stringify(evidence)}`);
+            await logSource(runId, candidate.source ?? "OPENSTREETMAP", "ERROR", JSON.stringify({
+              jobId: runId, step: "lead_insert_failed", sourceRecordId: candidate.externalPlaceId, evidence,
+            }), candidate.city, candidate.category);
+            await markDecision(candidate, "retry", "database_error", undefined, evidence);
             await queueValidationRetry({ runId, candidate, verification, reason: `DATABASE_ERROR: ${message}` });
             await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
           }
@@ -1154,7 +1283,7 @@ export async function processGenerationBatch(runId: string) {
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
       pendingCandidates, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
-      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, candidatesChecked: stats.checked, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
+      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, candidatesChecked: stats.checked, maxCandidates: run.maxCandidates, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
         ? "De huidige batch is vóór de serverless deadline veilig gepauzeerd; de volgende batch wordt automatisch gestart."

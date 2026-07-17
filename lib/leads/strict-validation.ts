@@ -89,7 +89,7 @@ export function hasReadableAddress(candidate: Candidate) {
     && !/^onbekend$/i.test(address) && Boolean(candidate.city?.trim());
 }
 
-export function validateStrictLead(candidate: Candidate, verification?: WebsiteVerificationResult) {
+export function validateStrictLead(candidate: Candidate, verification?: WebsiteVerificationResult, options: { requireSingleLocation?: boolean } = {}) {
   const reasons: StrictLeadReason[] = [];
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   const language = detectDutchBusinessLanguage(candidate);
@@ -103,10 +103,15 @@ export function validateStrictLead(candidate: Candidate, verification?: WebsiteV
   if (active.status === "closed") reasons.push("BUSINESS_CLOSED");
   else if (!active.active) reasons.push("BUSINESS_NOT_CONFIRMED_ACTIVE");
   if (!hasReadableAddress(candidate)) reasons.push("ADDRESS_NOT_USABLE");
-  if (candidate.singleLocationStatus !== "CONFIRMED") reasons.push("SINGLE_LOCATION_NOT_CONFIRMED");
+  if (options.requireSingleLocation !== false && candidate.singleLocationStatus !== "CONFIRMED") reasons.push("SINGLE_LOCATION_NOT_CONFIRMED");
   if (verification) {
     if (["WEBSITE_FOUND", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status)) reasons.push("OWN_WEBSITE_FOUND");
     else if (verification.status !== "NO_WEBSITE_CONFIRMED") reasons.push("WEBSITE_NOT_CONFIRMED_ABSENT");
   }
   return { valid: reasons.length === 0, reasons, language, active, blocked };
+}
+
+/** Cheap, deterministic quality gate used before the remote location-count lookup. */
+export function validateStrictLeadBeforeLocation(candidate: Candidate) {
+  return validateStrictLead(candidate, undefined, { requireSingleLocation: false });
 }

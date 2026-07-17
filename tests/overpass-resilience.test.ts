@@ -160,7 +160,9 @@ describe("timeouts, retries en fallback", () => {
 
   it("bouwt een kleine exacte identiteitsquery zonder websitefilter", () => {
     const query = buildOverpassIdentityQuery({ ...base, externalPlaceId: "osm:node/42", companyName: 'Kapper "De Hoek"', phoneNumber: "+31201234567", streetAddress: "Teststraat 1", googleMapsUrl: "https://www.openstreetmap.org/node/42", rawData: { phone: "+31 20 123 45 67" } });
-    expect(query).toContain('nwr(around:250000');
+    expect(query).toContain('area["ISO3166-1"~"^(NL|BE)$"]');
+    expect(query).toContain('nwr(area.allowedCountries)');
+    expect(query).not.toContain("around:250000");
     expect(query).toContain('["name"="Kapper \\"De Hoek\\""]');
     expect(query).toContain('["phone"="+31 20 123 45 67"]');
     expect(query).not.toContain('[!"website"]');

@@ -17,6 +17,7 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:smoke": "tsx scripts/smoke-database.ts",
+    "generation:diagnose": "tsx scripts/diagnose-generation-run.ts",
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
     "db:backup:sqlite": "tsx scripts/backup-local.ts",
     "db:restore:sqlite": "tsx scripts/restore-local.ts",

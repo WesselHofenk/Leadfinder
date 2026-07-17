@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candidate } from "@/lib/leads/eligibility";
-import { validateStrictLead } from "@/lib/leads/strict-validation";
+import { validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 const noWebsite: WebsiteVerificationResult = {
@@ -76,6 +76,13 @@ describe("centrale strikte leadvalidatie", () => {
 
   it("wijst een niet bevestigde enkele vestiging af", () => {
     expect(validateStrictLead({ ...base, singleLocationStatus: "UNCERTAIN" }, noWebsite).reasons).toContain("SINGLE_LOCATION_NOT_CONFIRMED");
+  });
+
+  it("behoudt alle harde criteria in de voorlopige gate behalve de nog uit te voeren vestigingslookup", () => {
+    const candidate = { ...base, singleLocationStatus: undefined };
+    expect(validateStrictLeadBeforeLocation(candidate).reasons).not.toContain("SINGLE_LOCATION_NOT_CONFIRMED");
+    expect(validateStrictLead(candidate).reasons).toContain("SINGLE_LOCATION_NOT_CONFIRMED");
+    expect(validateStrictLeadBeforeLocation({ ...candidate, phoneNumber: undefined }).reasons).toContain("PHONE_REQUIRED");
   });
 
   it("accepteert een actief Nederlandstalig Vlaams bedrijf", () => {

@@ -45,14 +45,18 @@ export function generationRetryImportLimit(batchCandidates: number, alreadyRetri
   return Math.max(0, batchShare - alreadyRetried);
 }
 
-export function generationProgress(input: { stored: number; target: number; candidatesChecked?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
-  const resultProgress = Math.min(20, Math.round((input.stored / Math.max(1, input.target)) * 20));
+export function candidateReservationLimit(maxCandidates: number, alreadyReserved: number, available: number) {
+  return Math.max(0, Math.min(available, maxCandidates - alreadyReserved));
+}
+
+export function generationProgress(input: { stored: number; target: number; candidatesChecked?: number; maxCandidates?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
+  const resultProgress = Math.min(10, Math.round((input.stored / Math.max(1, input.target)) * 10));
   const attemptedSegments = input.processedSegments + input.sourceFailures;
   const progressHorizon = Math.max(2, Math.min(100, input.maxSegments));
   const searchProgress = attemptedSegments > 0
-    ? Math.min(55, Math.ceil((Math.log1p(attemptedSegments) / Math.log1p(progressHorizon)) * 55))
+    ? Math.min(12, Math.ceil((Math.log1p(attemptedSegments) / Math.log1p(progressHorizon)) * 12))
     : 0;
-  const validationProgress = Math.min(9, Math.round(((input.candidatesChecked ?? 0) / Math.max(1, input.target)) * 9));
+  const validationProgress = Math.min(42, Math.round(((input.candidatesChecked ?? 0) / Math.max(1, input.maxCandidates ?? input.target)) * 42));
   const phaseFloor = attemptedSegments > 0 ? phaseProgress("source") : phaseProgress("validate");
   return Math.min(94, Math.max(phaseFloor, phaseProgress("source") + resultProgress + searchProgress + validationProgress));
 }

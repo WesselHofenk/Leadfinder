@@ -3,8 +3,8 @@ import type { Candidate } from "@/lib/leads/eligibility";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 vi.mock("server-only", () => ({}));
-const { leadCreate, sourceUpdate, fingerprintUpsert, validationUpdate, combinationUpdate, prismaTransaction } = vi.hoisted(() => ({
-  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintUpsert: vi.fn(), validationUpdate: vi.fn(), combinationUpdate: vi.fn(), prismaTransaction: vi.fn(),
+const { leadCreate, sourceUpdate, fingerprintCreateMany, fingerprintFindFirst, validationUpdate, combinationUpdate, prismaTransaction } = vi.hoisted(() => ({
+  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintCreateMany: vi.fn(), fingerprintFindFirst: vi.fn(), validationUpdate: vi.fn(), combinationUpdate: vi.fn(), prismaTransaction: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   lead: { create: leadCreate },
@@ -30,7 +30,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     vi.clearAllMocks();
     leadCreate.mockResolvedValue({ id: "lead-new" });
     prismaTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      lead: { create: leadCreate }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { upsert: fingerprintUpsert }, validationCandidate: { updateMany: validationUpdate }, searchCombination: { updateMany: combinationUpdate },
+      lead: { create: leadCreate }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { createMany: fingerprintCreateMany, findFirst: fingerprintFindFirst }, validationCandidate: { updateMany: validationUpdate }, searchCombination: { updateMany: combinationUpdate },
     }));
   });
 
@@ -83,5 +83,12 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     leadCreate.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(storeNewLead(base, confirmed)).rejects.toThrow("database unavailable");
     expect(validationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("draait de promotie in een serialiseerbare transactie met een expliciete timeout", async () => {
+    await storeNewLead(base, confirmed);
+    expect(prismaTransaction).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({
+      maxWait: 5_000, timeout: 20_000, isolationLevel: "Serializable",
+    }));
   });
 });
