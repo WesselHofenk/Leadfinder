@@ -342,6 +342,7 @@ model GenerationRun {
   outdatedWebsite            Int                   @default(0)
   improvableWebsite          Int                   @default(0)
   sourceFailures             Int                   @default(0)
+  consecutiveSourceFailures  Int                   @default(0)
   blockedBrussels            Int                   @default(0)
   blockedGhent               Int                   @default(0)
   invalidPhone               Int                   @default(0)

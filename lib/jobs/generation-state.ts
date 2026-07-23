@@ -28,6 +28,14 @@ export function sourceFailureWarningDue(sourceFailures: number, warningInterval:
   return sourceFailures > 0 && sourceFailures % Math.max(1, warningInterval) === 0;
 }
 
+export function nextConsecutiveSourceFailures(current: number, sourceSucceeded: boolean) {
+  return sourceSucceeded ? 0 : Math.max(0, current) + 1;
+}
+
+export function shouldStopForSourceOutage(consecutiveFailures: number, maximumConsecutiveFailures: number) {
+  return consecutiveFailures >= Math.max(1, maximumConsecutiveFailures);
+}
+
 export function generationCompletionStatus(input: { usable: number; target: number; processedSegments: number; sourceFailures?: number; maxSegments: number; pendingCandidates: number }) {
   if (input.usable >= input.target) return "COMPLETE" as const;
   if (input.processedSegments + (input.sourceFailures ?? 0) >= input.maxSegments && input.pendingCandidates === 0) {

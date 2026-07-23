@@ -21,7 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN, RUN_DRAIN_WINDOW_MS } from "./generation-config";
-import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 
 type Stats = {
@@ -211,12 +211,12 @@ function preservedCandidateCount(stats: Pick<Stats, "manualReview">, pendingCand
   return Math.max(stats.manualReview, pendingCandidates);
 }
 
-function timeLimitReason(stats: Stats, pendingCandidates: number, maxMinutes: number) {
+function timeLimitReason(stats: Stats, pendingCandidates: number, maxMinutes: number, consecutiveSourceFailures: number) {
   const preserved = preservedCandidateCount(stats, pendingCandidates);
   if (stats.stored > 0) {
     return `De maximale verwerkingstijd van ${maxMinutes} minuten is bereikt. ${stats.stored} nieuwe gekwalificeerde leads zijn direct opgeslagen. ${stats.checked} kandidaten zijn gecontroleerd${preserved ? ` en ${preserved} kandidaten blijven bewaard voor een volgende run` : ""}.`;
   }
-  if (stats.sourceFailures > 0 && stats.checked === 0) {
+  if (consecutiveSourceFailures > 0 && stats.checked === 0) {
     return `De gratis bedrijfsbronnen waren tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen; de zoekruimte is niet als uitgeput gemarkeerd.`;
   }
   return `De maximale verwerkingstijd van ${maxMinutes} minuten is bereikt. ${stats.checked} kandidaten zijn gecontroleerd, maar nog geen bedrijf voldeed aan alle ingestelde criteria${preserved ? `; ${preserved} kandidaten blijven bewaard voor een volgende run` : ""}.`;
@@ -934,6 +934,7 @@ export async function processGenerationBatch(runId: string) {
   let validationDurationMs = 0;
   let databaseDurationMs = 0;
   let batchMessage: string | null = null;
+  let consecutiveSourceFailures = run.consecutiveSourceFailures;
 
   try {
     run = await prisma.generationRun.update({
@@ -960,7 +961,7 @@ export async function processGenerationBatch(runId: string) {
         places,
         errors,
         warnings,
-        timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES),
+        timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES, consecutiveSourceFailures),
       );
     }
 
@@ -1007,16 +1008,16 @@ export async function processGenerationBatch(runId: string) {
         const status = pendingCandidates > 0 ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
         return terminalRun(runId, status, stats, places, errors, warnings, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
       }
-      if (stats.sourceFailures >= env.GENERATION_MAX_SOURCE_FAILURES) {
+      if (shouldStopForSourceOutage(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
-        return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${stats.sourceFailures} mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens en retrykandidaten zijn behouden.`);
+        return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens en retrykandidaten zijn behouden.`);
       }
       if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
         return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; er worden in deze run geen nieuwe bronverzoeken gestart.`);
       }
       if (Date.now() >= runDeadline - RUN_DRAIN_WINDOW_MS) {
-        return terminalRun(runId, JobStatus.TIMED_OUT, stats, places, errors, warnings, timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES));
+        return terminalRun(runId, JobStatus.TIMED_OUT, stats, places, errors, warnings, timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES, consecutiveSourceFailures));
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
@@ -1094,7 +1095,12 @@ export async function processGenerationBatch(runId: string) {
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
             tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null, nextEligibleAt,
           } });
-          await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, candidatesReserved: { increment: inserted.count }, lastError: null } });
+          await tx.generationRun.update({ where: { id: runId }, data: {
+            processedSegments: { increment: attemptDelta.processedSegments },
+            candidatesReserved: { increment: inserted.count },
+            consecutiveSourceFailures: 0,
+            lastError: null,
+          } });
           return inserted;
         });
         const queueDuplicates = Math.max(0, novelCandidates.length - queuedResult.count);
@@ -1103,12 +1109,14 @@ export async function processGenerationBatch(runId: string) {
         stats.found += result.candidates.length;
         run.processedSegments += attemptDelta.processedSegments;
         run.candidatesReserved += queuedResult.count;
+        consecutiveSourceFailures = nextConsecutiveSourceFailures(consecutiveSourceFailures, true);
         batchMessage = `${result.candidates.length} kandidaten gevonden; ${blockedCandidates.length} uit Brussel/Gent afgewezen, ${queueDuplicates} reeds in deze run aanwezig en ${queuedResult.count} nog onbekende kandidaten duurzaam in de controlequeue gezet.`;
       } catch (error) {
         const message = errorMessage(error);
         const sourceDurationMs = Date.now() - sourceStartedAt;
         const attemptDelta = sourceAttemptDelta(false);
         stats.sourceFailures += attemptDelta.sourceFailures;
+        consecutiveSourceFailures = nextConsecutiveSourceFailures(consecutiveSourceFailures, false);
         errors.push(`${adapter.id} / ${region} / ${area.category}: ${message}`);
         batchMessage = `Deze bronbatch mislukte zonder eerdere resultaten te verliezen. De volgende zoekcombinatie wordt geprobeerd.`;
         await Promise.all([
@@ -1124,10 +1132,13 @@ export async function processGenerationBatch(runId: string) {
             tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message,
             nextEligibleAt: new Date(Date.now() + 5 * 60_000),
           } }),
-          prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
+          prisma.generationRun.update({ where: { id: runId }, data: {
+            consecutiveSourceFailures: { increment: 1 },
+            lastError: message,
+          } }),
         ]);
-        if (sourceFailureWarningDue(stats.sourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
-          warnings.push(`${stats.sourceFailures} openbare bronbatches reageerden niet; de run gaat door met andere plaatsen, branches, tegels en hosts.`);
+        if (sourceFailureWarningDue(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
+          warnings.push(`${consecutiveSourceFailures} openbare bronbatches reageerden achter elkaar niet; de run gaat door met andere plaatsen, branches, tegels en hosts.`);
         }
       }
 
@@ -1485,9 +1496,9 @@ export async function processGenerationBatch(runId: string) {
       const status = pendingCandidates > 0 ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
       return terminalRun(runId, status, stats, places, errors, warnings, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
     }
-    if (stats.sourceFailures >= env.GENERATION_MAX_SOURCE_FAILURES && pendingCandidates === 0) {
+    if (shouldStopForSourceOutage(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES) && pendingCandidates === 0) {
       const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
-      return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${stats.sourceFailures} mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens zijn behouden.`);
+      return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens zijn behouden.`);
     }
     if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS && pendingCandidates === 0) {
       const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;

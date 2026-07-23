@@ -30,6 +30,7 @@ type Run = {
   permanentlyClosed: number;
   temporarilyClosed: number;
   sourceFailures: number;
+  consecutiveSourceFailures?: number;
   blockedBrussels: number;
   blockedGhent: number;
   invalidPhone: number;
@@ -76,7 +77,7 @@ function resultMessage(run: Run) {
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
   if (run.status === "TIMED_OUT") {
     if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${run.stored} nieuwe gekwalificeerde leads zijn opgeslagen. ${run.candidatesChecked} kandidaten zijn gecontroleerd.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : ""}`;
-    if (run.sourceFailures > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
+    if ((run.consecutiveSourceFailures ?? 0) > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
     return `De maximale verwerkingstijd is bereikt. ${run.candidatesChecked} kandidaten zijn gecontroleerd, maar nog geen bedrijf voldeed aan alle ingestelde criteria.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : " Een volgende klik probeert andere zoeksegmenten."}`;
   }
   return conciseReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
@@ -267,7 +268,7 @@ export function GenerationButton() {
         <Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
-      <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten</p>
+      <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten totaal · {run?.consecutiveSourceFailures ?? 0} achter elkaar</p>
       <button className="button button-secondary generation-cancel" onClick={cancel}><Square size={13}/>Zoekrun annuleren</button>
     </section>}
     {message && <p className={resultClass(run?.status)} role="status">

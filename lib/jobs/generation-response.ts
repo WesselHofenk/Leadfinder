@@ -14,6 +14,7 @@ type GenerationSummaryRun = {
   duplicates?: number;
   rejected?: number;
   sourceFailures?: number;
+  consecutiveSourceFailures?: number;
   multipleLocationsRejected?: number;
   chainRejected?: number;
   franchiseRejected?: number;
@@ -49,6 +50,7 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     rejectedDuplicate: run?.duplicates ?? 0,
     rejectedInvalid: Math.max(0, (run?.rejected ?? 0) - rejectedWithWebsite),
     failedQueries: run?.sourceFailures ?? 0,
+    consecutiveFailedQueries: run?.consecutiveSourceFailures ?? 0,
     rejectedMultipleLocations: run?.multipleLocationsRejected ?? 0,
     rejectedChains: run?.chainRejected ?? 0,
     rejectedFranchises: run?.franchiseRejected ?? 0,

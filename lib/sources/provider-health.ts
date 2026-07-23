@@ -24,10 +24,11 @@ export async function healthySourceEndpoints(endpoints: string[], now = new Date
   });
   const coolingDown = endpoints.filter((endpoint) => !healthy.includes(endpoint))
     .sort((left, right) => (byProvider.get(left)?.unhealthyUntil?.getTime() ?? 0) - (byProvider.get(right)?.unhealthyUntil?.getTime() ?? 0));
-  // Persistent health is advisory: always retain at least two independent
-  // half-open fallbacks so stale serverless circuit state cannot pin a run to
-  // one provider that is still unavailable.
-  return [...healthy, ...coolingDown].slice(0, Math.min(3, Math.max(2, endpoints.length)));
+  // Do not keep calling every cooling-down provider on every serverless
+  // invocation. Two healthy providers are enough for a proper hedge. When
+  // fewer are healthy, retain one half-open fallback so recovery is detected.
+  if (healthy.length >= 2) return healthy.slice(0, 3);
+  return [...healthy, ...coolingDown].slice(0, Math.min(2, endpoints.length));
 }
 
 export async function recordSourceProviderEvent(event: OverpassEvent, now = new Date()) {

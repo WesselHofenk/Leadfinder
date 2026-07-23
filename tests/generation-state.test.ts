@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -37,6 +37,21 @@ describe("persistente generatiejobstatus", () => {
   it("telt alleen een werkelijk ontvangen bronresponse als doorzocht segment", () => {
     expect(sourceAttemptDelta(true)).toEqual({ processedSegments: 1, sourceFailures: 0 });
     expect(sourceAttemptDelta(false)).toEqual({ processedSegments: 0, sourceFailures: 1 });
+  });
+
+  it("stopt alleen na opeenvolgende bronfouten en reset de reeks na ieder geldig bronantwoord", () => {
+    let consecutive = 0;
+    consecutive = nextConsecutiveSourceFailures(consecutive, false);
+    consecutive = nextConsecutiveSourceFailures(consecutive, false);
+    expect(consecutive).toBe(2);
+    expect(shouldStopForSourceOutage(consecutive, 3)).toBe(false);
+
+    consecutive = nextConsecutiveSourceFailures(consecutive, true);
+    expect(consecutive).toBe(0);
+
+    consecutive = nextConsecutiveSourceFailures(consecutive, false);
+    expect(shouldStopForSourceOutage(consecutive, 3)).toBe(false);
+    expect(shouldStopForSourceOutage(3, 3)).toBe(true);
   });
 
   it("begrensd ook een run waarin alle bronsegmenten falen", () => {

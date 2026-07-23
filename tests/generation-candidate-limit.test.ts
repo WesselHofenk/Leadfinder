@@ -22,4 +22,10 @@ describe("begrensde leadgeneratie", () => {
     expect(environment).not.toContain("GENERATION_MAX_CANDIDATES");
     expect(environment).toContain("LEAD_CANDIDATE_BUFFER: z.coerce.number().int().min(50).max(200).default(200)");
   });
+
+  it("voegt een aparte opeenvolgende-foutteller toe zonder historische fouttotalen te wijzigen", () => {
+    const migration = readFileSync(resolve("prisma/migrations/20260724002000_consecutive_source_failures/migration.sql"), "utf8");
+    expect(migration).toContain('ADD COLUMN IF NOT EXISTS "consecutiveSourceFailures"');
+    expect(migration).not.toMatch(/\b(?:UPDATE|DELETE|TRUNCATE)\b/i);
+  });
 });

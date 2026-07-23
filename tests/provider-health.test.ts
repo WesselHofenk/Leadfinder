@@ -19,6 +19,16 @@ describe("duurzame provider-circuitbreaker", () => {
     await expect(healthySourceEndpoints(["https://a.example", "https://b.example"], new Date("2026-07-16T10:00:00Z"))).resolves.toEqual(["https://b.example", "https://a.example"]);
   });
 
+  it("slaat afgekoelde providers over wanneer minstens twee gezonde hosts beschikbaar zijn", async () => {
+    mocks.findMany.mockResolvedValue([
+      { provider: "https://a.example", unhealthyUntil: new Date("2026-07-16T10:05:00Z"), consecutiveFailures: 2 },
+    ]);
+    await expect(healthySourceEndpoints(
+      ["https://a.example", "https://b.example", "https://c.example"],
+      new Date("2026-07-16T10:00:00Z"),
+    )).resolves.toEqual(["https://b.example", "https://c.example"]);
+  });
+
   it("opent na de tweede timeout een circuit met cooldown", async () => {
     mocks.findUnique.mockResolvedValue({ consecutiveFailures: 1, totalFailures: 1, totalSuccesses: 0, averageDurationMs: 8_000 });
     const now = new Date("2026-07-16T10:00:00Z");
