@@ -9,7 +9,7 @@
 - `www.leadfindersitora.nl` verwijst via GitHub Pages door naar het canonieke domein.
 - Dit project staat volledig los van `sitora.nl`; wijzig voor deze deployment geen DNS- of repository-instellingen van `sitora.nl`.
 
-GitHub Pages publiceert een statische Next.js-export. Zoeken gebruikt daarom in productie de lokale demo-provider. Er is geen login en er worden geen accounts of sessies aangemaakt. Leads en voorkeuren blijven in `localStorage` van de browser.
+GitHub Pages publiceert een statische Next.js-export. De primaire generator vraagt in de browser live openbare bedrijfsvermeldingen op via de Overpass API van OpenStreetMap. Er is geen login en er worden geen accounts of sessies aangemaakt. Leads, statussen en deduplicatiegeschiedenis blijven in `localStorage` van de browser.
 
 ## Vimexx DNS-records
 
@@ -36,7 +36,7 @@ De Pages-buildconfiguratie stelt de publieke productievariabelen in:
 - `GITHUB_PAGES=true`
 - `GITHUB_PAGES_BASE_PATH=`
 
-`GOOGLE_PLACES_API_KEY` is server-only en wordt niet gebruikt of gepubliceerd op GitHub Pages. Commit nooit een echte sleutel. `.env.example` bevat uitsluitend veilige placeholders.
+Voor de primaire OpenStreetMap-generator is geen API-sleutel nodig. `GOOGLE_PLACES_API_KEY` blijft alleen een server-side placeholder voor een eventuele toekomstige koppeling en wordt niet gebruikt of gepubliceerd op GitHub Pages. Commit nooit een echte sleutel.
 
 ## Volgende deployment
 

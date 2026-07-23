@@ -9,19 +9,24 @@ Een openbare Nederlandse leadfinder voor het zoeken, selecteren, opslaan en expo
 3. Voer `pnpm install` uit.
 4. Start met `pnpm dev` en open `http://localhost:3001`.
 
-De homepage opent direct als dashboard. De standaard mock-provider bevat 40 realistische fictieve Nederlandse bedrijven en heeft geen API-sleutel nodig.
+De homepage opent direct met een lege leadpipeline. De knop **Nieuwe leads genereren** zoekt live in openbare OpenStreetMap-bedrijfsvermeldingen en heeft geen API-sleutel nodig.
 
 De productieomgeving draait als statische Next.js-export op GitHub Pages. Zie `DEPLOYMENT.md` voor domein-, DNS- en redeploy-instructies.
 
-## Providers
+## Leadselectie
 
-- `LEAD_PROVIDER=mock` werkt direct.
-- Stel `GOOGLE_PLACES_API_KEY` uitsluitend server-side in voor een toekomstige Google Places-koppeling.
-- Providerimplementaties staan in `lib/providers`; componenten roepen alleen de centrale leadservice aan.
+- Alleen bedrijfsvermeldingen zonder `website`, `contact:website` of vergelijkbare websitevelden worden toegelaten.
+- Een bronvermeld en technisch geldig telefoonnummer is verplicht.
+- Sluitings- en lifecycle-tags worden geweigerd.
+- Bekende grote ketens, franchisetags en namen met meerdere vestigingen in dezelfde resultatenset worden geweigerd.
+- Provider-ID, genormaliseerd telefoonnummer en naam-adrescombinatie worden blijvend gebruikt voor deduplicatie.
+- Iedere generatierun roteert naar andere Nederlandse regio's en voegt nooit eerder geziene kandidaten toe.
 
 ## Lokale opslag
 
-Opgeslagen leads, selecties, statussen, notities, zoekopdrachten en exportgeschiedenis worden in `localStorage` bewaard. Er worden geen accounts of sessies aangemaakt.
+Leads, statussen en de geschiedenis van eerder gecontroleerde bedrijfs-ID's worden in `localStorage` bewaard. Oude demo-leads worden bij de migratie verwijderd. Er worden geen accounts of sessies aangemaakt.
+
+OpenStreetMap is een openbare, door gebruikers onderhouden bron. Een opgenomen telefoonnummer is bronvermeld en syntactisch gecontroleerd, maar bereikbaarheid kan zonder aparte telefoondienst niet gegarandeerd worden. Het ontbreken van een website betekent dat er in de geraadpleegde bedrijfsvermelding geen eigen websiteveld aanwezig was.
 
 ## Veiligheid
 
