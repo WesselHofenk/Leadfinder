@@ -112,6 +112,8 @@ describe("frontend polling en eindstatus", () => {
     expect(message.className).toBe("warning-message");
     expect(message.textContent).toContain("De veilige zoektijd is bereikt");
     expect(message.textContent).toContain("3 nieuwe gekwalificeerde leads");
+    expect(message.textContent).toContain("4 kandidaten blijven bewaard");
+    expect(message.textContent).not.toContain("6 kandidaten blijven bewaard");
     expect(message.textContent).not.toContain("Resultaten:");
   });
 });

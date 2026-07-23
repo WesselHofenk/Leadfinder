@@ -64,7 +64,9 @@ type Run = {
 
 function resultMessage(run: Run) {
   const conciseReason = run.stopReason?.split(" Resultaten:")[0]?.trim();
-  const preserved = (run.pendingCandidates ?? 0) + (run.manualReview ?? 0);
+  // Pending run candidates and manual-review candidates can refer to the
+  // same durable retry rows, so never add these counters together.
+  const preserved = Math.max(run.pendingCandidates ?? 0, run.manualReview ?? 0);
   if (run.status === "COMPLETE") return `${run.stored} nieuwe gekwalificeerde leads zijn veilig opgeslagen in Nieuw.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}`;
   if (run.status === "PARTIALLY_COMPLETED") return `Zoekrun gedeeltelijk afgerond: ${run.stored} nieuwe gekwalificeerde leads opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}${conciseReason ? ` ${conciseReason}` : ""}`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
