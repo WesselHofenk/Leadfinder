@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassIdentityQuery, buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, searchOverpassHedged, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassIdentityQuery, buildOverpassQuery, categoryFilters, clearOverpassCircuitState, initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, searchOverpassHedged, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
@@ -108,6 +108,16 @@ describe("gerichte Overpass-query", () => {
     expect(overpassSearchPlan(24)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
     expect(overpassSearchPlan(27)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
     expect(buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 })).not.toMatch(/\["(?:contact:)?(?:phone|mobile|telephone|email)"\]/);
+  });
+
+  it("spreidt nieuwe plaats/branche-combinaties stabiel over contact- en elementstrategieën", () => {
+    const cursors = ["Leeuwarden", "Lelystad", "Brugge", "Utrecht", "Breda", "Zwolle", "Haarlem", "Arnhem"]
+      .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
+        .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
+    expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
+    expect(new Set(cursors).size).toBeGreaterThan(15);
+    expect(cursors.every((cursor) => cursor >= 0 && cursor < 27)).toBe(true);
+    expect(cursors.map((cursor) => overpassSearchPlan(cursor).contact)).toContain("any");
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

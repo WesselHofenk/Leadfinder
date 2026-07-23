@@ -64,6 +64,18 @@ const contactStrategies: readonly OverpassContactStrategy[] = [
 ];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
+export function initialOverpassSearchCursor(country: string, city: string, category: string) {
+  const identity = `${country}:${city}:${category}`.toLowerCase();
+  let hash = 2_166_136_261;
+  for (const character of identity) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  // Distribute new combinations across all contact and element strategies
+  // in the first tile. The persisted cursor then continues without resets.
+  return (hash >>> 0) % (elementStrategies.length * contactStrategies.length);
+}
+
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
   const strategyIndex = normalized % elementStrategies.length;

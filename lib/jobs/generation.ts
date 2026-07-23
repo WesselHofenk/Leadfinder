@@ -16,7 +16,7 @@ import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
 import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
 import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
-import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
@@ -821,6 +821,7 @@ async function nextSearchArea() {
     create: {
       country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP",
       region: area.region, searchTerm: area.category, provider: "OPENSTREETMAP", nextEligibleAt: now,
+      tileCursor: initialOverpassSearchCursor(area.country, area.city, area.category),
     },
     update: { region: area.region, searchTerm: area.category },
   });
