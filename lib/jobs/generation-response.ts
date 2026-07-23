@@ -1,3 +1,5 @@
+import { MAX_CANDIDATES_PER_RUN } from "./generation-config";
+
 type GenerationSummaryRun = {
   id: string;
   status: string;
@@ -38,7 +40,7 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     jobId: run?.id ?? null,
     status: run?.status ?? null,
     requestedCount: run?.targetCount ?? 50,
-    maxCandidates: run?.maxCandidates ?? 1000,
+    maxCandidates: Math.min(run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN, MAX_CANDIDATES_PER_RUN),
     candidatesReserved: run?.candidatesReserved ?? 0,
     savedCount: run?.stored ?? 0,
     candidatesChecked: run?.candidatesChecked ?? 0,

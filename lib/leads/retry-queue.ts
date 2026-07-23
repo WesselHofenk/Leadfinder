@@ -176,7 +176,7 @@ export async function importInterruptedGenerationCandidates(runId: string, limit
     where: {
       runId: { not: runId },
       status: CandidateQueueStatus.PENDING,
-      run: { status: { in: [JobStatus.CANCELLED, JobStatus.TIMED_OUT, JobStatus.FAILED, JobStatus.PARTIALLY_COMPLETED] } },
+      run: { status: { in: [JobStatus.COMPLETE, JobStatus.CANCELLED, JobStatus.TIMED_OUT, JobStatus.FAILED, JobStatus.PARTIALLY_COMPLETED] } },
     },
     orderBy: { createdAt: "asc" },
     take: Math.max(0, limit),

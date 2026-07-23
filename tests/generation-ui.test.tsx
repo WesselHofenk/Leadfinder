@@ -96,7 +96,20 @@ describe("frontend polling en eindstatus", () => {
     expect(screen.queryByText(failed.apiErrors[0])).toBeNull();
   });
 
-  it("toont een veilige tijdsgrens als compacte waarschuwing en niet als rode fout", async () => {
+  it("legt een volledige run zonder geschikte lead uit op basis van 200 controles", async () => {
+    const completed = {
+      ...baseRun, status: "COMPLETE", progress: 100, maxCandidates: 200, candidatesChecked: 200,
+      stopReason: "Er zijn 200 unieke kandidaten onderzocht, maar geen nieuwe bedrijven voldeden.",
+    };
+    vi.stubGlobal("fetch", vi.fn(() => json({ run: completed })));
+    render(<GenerationButton/>);
+    const message = await screen.findByRole("status");
+    expect(message.className).toBe("success-message");
+    expect(message.textContent).toContain("200 kandidaten zijn gecontroleerd");
+    expect(message.textContent).not.toContain("veilige zoektijd");
+  });
+
+  it("toont de werkelijke maximale verwerkingstijd als waarschuwing en niet als rode fout", async () => {
     const timedOut = {
       ...baseRun,
       status: "TIMED_OUT",
@@ -110,10 +123,10 @@ describe("frontend polling en eindstatus", () => {
     render(<GenerationButton/>);
     const message = await screen.findByRole("status");
     expect(message.className).toBe("warning-message");
-    expect(message.textContent).toContain("De veilige zoektijd is bereikt");
+    expect(message.textContent).toContain("De maximale verwerkingstijd is bereikt");
     expect(message.textContent).toContain("3 nieuwe gekwalificeerde leads");
-    expect(message.textContent).toContain("4 kandidaten blijven bewaard");
-    expect(message.textContent).not.toContain("6 kandidaten blijven bewaard");
+    expect(message.textContent).toContain("4 kandidaten worden tijdens een volgende run verder gecontroleerd");
+    expect(message.textContent).not.toContain("6 kandidaten");
     expect(message.textContent).not.toContain("Resultaten:");
   });
 });

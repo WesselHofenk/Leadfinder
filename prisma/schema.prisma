@@ -322,7 +322,7 @@ model GenerationRun {
   id                         String                @id @default(cuid())
   status                     JobStatus             @default(PENDING)
   targetCount                Int                   @default(50)
-  maxCandidates              Int                   @default(1000)
+  maxCandidates              Int                   @default(200)
   candidatesReserved         Int                   @default(0)
   candidatesFound            Int                   @default(0)
   candidatesChecked          Int                   @default(0)

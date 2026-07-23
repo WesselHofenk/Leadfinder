@@ -127,7 +127,11 @@ describe("duurzame validatie-retryqueue", () => {
 
     await expect(importInterruptedGenerationCandidates("run-new", 8)).resolves.toBe(1);
     expect(mocks.generationFindMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: expect.objectContaining({ runId: { not: "run-new" }, status: "PENDING" }),
+      where: expect.objectContaining({
+        runId: { not: "run-new" },
+        status: "PENDING",
+        run: { status: { in: expect.arrayContaining(["COMPLETE", "TIMED_OUT", "PARTIALLY_COMPLETED"]) } },
+      }),
     }));
     expect(mocks.generationCreateMany).toHaveBeenCalledWith(expect.objectContaining({
       data: [expect.objectContaining({

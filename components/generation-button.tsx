@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
 import { isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
+import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
 
 type Run = {
   id: string;
@@ -67,10 +68,17 @@ function resultMessage(run: Run) {
   // Pending run candidates and manual-review candidates can refer to the
   // same durable retry rows, so never add these counters together.
   const preserved = Math.max(run.pendingCandidates ?? 0, run.manualReview ?? 0);
-  if (run.status === "COMPLETE") return `${run.stored} nieuwe gekwalificeerde leads zijn veilig opgeslagen in Nieuw.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}`;
+  if (run.status === "COMPLETE") {
+    if (run.stored === 0 && run.candidatesChecked >= (run.maxCandidates ?? MAX_CANDIDATES_PER_RUN)) return `${run.candidatesChecked} kandidaten zijn gecontroleerd, maar geen nieuw bedrijf voldeed aan alle ingestelde criteria. Bestaande gegevens zijn behouden.`;
+    return `${run.stored} nieuwe gekwalificeerde leads zijn veilig opgeslagen in Nieuw.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}`;
+  }
   if (run.status === "PARTIALLY_COMPLETED") return `Zoekrun gedeeltelijk afgerond: ${run.stored} nieuwe gekwalificeerde leads opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}${conciseReason ? ` ${conciseReason}` : ""}`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
-  if (run.status === "TIMED_OUT") return `De veilige zoektijd is bereikt. ${run.stored} nieuwe gekwalificeerde leads zijn opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard en worden bij een volgende run opnieuw gecontroleerd.` : " Een volgende klik probeert andere beschikbare zoeksegmenten."}`;
+  if (run.status === "TIMED_OUT") {
+    if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${run.stored} nieuwe gekwalificeerde leads zijn opgeslagen. ${run.candidatesChecked} kandidaten zijn gecontroleerd.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : ""}`;
+    if (run.sourceFailures > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
+    return `De maximale verwerkingstijd is bereikt. ${run.candidatesChecked} kandidaten zijn gecontroleerd, maar nog geen bedrijf voldeed aan alle ingestelde criteria.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : " Een volgende klik probeert andere zoeksegmenten."}`;
+  }
   return conciseReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
 }
 
@@ -240,8 +248,8 @@ export function GenerationButton() {
       <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0} · {elapsed} / 15:00</p>
       <p className="generation-source-note">{run?.message || "De eerste kleine zoekbatch start binnen enkele seconden."}</p>
       <div className="generation-metrics">
-        <Metric label="Ruw gevonden" value={run?.candidatesFound ?? 0}/><Metric label="Uniek gereserveerd" value={`${run?.candidatesReserved ?? 0}/${run?.maxCandidates ?? 1000}`}/>
-        <Metric label="Gecontroleerd" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? 1000}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
+        <Metric label="Ruw gevonden" value={run?.candidatesFound ?? 0}/><Metric label="Uniek gereserveerd" value={`${run?.candidatesReserved ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/>
+        <Metric label="Gecontroleerd" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
         <Metric label="Extern gevalideerd" value={run?.externallyValidated ?? 0}/><Metric label="Cachehits" value={run?.cacheHits ?? 0}/>
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>

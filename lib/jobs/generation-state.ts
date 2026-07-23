@@ -5,7 +5,7 @@ export function isTerminalGenerationStatus(status: string) {
 }
 
 export function phaseProgress(phase: "queued" | "validate" | "location" | "source" | "candidates" | "websites" | "dedupe" | "saving" | "done") {
-  return { queued: 5, validate: 15, location: 30, source: 30, candidates: 50, websites: 65, dedupe: 88, saving: 95, done: 100 }[phase];
+  return { queued: 2, validate: 5, location: 10, source: 15, candidates: 20, websites: 60, dedupe: 85, saving: 92, done: 100 }[phase];
 }
 
 export function isStaleGenerationRun(updatedAt: Date, now = new Date(), watchdogSeconds = 60) {
@@ -49,14 +49,16 @@ export function candidateReservationLimit(maxCandidates: number, alreadyReserved
   return Math.max(0, Math.min(available, maxCandidates - alreadyReserved));
 }
 
-export function generationProgress(input: { stored: number; target: number; candidatesChecked?: number; maxCandidates?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
-  const resultProgress = Math.min(10, Math.round((input.stored / Math.max(1, input.target)) * 10));
+export function generationProgress(input: { stored: number; target: number; candidatesReserved?: number; candidatesChecked?: number; maxCandidates?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
+  const maximumCandidates = Math.max(1, input.maxCandidates ?? input.target);
+  const reservationProgress = Math.min(15, Math.round(((input.candidatesReserved ?? 0) / maximumCandidates) * 15));
+  const validationProgress = Math.min(55, Math.round(((input.candidatesChecked ?? 0) / maximumCandidates) * 55));
+  const resultProgress = Math.min(15, Math.round((input.stored / Math.max(1, input.target)) * 15));
   const attemptedSegments = input.processedSegments + input.sourceFailures;
-  const progressHorizon = Math.max(2, Math.min(100, input.maxSegments));
+  const progressHorizon = Math.max(2, Math.min(200, input.maxSegments));
   const searchProgress = attemptedSegments > 0
-    ? Math.min(12, Math.ceil((Math.log1p(attemptedSegments) / Math.log1p(progressHorizon)) * 12))
+    ? Math.min(5, Math.ceil((Math.log1p(attemptedSegments) / Math.log1p(progressHorizon)) * 5))
     : 0;
-  const validationProgress = Math.min(42, Math.round(((input.candidatesChecked ?? 0) / Math.max(1, input.maxCandidates ?? input.target)) * 42));
   const phaseFloor = attemptedSegments > 0 ? phaseProgress("source") : phaseProgress("validate");
-  return Math.min(94, Math.max(phaseFloor, phaseProgress("source") + resultProgress + searchProgress + validationProgress));
+  return Math.min(94, phaseFloor + reservationProgress + validationProgress + resultProgress + searchProgress);
 }

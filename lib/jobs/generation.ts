@@ -20,6 +20,7 @@ import { initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
+import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN, RUN_DRAIN_WINDOW_MS } from "./generation-config";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 
@@ -206,13 +207,36 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
 
 function capacity(stats: Pick<Stats, "stored">) { return stats.stored; }
 
+function preservedCandidateCount(stats: Pick<Stats, "manualReview">, pendingCandidates: number) {
+  return Math.max(stats.manualReview, pendingCandidates);
+}
+
+function timeLimitReason(stats: Stats, pendingCandidates: number, maxMinutes: number) {
+  const preserved = preservedCandidateCount(stats, pendingCandidates);
+  if (stats.stored > 0) {
+    return `De maximale verwerkingstijd van ${maxMinutes} minuten is bereikt. ${stats.stored} nieuwe gekwalificeerde leads zijn direct opgeslagen. ${stats.checked} kandidaten zijn gecontroleerd${preserved ? ` en ${preserved} kandidaten blijven bewaard voor een volgende run` : ""}.`;
+  }
+  if (stats.sourceFailures > 0 && stats.checked === 0) {
+    return `De gratis bedrijfsbronnen waren tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen; de zoekruimte is niet als uitgeput gemarkeerd.`;
+  }
+  return `De maximale verwerkingstijd van ${maxMinutes} minuten is bereikt. ${stats.checked} kandidaten zijn gecontroleerd, maar nog geen bedrijf voldeed aan alle ingestelde criteria${preserved ? `; ${preserved} kandidaten blijven bewaard voor een volgende run` : ""}.`;
+}
+
+function candidateBudgetReason(stats: Stats, pendingCandidates: number, maxCandidates: number) {
+  const preserved = preservedCandidateCount(stats, pendingCandidates);
+  if (stats.stored > 0) {
+    return `De kandidaatslimiet van ${maxCandidates} is bereikt. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} nieuwe gekwalificeerde leads zijn direct opgeslagen${preserved ? `; ${preserved} kandidaten blijven bewaard voor een volgende run` : ""}.`;
+  }
+  return `Er zijn ${stats.checked} unieke kandidaten onderzocht, maar geen nieuwe bedrijven voldeden aan alle ingestelde criteria${preserved ? `; ${preserved} kandidaten met een tijdelijke fout blijven bewaard voor een volgende run` : ""}.`;
+}
+
 export async function createGenerationRun() {
   const env = serverEnv();
   const target = env.LEAD_GENERATION_TARGET;
   const run = await prisma.generationRun.create({
     data: {
       targetCount: Math.min(50, Math.max(1, target)),
-      maxCandidates: env.GENERATION_MAX_CANDIDATES,
+      maxCandidates: MAX_CANDIDATES_PER_RUN,
       currentPhase: "Zoekopdracht klaarzetten",
       progress: phaseProgress("queued"),
       message: "De zoekopdracht is gevalideerd en staat klaar.",
@@ -879,6 +903,15 @@ async function releaseQueueItems(ids: string[], reason: string) {
   await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, leaseOwner: null, leaseExpiresAt: null, lastError: reason } });
 }
 
+async function pendingQueueItems(runId: string, take: number) {
+  if (take <= 0) return [];
+  return prisma.generationCandidate.findMany({
+    where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } },
+    orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }],
+    take,
+  });
+}
+
 export async function processGenerationBatch(runId: string) {
   const env = serverEnv();
   await markStaleGenerationRuns();
@@ -889,6 +922,9 @@ export async function processGenerationBatch(runId: string) {
   const lock = await acquireJobLock(`lead-generation:${runId}`, (env.GENERATION_BATCH_DURATION_SECONDS + 10) * 1000);
   if (!lock) return run;
 
+  if (run.maxCandidates > MAX_CANDIDATES_PER_RUN) {
+    run = await prisma.generationRun.update({ where: { id: runId }, data: { maxCandidates: MAX_CANDIDATES_PER_RUN } });
+  }
   const stats = statsFromRun(run);
   const errors = stringArray(run.apiErrors);
   const warnings = stringArray(run.warnings);
@@ -916,6 +952,7 @@ export async function processGenerationBatch(runId: string) {
     deadline = Math.min(deadline, runDeadline - 30_000);
     if (run.cancelRequested) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd.");
     if (isGenerationRunExpired(run.startedAt, env.GENERATION_MAX_RUN_MINUTES)) {
+      const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
       return terminalRun(
         runId,
         JobStatus.TIMED_OUT,
@@ -923,16 +960,16 @@ export async function processGenerationBatch(runId: string) {
         places,
         errors,
         warnings,
-        `${stats.stored} bevestigde leads opgeslagen. De ingestelde maximale zoektijd van ${env.GENERATION_MAX_RUN_MINUTES} minuten is bereikt na ${run.processedSegments} succesvolle zoeksegmenten en ${stats.sourceFailures} bronfouten; ${stats.manualReview} onzekere kandidaten blijven in de PostgreSQL-retryqueue.`,
+        timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES),
       );
     }
-    if (Date.now() >= runDeadline - 30_000) {
-      return terminalRun(runId, JobStatus.TIMED_OUT, stats, places, errors, warnings, `De zachte afsluitgrens is bereikt. Er worden geen nieuwe externe controles gestart; resterende kandidaten blijven bewaard voor een volgende run.`);
-    }
 
-    let queued = await prisma.generationCandidate.findMany({
-      where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
-    });
+    const queueTake = () => Math.min(
+      env.GENERATION_BATCH_CANDIDATES,
+      MAX_CANDIDATES_PER_BATCH,
+      Math.max(0, run.maxCandidates - stats.checked),
+    );
+    let queued = await pendingQueueItems(runId, queueTake());
 
     let retryQuotaRemaining = generationRetryImportLimit(env.GENERATION_BATCH_CANDIDATES, run.retriedCandidates, Math.min(2, Math.max(0, run.maxCandidates - run.candidatesReserved)));
 
@@ -943,9 +980,7 @@ export async function processGenerationBatch(runId: string) {
         retriedThisBatch += carriedCandidates;
         run.candidatesReserved += carriedCandidates;
         await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: carriedCandidates } } });
-        queued = await prisma.generationCandidate.findMany({
-          where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
-        });
+        queued = await pendingQueueItems(runId, queueTake());
         batchMessage = `${carriedCandidates} nog niet gecontroleerde kandidaten uit een onderbroken run zijn veilig hervat.`;
         retryQuotaRemaining -= carriedCandidates;
       }
@@ -957,21 +992,31 @@ export async function processGenerationBatch(runId: string) {
         retriedThisBatch += importedRetries;
         run.candidatesReserved += importedRetries;
         await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: importedRetries } } });
-        queued = await prisma.generationCandidate.findMany({
-          where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
-        });
+        queued = await pendingQueueItems(runId, queueTake());
         batchMessage = `${importedRetries} onzekere kandidaten zijn uit de duurzame retryqueue opnieuw ingepland.`;
       }
     }
 
     if (!queued.length) {
+      const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
+      if (stats.checked >= run.maxCandidates) {
+        const status = pendingCandidates > 0 ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+        return terminalRun(runId, status, stats, places, errors, warnings, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+      }
       if (run.candidatesReserved >= run.maxCandidates) {
+        const status = pendingCandidates > 0 ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+        return terminalRun(runId, status, stats, places, errors, warnings, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+      }
+      if (stats.sourceFailures >= env.GENERATION_MAX_SOURCE_FAILURES) {
         const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
-        return terminalRun(runId, status, stats, places, errors, warnings, `De maximale reservering van ${run.maxCandidates} unieke kandidaten is volledig verwerkt.`);
+        return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${stats.sourceFailures} mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens en retrykandidaten zijn behouden.`);
       }
       if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS) {
-        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
-        return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; de ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt.`);
+        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+        return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; er worden in deze run geen nieuwe bronverzoeken gestart.`);
+      }
+      if (Date.now() >= runDeadline - RUN_DRAIN_WINDOW_MS) {
+        return terminalRun(runId, JobStatus.TIMED_OUT, stats, places, errors, warnings, timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES));
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
@@ -1086,13 +1131,10 @@ export async function processGenerationBatch(runId: string) {
         }
       }
 
-      queued = await prisma.generationCandidate.findMany({
-        where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } }, orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }], take: env.GENERATION_BATCH_CANDIDATES,
-      });
+      queued = await pendingQueueItems(runId, queueTake());
     }
 
     if (queued.length) {
-      run.progress = Math.max(run.progress, phaseProgress("candidates"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Kandidaten valideren", progress: run.progress,
         message: `${queued.length} kandidaten worden gecontroleerd op status, contactgegevens en duplicaten.`, heartbeatAt: new Date(),
@@ -1117,7 +1159,7 @@ export async function processGenerationBatch(runId: string) {
     const releaseIds: string[] = [];
     const knownReasons = queued.length ? await knownCandidateReasons(queued.map(candidateFromQueue)) : new Map<string, KnownCandidateMatch | null>();
     for (const row of queued) {
-      if (isBatchDeadlineNear(deadline) || locationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + locationWork.length >= run.targetCount) {
+      if (stats.checked >= run.maxCandidates || isBatchDeadlineNear(deadline) || locationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + locationWork.length >= run.targetCount) {
         releaseIds.push(row.id);
         continue;
       }
@@ -1342,7 +1384,6 @@ export async function processGenerationBatch(runId: string) {
 
     if (verificationWork.length) {
       stats.websitesChecked += verificationWork.length;
-      run.progress = Math.max(run.progress, phaseProgress("websites"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
         ...runData(stats, places, errors, warnings), currentPhase: "Websitebewijs controleren",
         progress: run.progress, message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
@@ -1392,7 +1433,6 @@ export async function processGenerationBatch(runId: string) {
         }
         const databaseStarted = Date.now();
         try {
-          run.progress = Math.max(run.progress, phaseProgress("saving"));
           await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", progress: run.progress, heartbeatAt: new Date() } });
           const saved = await saveValidatedLead(candidate, verification);
           if (saved.stored) {
@@ -1441,6 +1481,18 @@ export async function processGenerationBatch(runId: string) {
     const state = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { cancelRequested: true, status: true } });
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
     const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
+    if (stats.checked >= run.maxCandidates) {
+      const status = pendingCandidates > 0 ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+      return terminalRun(runId, status, stats, places, errors, warnings, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+    }
+    if (stats.sourceFailures >= env.GENERATION_MAX_SOURCE_FAILURES && pendingCandidates === 0) {
+      const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
+      return terminalRun(runId, status, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${stats.sourceFailures} mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; bestaande gegevens zijn behouden.`);
+    }
+    if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS && pendingCandidates === 0) {
+      const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+      return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; er waren geen verdere geschikte kandidaten in deze run.`);
+    }
     const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
     if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten blijven veilig in de PostgreSQL-retryqueue.`);
     if (completionStatus) {
@@ -1457,7 +1509,7 @@ export async function processGenerationBatch(runId: string) {
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
       pendingCandidates, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
-      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, candidatesChecked: stats.checked, maxCandidates: run.maxCandidates, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
+      progress: Math.max(run.progress, generationProgress({ stored: stats.stored, target: run.targetCount, candidatesReserved: run.candidatesReserved, candidatesChecked: stats.checked, maxCandidates: run.maxCandidates, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
         ? "De huidige batch is vóór de serverless deadline veilig gepauzeerd; de volgende batch wordt automatisch gestart."

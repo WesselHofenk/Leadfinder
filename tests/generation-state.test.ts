@@ -3,9 +3,9 @@ import { candidateReservationLimit, candidateRetryStatus, generationCompletionSt
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
-    expect(phaseProgress("queued")).toBe(5);
-    expect(phaseProgress("source")).toBe(30);
-    expect(phaseProgress("candidates")).toBe(50);
+    expect(phaseProgress("queued")).toBe(2);
+    expect(phaseProgress("source")).toBe(15);
+    expect(phaseProgress("candidates")).toBe(20);
     expect(phaseProgress("done")).toBe(100);
   });
 
@@ -45,15 +45,15 @@ describe("persistente generatiejobstatus", () => {
   });
 
   it("beweegt zichtbaar voorbij 5% na een echte maar mislukte bronpoging", () => {
-    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
-    expect(generationProgress({ stored: 0, sourceFailures: 2, target: 50, processedSegments: 0, maxSegments: 1000 }))
-      .toBeGreaterThan(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 }));
-    expect(generationProgress({ stored: 10, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 1000 })).toBeGreaterThan(phaseProgress("source"));
+    expect(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 40 })).toBeGreaterThanOrEqual(phaseProgress("source"));
+    expect(generationProgress({ stored: 0, sourceFailures: 2, target: 50, processedSegments: 0, maxSegments: 40 }))
+      .toBeGreaterThan(generationProgress({ stored: 0, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 40 }));
+    expect(generationProgress({ stored: 10, sourceFailures: 1, target: 50, processedSegments: 0, maxSegments: 40 })).toBeGreaterThan(phaseProgress("source"));
   });
 
   it("telt echte kandidaatcontroles mee zonder ooit 100% te tonen vóór een eindstatus", () => {
-    const progress = generationProgress({ stored: 5, candidatesChecked: 30, sourceFailures: 2, target: 50, processedSegments: 6, maxSegments: 1000 });
-    expect(progress).toBeGreaterThan(25);
+    const progress = generationProgress({ stored: 5, candidatesReserved: 40, candidatesChecked: 30, maxCandidates: 200, sourceFailures: 2, target: 50, processedSegments: 6, maxSegments: 40 });
+    expect(progress).toBeGreaterThan(15);
     expect(progress).toBeLessThanOrEqual(94);
   });
 
@@ -81,9 +81,9 @@ describe("persistente generatiejobstatus", () => {
     expect(generationRetryImportLimit(8, 2)).toBe(0);
   });
 
-  it("reserveert nooit meer dan 1.000 unieke kandidaten", () => {
-    expect(candidateReservationLimit(1000, 990, 50)).toBe(10);
-    expect(candidateReservationLimit(1000, 1000, 50)).toBe(0);
-    expect(candidateReservationLimit(1000, 400, 25)).toBe(25);
+  it("reserveert nooit meer dan 200 unieke kandidaten", () => {
+    expect(candidateReservationLimit(200, 190, 50)).toBe(10);
+    expect(candidateReservationLimit(200, 200, 50)).toBe(0);
+    expect(candidateReservationLimit(200, 40, 25)).toBe(25);
   });
 });
