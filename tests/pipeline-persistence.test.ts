@@ -4,10 +4,8 @@ import { pipelineStatuses } from "@/lib/leads/pipeline";
 const { leadState, tx, prismaMock } = vi.hoisted(() => {
   const stages = [
     ["pipeline-nieuw", "nieuw", "Nieuw"], ["pipeline-belletje-1", "belletje-1", "Belletje 1"],
-    ["pipeline-belletje-2", "belletje-2", "Belletje 2"], ["pipeline-belletje-3", "belletje-3", "Belletje 3"],
-    ["pipeline-belletje-4", "belletje-4", "Belletje 4"], ["pipeline-gemaild", "gemaild", "Gemaild"], ["pipeline-ingepland", "ingepland", "Ingepland"],
-    ["pipeline-deal", "deal", "Deal"], ["pipeline-geen-interesse", "geen-interesse", "Geen interesse"],
-    ["pipeline-terugbel-verzoek", "terugbel-verzoek", "Terugbel verzoek"],
+    ["pipeline-belletje-2", "belletje-2", "Belletje 2"], ["pipeline-gemaild", "gemaild", "Gemaild"],
+    ["pipeline-geen-interesse", "geen-interesse", "Geen interesse"], ["pipeline-klant", "klant", "Klant"],
   ].map(([id, slug, name]) => ({ id, slug, name }));
   const leadState = {
     id: "lead-1", companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567",
@@ -52,6 +50,6 @@ describe("persistente pipelinewijzigingen", () => {
       expect(leadState.pipelineStage.slug).toBe(pipelineStage);
       expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true });
     }
-    expect(tx.lead.update).toHaveBeenCalledTimes(10);
+    expect(tx.lead.update).toHaveBeenCalledTimes(6);
   });
 });

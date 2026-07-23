@@ -28,8 +28,11 @@ describe("pipeline API-validatie", () => {
 
   it.each([
     ["NEEDS_REVIEW", "nieuw"], ["VERIFIED", "nieuw"], ["CALLED", "belletje-1"],
-    ["NO_ANSWER", "belletje-1"], ["WON", "deal"], ["FILTERED", "nieuw"],
-    ["CALLBACK_REQUEST", "terugbel-verzoek"], ["EMAILED", "gemaild"],
+    ["NO_ANSWER", "belletje-1"], ["INTERESTED", "belletje-1"], ["BENADERD", "belletje-1"],
+    ["REACTIE ONTVANGEN", "belletje-2"], ["CALLBACK_REQUEST", "belletje-2"],
+    ["WON", "klant"], ["KLANT GEWORDEN", "klant"], ["FILTERED", "nieuw"],
+    ["EMAILED", "gemaild"], ["MAIL GESTUURD (NOG TE BELLEN)", "gemaild"],
+    ["NIET INTERESSANT", "geen-interesse"], ["NIET RELEVANT", "geen-interesse"],
   ])("normaliseert oude status %s naar %s", async (status, pipelineStage) => {
     const response = await PATCH(request(status), { params: Promise.resolve({ id: "lead-1" }) });
     expect(response.status).toBe(200);

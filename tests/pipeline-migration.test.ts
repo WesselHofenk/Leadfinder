@@ -8,6 +8,7 @@ const relationalMigration = readFileSync(resolve("prisma/migrations/202607162100
 const emailedStageMigration = readFileSync(resolve("prisma/migrations/20260716234500_add_emailed_pipeline_stage/migration.sql"), "utf8");
 const callbackRequestStageMigration = readFileSync(resolve("prisma/migrations/20260716235900_add_callback_request_pipeline_stage/migration.sql"), "utf8");
 const dutchLeadRecoveryMigration = readFileSync(resolve("prisma/migrations/20260717001000_restore_dutch_leads/migration.sql"), "utf8");
+const sixStageMigration = readFileSync(resolve("prisma/migrations/20260723210000_six_stage_pipeline/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -72,5 +73,43 @@ describe("veilige pipeline-datamigratie", () => {
     expect(dutchLeadRecoveryMigration).toContain('ON CONFLICT ("recoveryKey") DO NOTHING');
     expect(dutchLeadRecoveryMigration).toContain("foreign_before IS DISTINCT FROM foreign_after");
     expect(dutchLeadRecoveryMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+  });
+
+  it("migreert naar exact zes actieve fases zonder leads te verwijderen", () => {
+    expect(sixStageMigration).toMatch(/^BEGIN;/);
+    expect(sixStageMigration.trim()).toMatch(/COMMIT;$/);
+    for (const [slug, position] of [
+      ["nieuw", 1],
+      ["belletje-1", 2],
+      ["belletje-2", 3],
+      ["gemaild", 4],
+      ["geen-interesse", 5],
+      ["klant", 6],
+    ] as const) {
+      expect(sixStageMigration).toContain(`('${slug}', ${position})`);
+    }
+    expect(sixStageMigration).toContain("active_stages <> 6");
+    expect(sixStageMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+  });
+
+  it("bewaart leadaantal en historie en documenteert iedere fasemigratie", () => {
+    expect(sixStageMigration).toContain("before_total <> after_total");
+    expect(sixStageMigration).toContain('INSERT INTO "LeadActivity"');
+    expect(sixStageMigration).toContain("PIPELINE_STAGE_MIGRATED");
+    expect(sixStageMigration).toContain('INSERT INTO "PipelineMigrationAudit"');
+  });
+
+  it("migreert alle oude fasen naar de best passende nieuwe fase", () => {
+    for (const [oldStage, target] of [
+      ["belletje-3", "pipeline-belletje-1"],
+      ["ingepland", "pipeline-belletje-2"],
+      ["terugbel-verzoek", "pipeline-belletje-2"],
+      ["belletje-4", "pipeline-gemaild"],
+      ["deal", "pipeline-klant"],
+      ["niet-interessant", "pipeline-geen-interesse"],
+    ] as const) {
+      expect(sixStageMigration).toContain(`'${oldStage}'`);
+      expect(sixStageMigration).toContain(`'${target}'`);
+    }
   });
 });

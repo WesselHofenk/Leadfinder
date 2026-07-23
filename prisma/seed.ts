@@ -57,6 +57,10 @@ const centers = [
 ] as const;
 
 async function main() {
+  await prisma.pipelineStage.updateMany({
+    where: { id: { notIn: pipelineStages.map((stage) => stage.id) } },
+    data: { isActive: false },
+  });
   for (const stage of pipelineStages) {
     await prisma.pipelineStage.upsert({
       where: { id: stage.id },
