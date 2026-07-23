@@ -66,6 +66,8 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         <Row label="Bedrijfsstatus">{lead.businessStatus === "OPERATIONAL" ? "Actief" : statusLabels[lead.businessStatus]}</Row>
         <Row label="Telefoon">{lead.normalizedPhoneNumber ? <a className="text-link" href={`tel:${lead.normalizedPhoneNumber}`}>{lead.normalizedPhoneNumber}</a> : "Niet beschikbaar"}</Row>
         <Row label="E-mail">{lead.email ? <a className="text-link" href={`mailto:${lead.email}`}>{lead.email}</a> : "Niet beschikbaar"}</Row>
+        <Row label="E-mailbron">{lead.emailSourceUrl ? <a className="text-link" href={lead.emailSourceUrl} target="_blank" rel="noopener noreferrer">{lead.emailSource || "Openbare bron"}</a> : lead.emailSource || "Niet vastgelegd"}</Row>
+        <Row label="E-mailcontrole">{lead.emailMxVerified ? `MX bevestigd${lead.emailVerifiedAt ? ` · ${dateFormatter.format(lead.emailVerifiedAt)}` : ""}` : "Niet bevestigd"}</Row>
         <Row label="Contactpersoon">{lead.contactPerson || lead.contactPersonName || "Niet beschikbaar"}</Row>
       </dl></section>
 

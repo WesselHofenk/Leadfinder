@@ -20,6 +20,7 @@ const base: Candidate = {
   googleBusinessProfileVerified: true,
   companyName: "De Lokale Schilder",
   phoneNumber: "+31 30 123 45 67",
+  email: "info@delokaleschilder.nl",
   description: "Schilderbedrijf voor onderhoud en renovatie",
   language: "nl",
   languageConfidence: 95,
@@ -45,6 +46,10 @@ describe("centrale strikte leadvalidatie", () => {
   it("wijst een eigen website af", () => {
     const result = validateStrictLead(base, { ...noWebsite, status: "WEBSITE_FOUND", website: "https://voorbeeld.nl" });
     expect(result.reasons).toContain("OWN_WEBSITE_FOUND");
+  });
+
+  it("wijst een kandidaat zonder zakelijk e-mailadres af", () => {
+    expect(validateStrictLead({ ...base, email: undefined }, noWebsite).reasons).toContain("EMAIL_REQUIRED");
   });
 
   it.each(["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"])("wijst status %s af", (businessStatus) => {

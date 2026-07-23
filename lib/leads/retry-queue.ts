@@ -14,6 +14,8 @@ export function validationErrorCode(reason: string) {
   if (/429|rate.?limit/i.test(reason)) return "RATE_LIMIT";
   if (/timeout|timed out|abort/i.test(reason)) return "TIMEOUT";
   if (/database/i.test(reason)) return "DATABASE_ERROR";
+  if (/email|mx/i.test(reason)) return "EMAIL_ENRICHMENT_REQUIRED";
+  if (/phone/i.test(reason)) return "PHONE_ENRICHMENT_REQUIRED";
   if (/status|temporar/i.test(reason)) return "STATUS_CHECK_FAILED";
   if (/website|dns|domain|ssl|network|blocked/i.test(reason)) return "WEBSITE_CHECK_FAILED";
   return "VALIDATION_CONFLICT";

@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
+import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
 import { isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
 
 type Run = {
@@ -32,6 +32,11 @@ type Run = {
   blockedBrussels: number;
   blockedGhent: number;
   invalidPhone: number;
+  emailsFound: number;
+  emailsMissing: number;
+  emailsInvalid: number;
+  emailRetries: number;
+  emailsExternallyVerified: number;
   languageRejected: number;
   multipleLocationsRejected: number;
   chainRejected: number;
@@ -51,17 +56,26 @@ type Run = {
   currentRegion?: string;
   currentCategory?: string;
   currentTile?: string;
+  remainingSegments?: number;
   stopReason?: string;
   startedAt?: string;
   updatedAt: string;
 };
 
 function resultMessage(run: Run) {
-  if (run.status === "COMPLETE") return `${run.stored} bevestigde leads opgeslagen; ${run.manualReview} onzekere kandidaten blijven veilig in de PostgreSQL-retryqueue. ${run.stopReason || "De zoekrun is afgerond."}`;
-  if (run.status === "PARTIALLY_COMPLETED") return run.stopReason || `De generatie is gedeeltelijk afgerond; ${run.stored} bevestigde resultaten zijn veilig opgeslagen.`;
+  const conciseReason = run.stopReason?.split(" Resultaten:")[0]?.trim();
+  const preserved = (run.pendingCandidates ?? 0) + (run.manualReview ?? 0);
+  if (run.status === "COMPLETE") return `${run.stored} nieuwe gekwalificeerde leads zijn veilig opgeslagen in Nieuw.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}`;
+  if (run.status === "PARTIALLY_COMPLETED") return `Zoekrun gedeeltelijk afgerond: ${run.stored} nieuwe gekwalificeerde leads opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}${conciseReason ? ` ${conciseReason}` : ""}`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
-  if (run.status === "TIMED_OUT") return run.stopReason || "De zoekrun is na de maximale verwerkingstijd gestopt. Probeer opnieuw.";
-  return run.stopReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
+  if (run.status === "TIMED_OUT") return `De veilige zoektijd is bereikt. ${run.stored} nieuwe gekwalificeerde leads zijn opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard en worden bij een volgende run opnieuw gecontroleerd.` : " Een volgende klik probeert andere beschikbare zoeksegmenten."}`;
+  return conciseReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
+}
+
+function resultClass(status?: string) {
+  if (status === "COMPLETE") return "success-message";
+  if (status === "PARTIALLY_COMPLETED" || status === "TIMED_OUT") return "warning-message";
+  return "alert";
 }
 
 export function GenerationButton() {
@@ -232,6 +246,9 @@ export function GenerationButton() {
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
         <Metric label="Brussel afgewezen" value={run?.blockedBrussels ?? 0}/><Metric label="Gent afgewezen" value={run?.blockedGhent ?? 0}/>
         <Metric label="Zonder geldig telefoonnummer" value={run?.invalidPhone ?? 0}/><Metric label="Niet Nederlandstalig" value={run?.languageRejected ?? 0}/>
+        <Metric label="E-mailadres gevonden" value={run?.emailsFound ?? 0}/><Metric label="Zonder e-mailadres" value={run?.emailsMissing ?? 0}/>
+        <Metric label="Ongeldig e-mailadres" value={run?.emailsInvalid ?? 0}/><Metric label="E-mailverrijking in retryqueue" value={run?.emailRetries ?? 0}/>
+        <Metric label="E-mailadres extern bevestigd" value={run?.emailsExternallyVerified ?? 0}/><Metric label="Resterende zoeksegmenten" value={run?.remainingSegments ?? "—"}/>
         <Metric label="Meerdere vestigingen" value={run?.multipleLocationsRejected ?? 0}/><Metric label="Ketens" value={run?.chainRejected ?? 0}/>
         <Metric label="Franchises" value={run?.franchiseRejected ?? 0}/><Metric label="Zelfde naam, ander adres" value={run?.sameNameMultipleAddresses ?? 0}/>
         <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
@@ -243,7 +260,11 @@ export function GenerationButton() {
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten</p>
       <button className="button button-secondary generation-cancel" onClick={cancel}><Square size={13}/>Zoekrun annuleren</button>
     </section>}
-    {message && <p className={["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") ? "success-message" : "alert"} role="status">{["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") && <CheckCircle2 size={15}/>} {message}</p>}
+    {message && <p className={resultClass(run?.status)} role="status">
+      {run?.status === "COMPLETE" && <CheckCircle2 size={15}/>}
+      {["PARTIALLY_COMPLETED", "TIMED_OUT"].includes(run?.status ?? "") && <AlertTriangle size={15}/>}
+      {message}
+    </p>}
   </div>;
 }
 

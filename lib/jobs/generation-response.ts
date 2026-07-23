@@ -19,6 +19,12 @@ type GenerationSummaryRun = {
   samePhoneMultipleAddresses?: number;
   locationCountUncertain?: number;
   duplicateListingsMerged?: number;
+  emailsFound?: number;
+  emailsMissing?: number;
+  emailsInvalid?: number;
+  emailRetries?: number;
+  emailsExternallyVerified?: number;
+  remainingSegments?: number | null;
   progress?: number;
   message?: string | null;
   stopReason?: string | null;
@@ -48,6 +54,12 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     rejectedSamePhoneDifferentAddress: run?.samePhoneMultipleAddresses ?? 0,
     uncertainLocationCount: run?.locationCountUncertain ?? 0,
     mergedDuplicateListings: run?.duplicateListingsMerged ?? 0,
+    emailsFound: run?.emailsFound ?? 0,
+    emailsMissing: run?.emailsMissing ?? 0,
+    emailsInvalid: run?.emailsInvalid ?? 0,
+    emailRetries: run?.emailRetries ?? 0,
+    emailsExternallyVerified: run?.emailsExternallyVerified ?? 0,
+    remainingSegments: run?.remainingSegments ?? null,
     progress: run?.progress ?? 0,
     message: run?.stopReason || run?.message || fallbackMessage || "Geen actieve zoekrun.",
     run,

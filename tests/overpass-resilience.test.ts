@@ -99,12 +99,15 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 6);
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 9);
     expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "phone", id: "t0-node-phone" });
     expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "phone", id: "t0-way-phone" });
     expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "phone", id: "t0-relation-phone" });
     expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "contact:phone", id: "t0-node-contact-phone" });
-    expect(overpassSearchPlan(18)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
+    expect(overpassSearchPlan(6)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "email", id: "t0-node-email" });
+    expect(overpassSearchPlan(24)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
+    expect(overpassSearchPlan(27)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
+    expect(buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 })).not.toMatch(/\["(?:contact:)?(?:phone|mobile|telephone|email)"\]/);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

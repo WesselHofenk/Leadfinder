@@ -3,10 +3,10 @@ import { hasRecentSourceEvidence } from "./eligibility";
 import { isPermanentlyClosed, isTemporarilyClosed, normalizeBusinessStatusText } from "./company-status";
 import type { WebsiteVerificationResult } from "./website-verification";
 import { detectBlockedLocation } from "./blocked-location";
-import { normalizePhones } from "./normalization";
+import { normalizeEmails, normalizePhones } from "./normalization";
 
 export type StrictLeadReason =
-  | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
+  | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "EMAIL_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
   | "BUSINESS_NOT_CONFIRMED_ACTIVE" | "BUSINESS_CLOSED" | "ADDRESS_NOT_USABLE"
   | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND" | "SINGLE_LOCATION_NOT_CONFIRMED";
 
@@ -89,14 +89,19 @@ export function hasReadableAddress(candidate: Candidate) {
     && !/^onbekend$/i.test(address) && Boolean(candidate.city?.trim());
 }
 
-export function validateStrictLead(candidate: Candidate, verification?: WebsiteVerificationResult, options: { requireSingleLocation?: boolean } = {}) {
+export function validateStrictLead(
+  candidate: Candidate,
+  verification?: WebsiteVerificationResult,
+  options: { requireSingleLocation?: boolean; requirePhone?: boolean; requireEmail?: boolean } = {},
+) {
   const reasons: StrictLeadReason[] = [];
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   const language = detectDutchBusinessLanguage(candidate);
   const active = confirmedActiveStatus(candidate);
   if (blocked.area === "BRUSSELS") reasons.push("BLOCKED_BRUSSELS");
   if (blocked.area === "GHENT") reasons.push("BLOCKED_GHENT");
-  if (!normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
+  if (options.requirePhone !== false && !normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
+  if (options.requireEmail !== false && !normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])]).length) reasons.push("EMAIL_REQUIRED");
   if (!hasVerifiedPublicBusinessProfile(candidate)) reasons.push("NO_PUBLIC_BUSINESS_PROFILE");
   if (!allowedDutchRegion(candidate)) reasons.push("REGION_NOT_ALLOWED");
   if (language.language !== "nl" || language.confidence < 70) reasons.push("LANGUAGE_NOT_DUTCH");
@@ -114,4 +119,10 @@ export function validateStrictLead(candidate: Candidate, verification?: WebsiteV
 /** Cheap, deterministic quality gate used before the remote location-count lookup. */
 export function validateStrictLeadBeforeLocation(candidate: Candidate) {
   return validateStrictLead(candidate, undefined, { requireSingleLocation: false });
+}
+
+/** Rejects closed, blocked, non-Dutch and otherwise unusable records before
+ * spending enrichment requests on missing contact data. */
+export function validateStrictLeadBeforeContactEnrichment(candidate: Candidate) {
+  return validateStrictLead(candidate, undefined, { requireSingleLocation: false, requirePhone: false, requireEmail: false });
 }

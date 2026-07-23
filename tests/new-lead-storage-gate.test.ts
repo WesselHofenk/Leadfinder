@@ -14,7 +14,10 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
 import { storeNewLead } from "@/lib/jobs/generation";
 
 const base: Candidate = {
-  externalPlaceId: "source-1", companyName: "Nieuw bedrijf", phoneNumber: "0201234567", businessStatus: "OPERATIONAL",
+  externalPlaceId: "source-1", companyName: "Nieuw bedrijf", phoneNumber: "0201234567",
+  email: "info@nieuwbedrijf.nl", emailSource: "OPENSTREETMAP",
+  emailSourceUrl: "https://www.openstreetmap.org/node/123", emailPubliclyListed: true,
+  emailMxVerified: true, emailVerifiedAt: "2026-07-23T12:00:00.000Z", businessStatus: "OPERATIONAL",
   country: "NL", category: "winkel", city: "Amsterdam", postalCode: "1011AA", streetAddress: "Damrak 1",
   formattedAddress: "Damrak 1, 1011 AA Amsterdam, Nederland", language: "nl", languageConfidence: 95,
   source: "GOOGLE_PLACES", googlePlaceId: "ChIJ-source-1", googleBusinessProfileVerified: true,
@@ -49,6 +52,7 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
       pipelineStageId: "pipeline-nieuw", isActive: true, isFiltered: false, websiteStatus: "NO_WEBSITE_CONFIRMED",
       googleBusinessProfileVerified: true, language: "nl", businessStatus: "OPERATIONAL",
+      email: "info@nieuwbedrijf.nl", emailSource: "OPENSTREETMAP", emailMxVerified: true,
     }) }));
     expect(validationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "PROMOTED_TO_LEAD", promotedLeadId: "lead-new" }) }));
     expect(sourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ leadId: "lead-new", decision: "stored" }) }));
@@ -56,6 +60,12 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
 
   it("weigert ook vlak voor opslag een kandidaat zonder geldig telefoonnummer", async () => {
     await expect(storeNewLead({ ...base, phoneNumber: undefined }, confirmed)).resolves.toMatchObject({ stored: false, reason: "PHONE_REQUIRED" });
+    expect(leadCreate).not.toHaveBeenCalled();
+  });
+
+  it("weigert vlak voor opslag een kandidaat zonder geverifieerd openbaar e-mailadres", async () => {
+    await expect(storeNewLead({ ...base, email: undefined, emailMxVerified: false }, confirmed))
+      .resolves.toMatchObject({ stored: false, reason: "BUSINESS_EMAIL_NOT_VERIFIED" });
     expect(leadCreate).not.toHaveBeenCalled();
   });
 

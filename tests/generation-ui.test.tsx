@@ -43,7 +43,10 @@ describe("frontend polling en eindstatus", () => {
     await waitFor(() => expect(progress.textContent).toContain("15%"));
     expect(progress.textContent).toContain("Gesloten verwijderd");
     expect(progress.textContent).toContain("Mislukte zoekopdrachten");
-    expect(await screen.findByText("18 van de gewenste 50 kandidaten gevonden; resultaten zijn veilig opgeslagen.", {}, { timeout: 3_500 })).toBeTruthy();
+    const result = await screen.findByRole("status", {}, { timeout: 3_500 });
+    expect(result.textContent).toContain("Zoekrun gedeeltelijk afgerond");
+    expect(result.textContent).toContain("18 van de gewenste 50 kandidaten gevonden");
+    expect(result.className).toBe("warning-message");
     await waitFor(() => expect((screen.getByRole("button", { name: "Opnieuw genereren" }) as HTMLButtonElement).disabled).toBe(false));
   });
 
@@ -91,5 +94,24 @@ describe("frontend polling en eindstatus", () => {
     render(<GenerationButton/>);
     expect(await screen.findByText(failed.stopReason)).toBeTruthy();
     expect(screen.queryByText(failed.apiErrors[0])).toBeNull();
+  });
+
+  it("toont een veilige tijdsgrens als compacte waarschuwing en niet als rode fout", async () => {
+    const timedOut = {
+      ...baseRun,
+      status: "TIMED_OUT",
+      progress: 100,
+      stored: 3,
+      manualReview: 4,
+      pendingCandidates: 2,
+      stopReason: "De zachte afsluitgrens is bereikt. Resultaten: ruw gevonden 46; gecontroleerd 27; opgeslagen 3/50.",
+    };
+    vi.stubGlobal("fetch", vi.fn(() => json({ run: timedOut })));
+    render(<GenerationButton/>);
+    const message = await screen.findByRole("status");
+    expect(message.className).toBe("warning-message");
+    expect(message.textContent).toContain("De veilige zoektijd is bereikt");
+    expect(message.textContent).toContain("3 nieuwe gekwalificeerde leads");
+    expect(message.textContent).not.toContain("Resultaten:");
   });
 });

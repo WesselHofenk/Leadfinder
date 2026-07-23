@@ -6,6 +6,11 @@ const prisma = new PrismaClient();
 const categories = ["aannemer","klusbedrijf","schilder","stukadoor","tegelzetter","installatiebedrijf","dakdekker","loodgieter","elektricien","hovenier","schoonmaakbedrijf","verhuisbedrijf","garage","autobedrijf","rijschool","kapper","schoonheidssalon","nagelstudio","fysiotherapie","wellness","personal trainer","restaurant","café","lunchroom","catering","hotel","bed and breakfast","makelaar","interieurbedrijf","keukenbedrijf","fotograaf","videograaf","drukkerij","boekhouder","consultant","coach","opleidingsbedrijf","kinderopvang","hondenuitlaatservice","hondentrimmer","dierenpension","speciaalzaak","groothandel","verhuurbedrijf"];
 const excluded = ["bus_station","parking","public_bathroom","park","monument","street_address","atm","local_government_office","place_of_worship","event_venue"];
 const alternativeCategories = ["barbier", "accountant", "lokale winkel", "ambachtsbedrijf"];
+const highYieldCategories = new Set([
+  "dakdekker", "schilder", "stukadoor", "tegelzetter", "loodgieter", "elektricien", "hovenier",
+  "klusbedrijf", "installatiebedrijf", "schoonmaakbedrijf", "verhuisbedrijf", "kapper",
+  "schoonheidssalon", "nagelstudio", "hondentrimmer", "hondenuitlaatservice",
+]);
 const centers = [
   ["NL", "Noord-Holland", "Amsterdam", 52.3676, 4.9041],
   ["NL", "Zuid-Holland", "Rotterdam", 51.9244, 4.4777],
@@ -76,7 +81,11 @@ async function main() {
   }
   for (const name of [...categories, ...alternativeCategories]) {
     const slug = name.replaceAll(" ", "-");
-    await prisma.category.upsert({ where: { slug }, create: { slug, name }, update: { name } });
+    await prisma.category.upsert({
+      where: { slug },
+      create: { slug, name, priority: highYieldCategories.has(name) ? 25 : 100 },
+      update: { name },
+    });
   }
   for (const slug of excluded) await prisma.excludedCategory.upsert({ where:{slug}, update:{}, create:{slug,name:slug.replaceAll("_"," "),reason:"Geen relevante commerciële websitelead"} });
   for (const [country, region, city, latitude, longitude] of centers) {

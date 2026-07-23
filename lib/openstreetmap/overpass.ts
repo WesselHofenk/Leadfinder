@@ -50,14 +50,18 @@ type SearchParams = {
 };
 
 export type OverpassElementStrategy = "node" | "way" | "relation";
-export type OverpassContactStrategy = "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone";
+export type OverpassContactStrategy =
+  | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone"
+  | "email" | "contact:email" | "any";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-const contactStrategies: readonly OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
+const contactStrategies: readonly OverpassContactStrategy[] = [
+  "phone", "contact:phone", "email", "contact:email", "mobile", "contact:mobile", "telephone", "contact:telephone", "any",
+];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
 export function overpassSearchPlan(cursor = 0) {
@@ -171,6 +175,9 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       phoneNumbers,
       email: emailAddresses[0],
       emailAddresses,
+      emailSource: "OPENSTREETMAP",
+      emailSourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+      emailPubliclyListed: emailAddresses.length > 0,
       website: positiveWebsite,
       websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
@@ -266,8 +273,9 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const contact = params.contact ?? "phone";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
+  const contactConstraint = contact !== "any" ? `["${contact}"]` : "";
   const statements = filters
-    .map((filter) => `${around}${filter}[name]["${contact}"]${noOfficialWebsite};`)
+    .map((filter) => `${around}${filter}[name]${contactConstraint}${noOfficialWebsite};`)
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;

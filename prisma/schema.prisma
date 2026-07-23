@@ -146,6 +146,10 @@ model Lead {
   normalizedCompanyName         String
   contactPersonName             String?
   email                         String?
+  emailSource                   String?
+  emailSourceUrl                String?
+  emailMxVerified               Boolean                @default(false)
+  emailVerifiedAt               DateTime?
   phoneNumber                   String
   normalizedPhoneNumber         String?                @unique
   internationalPhoneNumber      String?
@@ -341,6 +345,11 @@ model GenerationRun {
   blockedBrussels            Int                   @default(0)
   blockedGhent               Int                   @default(0)
   invalidPhone               Int                   @default(0)
+  emailsFound               Int                   @default(0)
+  emailsMissing             Int                   @default(0)
+  emailsInvalid             Int                   @default(0)
+  emailRetries              Int                   @default(0)
+  emailsExternallyVerified  Int                   @default(0)
   languageRejected           Int                   @default(0)
   multipleLocationsRejected  Int                   @default(0)
   chainRejected              Int                   @default(0)
@@ -370,6 +379,7 @@ model GenerationRun {
   currentTile                String?
   currentCategory            String?
   continuationCursor         String?
+  remainingSegments          Int?
   lastError                  String?
   stopReason                 String?
   warnings                   Json                  @default("[]")
@@ -614,11 +624,16 @@ model SearchCombination {
   provider          String?
   useCount          Int       @default(0)
   candidatesFound   Int       @default(0)
+  candidatesChecked Int       @default(0)
+  rejectedCandidates Int      @default(0)
+  retryCandidates   Int       @default(0)
   validLeads        Int       @default(0)
   errorCount        Int       @default(0)
   totalDurationMs   BigInt    @default(0)
   averageDurationMs Int       @default(0)
   lastUsedAt        DateTime?
+  nextEligibleAt    DateTime  @default(now())
+  lastSuccessAt     DateTime?
   lastError         String?
   tileCursor        Int       @default(0)
   lastTile          String?
@@ -627,6 +642,7 @@ model SearchCombination {
 
   @@unique([country, city, category, source])
   @@index([lastUsedAt, source])
+  @@index([nextEligibleAt, source])
 }
 
 model SourceProviderHealth {
@@ -714,6 +730,8 @@ model SourceRecord {
   rawName           String?
   rawAddress        String?
   rawPhone          String?
+  rawEmail          String?
+  rawEmailSource    String?
   rawWebsite        String?
   rawBusinessStatus String?
   decision          String?

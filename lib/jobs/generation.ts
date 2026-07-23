@@ -5,7 +5,8 @@ import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentity
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
-import { hasReadableAddress, validateStrictLead, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { hasReadableAddress, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { validatePublicBusinessEmail } from "@/lib/leads/business-email";
 import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizePhones, normalizeText } from "@/lib/leads/normalization";
@@ -20,6 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
+import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 
 type Stats = {
   found: number;
@@ -44,6 +46,11 @@ type Stats = {
   blockedBrussels: number;
   blockedGhent: number;
   invalidPhone: number;
+  emailsFound: number;
+  emailsMissing: number;
+  emailsInvalid: number;
+  emailRetries: number;
+  emailsExternallyVerified: number;
   languageRejected: number;
   multipleLocationsRejected: number;
   chainRejected: number;
@@ -92,6 +99,11 @@ function decisionEvidence(candidate: Candidate, extra?: Record<string, unknown>)
     postalCode: candidate.postalCode,
     streetAddress: candidate.streetAddress,
     normalizedPhones: normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country),
+    email: candidate.email,
+    emailSource: candidate.emailSource,
+    emailSourceUrl: candidate.emailSourceUrl,
+    emailMxVerified: candidate.emailMxVerified,
+    emailVerifiedAt: candidate.emailVerifiedAt,
     businessStatus: candidate.businessStatus,
     language: candidate.language,
     languageConfidence: candidate.languageConfidence,
@@ -129,6 +141,11 @@ function statsFromRun(run: GenerationRun): Stats {
     blockedBrussels: run.blockedBrussels,
     blockedGhent: run.blockedGhent,
     invalidPhone: run.invalidPhone,
+    emailsFound: run.emailsFound,
+    emailsMissing: run.emailsMissing,
+    emailsInvalid: run.emailsInvalid,
+    emailRetries: run.emailRetries,
+    emailsExternallyVerified: run.emailsExternallyVerified,
     languageRejected: run.languageRejected,
     multipleLocationsRejected: run.multipleLocationsRejected,
     chainRejected: run.chainRejected,
@@ -165,6 +182,11 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     blockedBrussels: stats.blockedBrussels,
     blockedGhent: stats.blockedGhent,
     invalidPhone: stats.invalidPhone,
+    emailsFound: stats.emailsFound,
+    emailsMissing: stats.emailsMissing,
+    emailsInvalid: stats.emailsInvalid,
+    emailRetries: stats.emailRetries,
+    emailsExternallyVerified: stats.emailsExternallyVerified,
     languageRejected: stats.languageRejected,
     multipleLocationsRejected: stats.multipleLocationsRejected,
     chainRejected: stats.chainRejected,
@@ -278,6 +300,7 @@ async function recordBlockedCandidates(runId: string, candidates: Candidate[]) {
       sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl, rawName: candidate.companyName,
       rawAddress: candidate.formattedAddress ?? candidate.streetAddress,
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email, rawEmailSource: candidate.emailSource,
       rawWebsite: candidate.website, rawBusinessStatus: candidate.businessStatus,
       decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
       processedAt: new Date(), decisionEvidence: decisionEvidence(candidate, { blockedReason: detected.reason }), payload: JSON.parse(JSON.stringify(candidate)),
@@ -300,6 +323,8 @@ async function sourceRecord(candidate: Candidate) {
       rawName: candidate.companyName,
       rawAddress: candidate.streetAddress,
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email,
+      rawEmailSource: candidate.emailSource,
       rawWebsite: candidate.website,
       rawBusinessStatus: candidate.businessStatus,
       payload: JSON.parse(JSON.stringify(candidate)),
@@ -310,6 +335,8 @@ async function sourceRecord(candidate: Candidate) {
       rawName: candidate.companyName,
       rawAddress: candidate.streetAddress,
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email,
+      rawEmailSource: candidate.emailSource,
       rawWebsite: candidate.website,
       rawBusinessStatus: candidate.businessStatus,
       payload: JSON.parse(JSON.stringify(candidate)),
@@ -321,6 +348,20 @@ async function markDecision(candidate: Candidate, decision: string, reasonCode: 
   await prisma.sourceRecord.update({
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
     data: { decision, reasonCode, decisionEvidence: decisionEvidence(candidate, extraEvidence), processedAt: new Date(), leadId },
+  });
+  await prisma.searchCombination.updateMany({
+    where: {
+      country: candidate.country.toUpperCase(),
+      city: candidate.city,
+      category: candidate.category,
+      source: candidate.source ?? "OPENSTREETMAP",
+    },
+    data: {
+      candidatesChecked: { increment: 1 },
+      ...(decision === "retry" ? { retryCandidates: { increment: 1 } } : {}),
+      ...(["rejected", "skipped", "duplicate"].includes(decision) ? { rejectedCandidates: { increment: 1 } } : {}),
+      ...(decision === "stored" ? { lastSuccessAt: new Date() } : {}),
+    },
   });
   if (reasonCode.startsWith("SKIPPED_")) {
     console.info(JSON.stringify({ step: "candidate_skipped", source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId, companyName: candidate.companyName, reasonCode }));
@@ -347,10 +388,11 @@ async function knownCandidateReasons(candidates: Candidate[]) {
         { externalPlaceId: { in: entries.map(({ candidate }) => candidate.externalPlaceId) } },
         { googlePlaceId: { in: entries.flatMap(({ keys }) => keys.googlePlaceId ? [keys.googlePlaceId] : []) } },
         { normalizedPhoneNumber: { in: entries.flatMap(({ keys }) => keys.phone ? [keys.phone] : []) } },
+        { email: { in: entries.flatMap(({ keys }) => keys.email ? [keys.email] : []), mode: "insensitive" } },
         { normalizedDomain: { in: entries.flatMap(({ keys }) => keys.domain ? [keys.domain] : []) } },
         ...entries.map(({ candidate }) => ({ normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) })),
       ] },
-      select: { id: true, externalPlaceId: true, googlePlaceId: true, normalizedPhoneNumber: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
+      select: { id: true, externalPlaceId: true, googlePlaceId: true, normalizedPhoneNumber: true, email: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
     }),
     prisma.suppressedLead.findMany({ where: { fingerprint: { in: fingerprints } }, select: { fingerprint: true } }),
     prisma.leadExclusion.findMany({ where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, select: { identityKey: true } }),
@@ -361,6 +403,7 @@ async function knownCandidateReasons(candidates: Candidate[]) {
     const priorSource = sourceRecords.find(({ source, sourceRecordId }) => source === (candidate.source ?? "OPENSTREETMAP") && sourceRecordId === candidate.externalPlaceId);
     const sourceLead = leads.find((lead) => lead.externalPlaceId === candidate.externalPlaceId);
     const googlePlaceLead = keys.googlePlaceId ? leads.find((lead) => lead.googlePlaceId === keys.googlePlaceId) : undefined;
+    const emailLead = keys.email ? leads.find((lead) => lead.email?.trim().toLowerCase() === keys.email) : undefined;
     const domainLead = keys.domain ? leads.find((lead) => lead.normalizedDomain === keys.domain) : undefined;
     const phoneLead = keys.phone ? leads.find((lead) => lead.normalizedPhoneNumber === keys.phone) : undefined;
     const addressLead = leads.find((lead) => lead.normalizedCompanyName === normalizeText(candidate.companyName) && lead.normalizedAddress === normalizeText(candidate.streetAddress));
@@ -371,7 +414,8 @@ async function knownCandidateReasons(candidates: Candidate[]) {
         leadId: sourceLead?.id ?? googlePlaceLead?.id ?? priorSource?.leadId ?? undefined,
         matchedFields: [googlePlaceLead ? "google_place_id" : "source_id"],
       };
-    } else if (domainLead) match = { reason: "duplicate_domain", disposition: "duplicate", leadId: domainLead.id, matchedFields: ["domain"] };
+    } else if (emailLead) match = { reason: "duplicate_email", disposition: "duplicate", leadId: emailLead.id, matchedFields: ["email"] };
+    else if (domainLead) match = { reason: "duplicate_domain", disposition: "duplicate", leadId: domainLead.id, matchedFields: ["domain"] };
     else if (phoneLead) match = { reason: "duplicate_phone", disposition: "duplicate", leadId: phoneLead.id, matchedFields: ["phone"] };
     else if (addressLead) match = { reason: "duplicate_name_address", disposition: "duplicate", leadId: addressLead.id, matchedFields: ["name", "address"] };
     else if (["skipped", "rejected"].includes(priorSource?.decision ?? "") && [
@@ -541,6 +585,12 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
 export async function saveValidatedLead(candidate: Candidate, verification: WebsiteVerificationResult) {
   // Existing leads must remain untouched.
   // Validation applies only to newly generated candidates.
+  if (!candidate.email?.trim() || !candidate.emailMxVerified || !candidate.emailSourceUrl?.trim()) return {
+    stored: false,
+    reviewOnly: true,
+    reason: "BUSINESS_EMAIL_NOT_VERIFIED",
+    leadId: undefined,
+  };
   if (candidate.singleLocationStatus !== "CONFIRMED") return {
     stored: false,
     reviewOnly: candidate.singleLocationStatus !== "MULTIPLE",
@@ -568,6 +618,10 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
       internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber || null,
       email: basic.lead.email,
+      emailSource: candidate.emailSource,
+      emailSourceUrl: candidate.emailSourceUrl,
+      emailMxVerified: true,
+      emailVerifiedAt: candidate.emailVerifiedAt ? new Date(candidate.emailVerifiedAt) : new Date(),
       category: basic.lead.category,
       subCategory: basic.lead.subCategory,
       country: basic.lead.country,
@@ -615,9 +669,22 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       isActive: true,
       isFiltered: false,
       filterReason: null,
-      evidence: { create: verification.evidence },
-      activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status } } },
-      history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status } } },
+      evidence: { create: [
+        ...verification.evidence,
+        {
+          checkType: "BUSINESS_EMAIL",
+          result: "PUBLIC_MX_VERIFIED",
+          confidence: 95,
+          evidenceUrl: candidate.emailSourceUrl,
+          shortExplanation: `Openbaar zakelijk e-mailadres via ${candidate.emailSource || candidate.source || "openbare bron"}; MX-record bevestigd.`,
+        },
+      ] },
+      activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: {
+        source: candidate.source, websiteStatus: verification.status, emailSource: candidate.emailSource, emailMxVerified: true,
+      } } },
+      history: { create: { event: "LEAD_GENERATED", details: {
+        source: candidate.source, websiteStatus: verification.status, emailSource: candidate.emailSource, emailMxVerified: true,
+      } } },
     } });
     await tx.sourceRecord.upsert({
       where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
@@ -629,6 +696,8 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
         rawName: candidate.companyName,
         rawAddress: candidate.streetAddress,
         rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+        rawEmail: candidate.email,
+        rawEmailSource: candidate.emailSource,
         rawWebsite: candidate.website,
         rawBusinessStatus: candidate.businessStatus,
         decision: "stored",
@@ -637,7 +706,10 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
         leadId: lead.id,
         payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
       },
-      update: { leadId: lead.id, decision: "stored", reasonCode: "no_website_confirmed", processedAt: new Date() },
+      update: {
+        leadId: lead.id, decision: "stored", reasonCode: "no_website_confirmed", processedAt: new Date(),
+        rawEmail: candidate.email, rawEmailSource: candidate.emailSource,
+      },
     });
     await tx.validationCandidate.updateMany({
       where: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId },
@@ -688,6 +760,7 @@ function strictReasonMessage(reason: StrictLeadReason) {
     BLOCKED_BRUSSELS: "Bedrijf ligt in Brussel of het Brussels Hoofdstedelijk Gewest",
     BLOCKED_GHENT: "Bedrijf ligt in Gent of een Gentse deelgemeente",
     PHONE_REQUIRED: "Geen geldig openbaar telefoonnummer",
+    EMAIL_REQUIRED: "Geen geldig openbaar zakelijk e-mailadres",
     NO_PUBLIC_BUSINESS_PROFILE: "Geen aantoonbare openbare bedrijfsvermelding",
     REGION_NOT_ALLOWED: "Buiten Nederland of Nederlandstalig België",
     LANGUAGE_NOT_DUTCH: "Niet aantoonbaar Nederlandstalig",
@@ -701,50 +774,62 @@ function strictReasonMessage(reason: StrictLeadReason) {
 }
 
 async function nextSearchArea() {
+  const now = new Date();
+  const activeCategories = await prisma.category.findMany({
+    where: { isActive: true },
+    select: { name: true, priority: true },
+    orderBy: [{ priority: "asc" }, { name: "asc" }],
+  });
+  if (!activeCategories.length) return null;
   const candidates = await prisma.coverageArea.findMany({
     where: {
       status: { not: "PAUSED" },
+      nextScanAt: { lte: now },
+      category: { in: activeCategories.map(({ name }) => name) },
       OR: [
         { country: "NL" },
         { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen"] } },
       ],
     },
     orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
-    take: 48,
+    take: 240,
   });
   const blockedAreaIds = candidates.filter((area) => detectBlockedLocation(area as typeof area & Record<string, unknown>).blocked).map(({ id }) => id);
   if (blockedAreaIds.length) await prisma.coverageArea.updateMany({
     where: { id: { in: blockedAreaIds } },
     data: { status: "PAUSED", errorMessage: "Uitgesloten door harde locatieblokkade: Brussel/Gent" },
   });
-  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id)).slice(0, 24);
+  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id));
   if (!areas.length) return null;
-  const unseen = areas.find((area) => !area.lastScannedAt);
-  let area = unseen ?? areas[0];
-  if (!unseen) {
-    const combinations = await prisma.searchCombination.findMany({
-      where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
-      select: { country: true, city: true, category: true, validLeads: true, useCount: true },
-    });
-    const yields = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item.validLeads / Math.max(1, item.useCount)]));
-    // Choose a productive combination only inside the 24 least-recently-used
-    // candidates. This exploits proven segments without sacrificing rotation.
-    area = areas.slice().sort((left, right) =>
-      (yields.get(`${right.country}:${right.city}:${right.category}`) ?? 0)
-      - (yields.get(`${left.country}:${left.city}:${left.category}`) ?? 0),
-    )[0];
-  }
+  const combinations = await prisma.searchCombination.findMany({
+    where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
+    select: {
+      country: true, city: true, category: true, useCount: true, candidatesFound: true,
+      validLeads: true, errorCount: true, lastUsedAt: true, nextEligibleAt: true,
+    },
+  });
+  const area = selectAdaptiveSearchArea({
+    areas,
+    categories: activeCategories,
+    combinations,
+    sequence: combinations.reduce((sum, item) => sum + item.useCount, 0),
+    now,
+  });
+  if (!area) return null;
   const combination = await prisma.searchCombination.upsert({
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
-    create: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP", region: area.region, searchTerm: area.category, provider: "OPENSTREETMAP" },
+    create: {
+      country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP",
+      region: area.region, searchTerm: area.category, provider: "OPENSTREETMAP", nextEligibleAt: now,
+    },
     update: { region: area.region, searchTerm: area.category },
   });
-  return { area, combination, tileCursor: combination.tileCursor % OSM_SEARCH_CURSOR_COUNT };
+  return { area, combination, tileCursor: combination.tileCursor % OSM_SEARCH_CURSOR_COUNT, remainingSegments: areas.length };
 }
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
   const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, maxCandidates: true, candidatesReserved: true, startedAt: true, createdAt: true } });
-  const summary = `Resultaten: ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; goedkoop afgewezen ${stats.cheapRejected}; extern gevalideerd ${stats.externallyValidated}; cachehits ${stats.cacheHits}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens ${stats.chainRejected}; franchises ${stats.franchiseRejected}; zelfde naam op meerdere adressen ${stats.sameNameMultipleAddresses}; zelfde telefoon op meerdere adressen ${stats.samePhoneMultipleAddresses}; vestigingsaantal onzeker ${stats.locationCountUncertain}; dubbele vermeldingen samengevoegd ${stats.duplicateListingsMerged}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
+  const summary = `Resultaten: ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; goedkoop afgewezen ${stats.cheapRejected}; extern gevalideerd ${stats.externallyValidated}; cachehits ${stats.cacheHits}; Brussel ${stats.blockedBrussels}; Gent ${stats.blockedGhent}; zonder geldig telefoonnummer ${stats.invalidPhone}; e-mail gevonden ${stats.emailsFound}; zonder e-mail ${stats.emailsMissing}; ongeldige e-mail ${stats.emailsInvalid}; e-mailretry ${stats.emailRetries}; MX extern bevestigd ${stats.emailsExternallyVerified}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; niet-Nederlandstalig ${stats.languageRejected}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens ${stats.chainRejected}; franchises ${stats.franchiseRejected}; zelfde naam op meerdere adressen ${stats.sameNameMultipleAddresses}; zelfde telefoon op meerdere adressen ${stats.samePhoneMultipleAddresses}; vestigingsaantal onzeker ${stats.locationCountUncertain}; dubbele vermeldingen samengevoegd ${stats.duplicateListingsMerged}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
   const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
   const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
   const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
@@ -891,7 +976,7 @@ export async function processGenerationBatch(runId: string) {
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
       const selected = await nextSearchArea();
       if (!selected) return terminalRun(runId, stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar; er zijn geen nieuwe geldige leads opgeslagen.");
-      const { area, combination, tileCursor } = selected;
+      const { area, combination, tileCursor, remainingSegments } = selected;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
       const tileLabel = overpassSearchPlan(tileCursor).id;
@@ -902,6 +987,7 @@ export async function processGenerationBatch(runId: string) {
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: adapter.id, currentRegion: region,
         currentCategory: area.category, currentTile: tileLabel, continuationCursor: segment,
+        remainingSegments,
         progress: run.progress,
         message: `Zoektegel ${tileLabel} voor ${area.category} in ${region} wordt met een eigen requesttimeout opgehaald.`, heartbeatAt: new Date(),
       } });
@@ -951,13 +1037,16 @@ export async function processGenerationBatch(runId: string) {
             })),
             skipDuplicates: true,
           });
-          await tx.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: result.candidates.length } } });
+          const nextEligibleAt = new Date(Date.now() + lowYieldCooldownMs(combination.useCount + 1, combination.validLeads));
+          await tx.coverageArea.update({ where: { id: area.id }, data: {
+            lastScannedAt: new Date(), nextScanAt: nextEligibleAt, resultsFound: { increment: result.candidates.length }, errorMessage: null,
+          } });
           await tx.searchCombination.update({ where: { id: combination.id }, data: {
             useCount: { increment: 1 }, candidatesFound: { increment: result.candidates.length }, lastUsedAt: new Date(),
             region: area.region, searchTerm: area.category, provider: result.sourceUrl ?? adapter.id,
             totalDurationMs: { increment: BigInt(sourceDurationMs) },
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
-            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null,
+            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null, nextEligibleAt,
           } });
           await tx.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, candidatesReserved: { increment: inserted.count }, lastError: null } });
           return inserted;
@@ -978,13 +1067,16 @@ export async function processGenerationBatch(runId: string) {
         batchMessage = `Deze bronbatch mislukte zonder eerdere resultaten te verliezen. De volgende zoekcombinatie wordt geprobeerd.`;
         await Promise.all([
           logSource(runId, adapter.id, "ERROR", JSON.stringify({ jobId: runId, batchNumber: run.batchNumber, step: "source_failed", region, category: area.category, tile: tileLabel, errorCode: "SOURCE_ERROR", message }), area.city, area.category),
-          prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date() } }),
+          prisma.coverageArea.update({ where: { id: area.id }, data: {
+            nextScanAt: new Date(Date.now() + 5 * 60_000), errorMessage: `Tijdelijke bronfout: ${message}`,
+          } }),
           prisma.searchCombination.update({ where: { id: combination.id }, data: {
-            useCount: { increment: 1 }, errorCount: { increment: 1 }, lastUsedAt: new Date(),
+            errorCount: { increment: 1 }, lastUsedAt: new Date(),
             region: area.region, searchTerm: area.category, provider: adapter.id,
             totalDurationMs: { increment: BigInt(sourceDurationMs) },
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
             tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message,
+            nextEligibleAt: new Date(Date.now() + 5 * 60_000),
           } }),
           prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
         ]);
@@ -1054,8 +1146,8 @@ export async function processGenerationBatch(runId: string) {
         await sourceRecord(candidate);
       }
       // Reject deterministic failures and known identities before spending a
-      // remote request on the nationwide single-location lookup.
-      const preliminary = validateStrictLeadBeforeLocation(candidate);
+      // remote request on contact enrichment or the nationwide location lookup.
+      const preliminary = validateStrictLeadBeforeContactEnrichment(candidate);
       if (!preliminary.valid) {
         const reason = preliminary.reasons[0];
         if (preliminary.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
@@ -1078,6 +1170,75 @@ export async function processGenerationBatch(runId: string) {
           reasons: preliminary.reasons, message: strictReasonMessage(reason), evidence,
         }), candidate.city, candidate.category);
         await markDecision(candidate, "rejected", reason, undefined, evidence);
+        await markValidationRejected(candidate, reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      const publicPhones = normalizePhones(
+        [candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])],
+        candidate.country,
+      );
+      if (!publicPhones.length) {
+        stats.invalidPhone += 1;
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", "PHONE_ENRICHMENT_REQUIRED", undefined, {
+          contactRequirement: "Een geldig openbaar telefoonnummer is verplicht voordat de kandidaat een lead kan worden.",
+        });
+        await queueValidationRetry({ runId, candidate, reason: "PHONE_ENRICHMENT_REQUIRED" });
+        await finishQueueItem(
+          row.id,
+          candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+          "PHONE_ENRICHMENT_REQUIRED",
+        );
+        continue;
+      }
+      const emailValidation = await validatePublicBusinessEmail(candidate);
+      if (emailValidation.status === "MISSING" || emailValidation.status === "RETRY") {
+        if (emailValidation.status === "MISSING") stats.emailsMissing += 1;
+        stats.emailRetries += 1;
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", emailValidation.reason, undefined, {
+          email: "email" in emailValidation ? emailValidation.email : undefined,
+          emailRequirement: "Een openbaar zakelijk e-mailadres met bevestigd MX-record is verplicht.",
+        });
+        await queueValidationRetry({ runId, candidate, reason: emailValidation.reason });
+        await finishQueueItem(
+          row.id,
+          candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+          emailValidation.reason,
+        );
+        continue;
+      }
+      if (emailValidation.status === "INVALID") {
+        stats.emailsInvalid += 1;
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", emailValidation.reason, undefined, { email: emailValidation.email });
+        await markValidationRejected(candidate, emailValidation.reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      candidate = {
+        ...candidate,
+        email: emailValidation.email,
+        emailAddresses: [emailValidation.email],
+        emailSource: emailValidation.source,
+        emailSourceUrl: emailValidation.sourceUrl,
+        emailPubliclyListed: true,
+        emailMxVerified: true,
+        emailVerifiedAt: emailValidation.checkedAt,
+      };
+      stats.emailsFound += 1;
+      stats.emailsExternallyVerified += 1;
+      await sourceRecord(candidate);
+      const contactComplete = validateStrictLeadBeforeLocation(candidate);
+      if (!contactComplete.valid) {
+        const reason = contactComplete.reasons[0];
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", reason, undefined, { reasons: contactComplete.reasons });
         await markValidationRejected(candidate, reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
@@ -1236,6 +1397,18 @@ export async function processGenerationBatch(runId: string) {
           if (saved.stored) {
             stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1;
             await markDecision(candidate, "stored", "no_website_confirmed", saved.leadId, { websiteStatus: verification.status, websiteConfidence: verification.confidence, websiteEvidence: verification.evidence });
+          } else if (saved.reviewOnly) {
+            stats.emailRetries += saved.reason === "BUSINESS_EMAIL_NOT_VERIFIED" ? 1 : 0;
+            if (row.attempts === 0) stats.manualReview += 1;
+            retriedThisBatch += 1;
+            await markDecision(candidate, "retry", saved.reason);
+            await queueValidationRetry({ runId, candidate, verification, reason: saved.reason });
+            await finishQueueItem(
+              row.id,
+              candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+              saved.reason,
+            );
+            continue;
           } else {
             stats.rejected += 1;
             await markDecision(candidate, "skipped", saved.reason.startsWith("SKIPPED_") ? saved.reason : rejectionCode(saved.reason));

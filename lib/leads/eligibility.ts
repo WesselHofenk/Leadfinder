@@ -19,7 +19,9 @@ export type Candidate = {
   links?: unknown; contact?: unknown; contactInfo?: unknown; details?: unknown; attributes?: unknown; externalLinks?: unknown; socialLinks?: unknown;
   rawData?: unknown; sourceData?: unknown; websiteAbsenceConfirmed?: boolean;
   sourceWebsiteFieldsChecked?: boolean;
-  email?: string; closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
+  email?: string; emailSource?: string; emailSourceUrl?: string; emailPubliclyListed?: boolean;
+  emailMxVerified?: boolean; emailVerifiedAt?: string;
+  closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
   formattedAddress?: string; language?: string; languageConfidence?: number; regionLanguage?: string;
   locality?: string; town?: string; village?: string; suburb?: string; district?: string; county?: string; region?: string;
   googlePlaceId?: string; googleBusinessProfileUrl?: string; googleBusinessProfileVerified?: boolean; googleBusinessStatusVerified?: boolean;
@@ -70,12 +72,13 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
   const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0] ?? null;
   if (!normalizedPhoneNumber) return { ok: false, reason: "invalid_phone" };
+  const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
+  if (!normalizedEmail) return { ok: false, reason: "business_email_required" };
   const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
   let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
   if (status === "UNKNOWN") confidenceScore -= 10;
   if (!normalizedPhoneNumber) confidenceScore -= 4;
   const normalizedPostalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, candidate.country) ?? undefined;
-  const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
   if (normalizedPostalCode && (candidate.houseNumber || /\d/.test(candidate.streetAddress))) confidenceScore += 5;
   if (normalizedEmail) confidenceScore += 3;
   if (candidate.activitySignals?.length) confidenceScore += Math.min(4, candidate.activitySignals.length);
