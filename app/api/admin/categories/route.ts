@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/session";
+import { ensureCategoryCoverage } from "@/lib/jobs/category-coverage";
 import { prisma } from "@/lib/prisma";
 import { hasValidOrigin } from "@/lib/security/request";
 
@@ -31,11 +32,14 @@ export async function POST(request: NextRequest) {
   const input = createSchema.safeParse(await request.json().catch(() => null));
   if (!input.success) return NextResponse.json({ error: "Ongeldige categorie" }, { status: 400 });
   if (input.data.kind === "category") {
-    await prisma.category.create({ data: {
-      name: input.data.name,
-      slug: slug(input.data.name),
-      priority: input.data.priority ?? 100,
-    } });
+    await prisma.$transaction(async (tx) => {
+      const category = await tx.category.create({ data: {
+        name: input.data.name,
+        slug: slug(input.data.name),
+        priority: input.data.priority ?? 100,
+      } });
+      await ensureCategoryCoverage(tx, category.name);
+    });
   } else {
     await prisma.excludedCategory.create({ data: {
       name: input.data.name,
@@ -53,24 +57,27 @@ export async function PATCH(request: NextRequest) {
   if (!input.success) return NextResponse.json({ error: "Ongeldige categorie" }, { status: 400 });
 
   if (input.data.kind === "category") {
-    const category = await prisma.category.update({
-      where: { id: input.data.id },
-      data: {
-        isActive: input.data.isActive,
-        priority: input.data.priority,
-      },
+    await prisma.$transaction(async (tx) => {
+      const category = await tx.category.update({
+        where: { id: input.data.id },
+        data: {
+          isActive: input.data.isActive,
+          priority: input.data.priority,
+        },
+      });
+      await ensureCategoryCoverage(tx, category.name);
+      if (input.data.isActive === false) {
+        await tx.coverageArea.updateMany({
+          where: { category: category.name, status: { not: "PAUSED" } },
+          data: { status: "PAUSED", errorMessage: "Branche uitgeschakeld in categoriebeheer" },
+        });
+      } else if (input.data.isActive === true) {
+        await tx.coverageArea.updateMany({
+          where: { category: category.name, status: "PAUSED", errorMessage: "Branche uitgeschakeld in categoriebeheer" },
+          data: { status: "PENDING", errorMessage: null, nextScanAt: new Date() },
+        });
+      }
     });
-    if (input.data.isActive === false) {
-      await prisma.coverageArea.updateMany({
-        where: { category: category.name, status: { not: "PAUSED" } },
-        data: { status: "PAUSED", errorMessage: "Branche uitgeschakeld in categoriebeheer" },
-      });
-    } else if (input.data.isActive === true) {
-      await prisma.coverageArea.updateMany({
-        where: { category: category.name, status: "PAUSED", errorMessage: "Branche uitgeschakeld in categoriebeheer" },
-        data: { status: "PENDING", errorMessage: null, nextScanAt: new Date() },
-      });
-    }
   } else {
     await prisma.excludedCategory.update({
       where: { id: input.data.id },
