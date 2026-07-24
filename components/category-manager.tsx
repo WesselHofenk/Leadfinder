@@ -88,6 +88,12 @@ function ItemList({
             const priority = Number(event.currentTarget.value);
             if (Number.isInteger(priority) && priority !== item.priority) void patch(kind, item, { priority });
           }}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            event.preventDefault();
+            const priority = Number(event.currentTarget.value);
+            if (Number.isInteger(priority) && priority !== item.priority) void patch(kind, item, { priority });
+          }}
         />}
       </div>)}
     </div>
