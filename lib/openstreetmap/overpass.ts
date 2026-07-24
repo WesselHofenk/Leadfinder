@@ -64,7 +64,10 @@ const contactStrategies: readonly OverpassContactStrategy[] = [
 ];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
-export function initialOverpassSearchCursor(_country: string, _city: string, _category: string) {
+export function initialOverpassSearchCursor(country: string, city: string, category: string) {
+  void country;
+  void city;
+  void category;
   // Most named local businesses in OSM are mapped as nodes. New combinations
   // start with the broad contact-complete strategy so differences between
   // `phone` and `contact:phone` (or `email` and `contact:email`) cannot hide an

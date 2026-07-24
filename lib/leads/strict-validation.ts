@@ -126,3 +126,7 @@ export function validateStrictLeadBeforeLocation(candidate: Candidate) {
 export function validateStrictLeadBeforeContactEnrichment(candidate: Candidate) {
   return validateStrictLead(candidate, undefined, { requireSingleLocation: false, requirePhone: false, requireEmail: false });
 }
+
+export function isStatusVerificationRetry(reasons: StrictLeadReason[]) {
+  return reasons.length > 0 && reasons.every((reason) => reason === "BUSINESS_NOT_CONFIRMED_ACTIVE");
+}

@@ -5,7 +5,7 @@ import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentity
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
-import { hasReadableAddress, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { hasReadableAddress, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
 import { validatePublicBusinessEmail } from "@/lib/leads/business-email";
 import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
@@ -1258,6 +1258,22 @@ export async function processGenerationBatch(runId: string) {
       // remote request on contact enrichment or the nationwide location lookup.
       const preliminary = validateStrictLeadBeforeContactEnrichment(candidate);
       if (!preliminary.valid) {
+        if (isStatusVerificationRetry(preliminary.reasons)) {
+          if (row.attempts === 0) stats.manualReview += 1;
+          retriedThisBatch += 1;
+          await markDecision(candidate, "retry", "STATUS_VERIFICATION_REQUIRED", undefined, {
+            activeStatus: preliminary.active.status,
+            activeConfidence: preliminary.active.confidence,
+            retryAttempt: row.attempts + 1,
+          });
+          await queueValidationRetry({ runId, candidate, reason: "STATUS_VERIFICATION_REQUIRED" });
+          await finishQueueItem(
+            row.id,
+            candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+            "STATUS_VERIFICATION_REQUIRED",
+          );
+          continue;
+        }
         const reason = preliminary.reasons[0];
         if (preliminary.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
         if (preliminary.reasons.includes("BLOCKED_GHENT")) stats.blockedGhent += 1;

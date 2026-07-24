@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candidate } from "@/lib/leads/eligibility";
-import { validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
+import { isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 const noWebsite: WebsiteVerificationResult = {
@@ -76,7 +76,10 @@ describe("centrale strikte leadvalidatie", () => {
   });
 
   it("wijst een onbekende bedrijfsstatus af", () => {
-    expect(validateStrictLead({ ...base, businessStatus: "UNKNOWN", activitySignals: [] }, noWebsite).reasons).toContain("BUSINESS_NOT_CONFIRMED_ACTIVE");
+    const reasons = validateStrictLead({ ...base, businessStatus: "UNKNOWN", activitySignals: [] }, noWebsite).reasons;
+    expect(reasons).toContain("BUSINESS_NOT_CONFIRMED_ACTIVE");
+    expect(isStatusVerificationRetry(reasons)).toBe(true);
+    expect(isStatusVerificationRetry(["BUSINESS_NOT_CONFIRMED_ACTIVE", "ADDRESS_NOT_USABLE"])).toBe(false);
   });
 
   it("wijst een niet bevestigde enkele vestiging af", () => {
