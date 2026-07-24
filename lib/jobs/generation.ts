@@ -856,19 +856,31 @@ async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
     orderBy: [{ priority: "asc" }, { name: "asc" }],
   });
   if (!activeCategories.length) return null;
-  const candidates = await prisma.coverageArea.findMany({
-    where: {
-      status: { not: "PAUSED" },
-      nextScanAt: { lte: now },
-      category: { in: activeCategories.map(({ name }) => name) },
-      OR: [
-        { country: "NL" },
-        { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen"] } },
-      ],
-    },
-    orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
-    take: 240,
-  });
+  const coverageWhere = {
+    status: { not: "PAUSED" as const },
+    nextScanAt: { lte: now },
+    category: { in: activeCategories.map(({ name }) => name) },
+    OR: [
+      { country: "NL" },
+      { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen"] } },
+    ],
+  };
+  // Keep exploration, but always include a pool of high-priority local trades.
+  // A single oldest-first slice became dominated by never-scanned low-yield
+  // categories and could exclude productive city/category pairs for many runs.
+  const [oldestCoverage, priorityCoverage] = await Promise.all([
+    prisma.coverageArea.findMany({
+      where: coverageWhere,
+      orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
+      take: 180,
+    }),
+    prisma.coverageArea.findMany({
+      where: coverageWhere,
+      orderBy: [{ priority: "asc" }, { lastScannedAt: { sort: "asc", nulls: "first" } }, { city: "asc" }, { category: "asc" }],
+      take: 180,
+    }),
+  ]);
+  const candidates = [...new Map([...oldestCoverage, ...priorityCoverage].map((area) => [area.id, area])).values()];
   const blockedAreaIds = candidates.filter((area) => detectBlockedLocation(area as typeof area & Record<string, unknown>).blocked).map(({ id }) => id);
   if (blockedAreaIds.length) await prisma.coverageArea.updateMany({
     where: { id: { in: blockedAreaIds } },

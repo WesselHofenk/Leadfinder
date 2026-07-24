@@ -59,9 +59,12 @@ const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-const contactStrategies: readonly OverpassContactStrategy[] = [
-  "phone", "contact:phone", "email", "contact:email", "mobile", "contact:mobile", "telephone", "contact:telephone", "any",
-];
+// `any` emits all indexed phone/e-mail tag pairs in one query. The former
+// exact-tag strategies were strict subsets of this query, so cycling through
+// them spent most of a run rediscovering the same (or no) candidates before
+// moving to another map tile. Keep only the contact-complete plan and use the
+// cursor budget for element types and geographic tiles instead.
+const contactStrategies: readonly OverpassContactStrategy[] = ["any"];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
 export function initialOverpassSearchCursor(country: string, city: string, category: string) {
@@ -71,9 +74,8 @@ export function initialOverpassSearchCursor(country: string, city: string, categ
   // Most named local businesses in OSM are mapped as nodes. New combinations
   // start with the broad contact-complete strategy so differences between
   // `phone` and `contact:phone` (or `email` and `contact:email`) cannot hide an
-  // otherwise qualified candidate. Persisted cursors continue through the
-  // exact tag, way and relation strategies afterwards.
-  return contactStrategies.indexOf("any") * elementStrategies.length;
+  // otherwise qualified candidate.
+  return 0;
 }
 
 export function overpassSearchPlan(cursor = 0) {
