@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
 import { isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
 import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
-import { completedRunMessage, preservedCandidateCount } from "@/lib/jobs/generation-summary";
+import { completedRunMessage, consistentTerminalReason, preservedCandidateCount } from "@/lib/jobs/generation-summary";
 
 type Run = {
   id: string;
@@ -66,7 +66,7 @@ type Run = {
 };
 
 export function resultMessage(run: Run) {
-  const conciseReason = run.stopReason?.split(" Resultaten:")[0]?.trim();
+  const conciseReason = consistentTerminalReason(run).split(" Resultaten:")[0]?.trim();
   const preserved = preservedCandidateCount(run);
   if (run.status === "COMPLETE") {
     return completedRunMessage(run);

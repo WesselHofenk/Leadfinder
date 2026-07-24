@@ -73,3 +73,16 @@ export function exhaustedSearchAreasReason(run: GenerationOutcomeCounts) {
   }
   return "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt; geen kandidaat voldeed aan alle vaste criteria.";
 }
+
+export function consistentTerminalReason(run: GenerationOutcomeCounts & { stopReason?: string | null }) {
+  const reason = run.stopReason?.trim() ?? "";
+  if (
+    (run.stored ?? 0) > 0
+    && /geen nieuwe (geldige|gekwalificeerde) leads (?:zijn )?(?:direct )?opgeslagen/i.test(reason)
+  ) {
+    const summaryAt = reason.indexOf("Resultaten:");
+    const summary = summaryAt >= 0 ? ` ${reason.slice(summaryAt)}` : "";
+    return `${exhaustedSearchAreasReason(run)}${summary}`;
+  }
+  return reason;
+}

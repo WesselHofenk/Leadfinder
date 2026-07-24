@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { completedRunMessage, exhaustedSearchAreasReason, preservedCandidateCount, rejectionBreakdown } from "@/lib/jobs/generation-summary";
+import { completedRunMessage, consistentTerminalReason, exhaustedSearchAreasReason, preservedCandidateCount, rejectionBreakdown } from "@/lib/jobs/generation-summary";
 
 describe("eindmelding leadgeneratie", () => {
   it("gebruikt de werkelijke backendtellingen en verklaart een nulresultaat", () => {
@@ -54,6 +54,15 @@ describe("eindmelding leadgeneratie", () => {
     );
     expect(exhaustedSearchAreasReason({ candidatesChecked: 6, stored: 0, rejected: 2, manualReview: 4 })).toBe(
       "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt; geen kandidaat voldeed aan alle vaste criteria.",
+    );
+  });
+
+  it("herstelt ook een eerder opgeslagen tegenstrijdige stopreden in de interface", () => {
+    expect(consistentTerminalReason({
+      stored: 1,
+      stopReason: "Er zijn geen openbare zoekgebieden beschikbaar; er zijn geen nieuwe geldige leads opgeslagen. Resultaten: opgeslagen 1/50.",
+    })).toBe(
+      "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt. 1 gekwalificeerde lead blijft veilig opgeslagen in Nieuw. Resultaten: opgeslagen 1/50.",
     );
   });
 });
