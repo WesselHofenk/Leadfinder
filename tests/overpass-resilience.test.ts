@@ -51,12 +51,13 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
     expect(query).not.toContain('["contact:phone"]');
-    expect(query).toContain('[~"^(email|contact:email)$"~"."]');
+    expect(query).toContain('["phone"]["email"]');
+    expect(query).toContain('["phone"]["contact:email"]');
     expect(query).toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
     expect(query).toContain("node(around:");
-    expect(query.match(/node\(around:/g)).toHaveLength(1);
+    expect(query.match(/node\(around:/g)).toHaveLength(2);
     expect(query).not.toContain("nwr(around:");
     expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
@@ -109,8 +110,9 @@ describe("gerichte Overpass-query", () => {
     expect(overpassSearchPlan(24)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
     expect(overpassSearchPlan(27)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
     const completeContactQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 });
-    expect(completeContactQuery).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
-    expect(completeContactQuery).toContain('[~"^(email|contact:email)$"~"."]');
+    expect(completeContactQuery).toContain('["phone"]["email"]');
+    expect(completeContactQuery).toContain('["contact:telephone"]["contact:email"]');
+    expect(completeContactQuery.match(/node\(around:/g)).toHaveLength(12);
   });
 
   it("spreidt nieuwe plaats/branche-combinaties stabiel over contact- en elementstrategieën", () => {

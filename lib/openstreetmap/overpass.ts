@@ -285,20 +285,22 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const contact = params.contact ?? "phone";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
-  const anyPhone = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
-  const anyEmail = '[~"^(email|contact:email)$"~"."]';
+  const phoneKeys = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"] as const;
+  const emailKeys = ["email", "contact:email"] as const;
   // A lead is only useful after both public contact channels are confirmed.
   // Requiring both at discovery time prevents phone-only candidates from
   // consuming the validation budget and then endlessly cycling through the
-  // e-mail enrichment queue. Exact strategies stay in place for stable cursor
-  // compatibility; the complementary contact channel is added as a constraint.
-  const contactConstraint = contact === "any"
-    ? `${anyPhone}${anyEmail}`
+  // e-mail enrichment queue. Explicit indexed tag combinations are used
+  // instead of regex-key selectors: public Overpass hosts resolve those much
+  // faster and are consequently far less likely to time out.
+  const contactConstraints = contact === "any"
+    ? phoneKeys.flatMap((phone) => emailKeys.map((email) => `["${phone}"]["${email}"]`))
     : contact === "email" || contact === "contact:email"
-      ? `["${contact}"]${anyPhone}`
-      : `["${contact}"]${anyEmail}`;
+      ? phoneKeys.map((phone) => `["${contact}"]["${phone}"]`)
+      : emailKeys.map((email) => `["${contact}"]["${email}"]`);
   const statements = filters
-    .map((filter) => `${around}${filter}[name]${contactConstraint}${noOfficialWebsite};`)
+    .flatMap((filter) => contactConstraints.map((contactConstraint) =>
+      `${around}${filter}[name]${contactConstraint}${noOfficialWebsite};`))
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;

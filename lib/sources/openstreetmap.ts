@@ -63,8 +63,8 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       radius: input.radius,
       category: input.category,
       tileCursor: input.tileCursor,
-      timeoutMs: Math.min(8_000, this.timeoutMs),
-      totalTimeoutMs: Math.min(12_000, this.totalTimeoutMs),
+      timeoutMs: Math.min(10_000, this.timeoutMs),
+      totalTimeoutMs: Math.min(16_000, this.totalTimeoutMs),
       maxResponseBytes: this.maxResponseBytes,
       signal: input.signal,
       retriesPerEndpoint: 2,
@@ -93,8 +93,8 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       // contact-complete candidates to be marked uncertain just before the
       // website/storage gate. Keep the request bounded, but allow the healthy
       // hedged provider enough time to return the indexed identity matches.
-      timeoutMs: Math.min(8_000, this.timeoutMs),
-      totalTimeoutMs: Math.min(12_000, this.totalTimeoutMs),
+      timeoutMs: Math.min(10_000, this.timeoutMs),
+      totalTimeoutMs: Math.min(16_000, this.totalTimeoutMs),
       maxResponseBytes: this.maxResponseBytes,
       retriesPerEndpoint: 1,
       hedgeDelayMs: 500,

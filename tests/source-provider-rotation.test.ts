@@ -29,7 +29,8 @@ describe("rotatie van gratis OSM-providers", () => {
     await adapter.searchBusinesses({ ...input, tileCursor: 0 });
     expect(searchOverpassHedged).toHaveBeenCalledWith(expect.objectContaining({
       endpoints: ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter"],
-      totalTimeoutMs: 12_000,
+      timeoutMs: 9_000,
+      totalTimeoutMs: 16_000,
       hedgeDelayMs: 1_250,
     }));
   });
@@ -54,8 +55,8 @@ describe("rotatie van gratis OSM-providers", () => {
       googleMapsUrl: "https://www.openstreetmap.org/node/42",
     });
     expect(searchOverpassHedged).toHaveBeenCalledWith(expect.objectContaining({
-      timeoutMs: 8_000,
-      totalTimeoutMs: 12_000,
+      timeoutMs: 9_000,
+      totalTimeoutMs: 16_000,
       queryTypeOverride: "identity-location-count",
     }));
   });
