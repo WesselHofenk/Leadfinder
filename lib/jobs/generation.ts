@@ -88,6 +88,28 @@ export function databaseErrorEvidence(error: unknown) {
   return { code: error instanceof DuplicateIdentityError ? "DUPLICATE_IDENTITY" : "DATABASE_ERROR", message: errorMessage(error) };
 }
 
+function candidateCheckResults(candidate: Candidate, extra?: Record<string, unknown>) {
+  const phones = normalizePhones(
+    [candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])],
+    candidate.country,
+  );
+  const officialSourceWebsite = extractCompanyWebsite(candidate);
+  return {
+    businessStatus: isPermanentlyClosed(candidate)
+      ? "closed"
+      : isTemporarilyClosed(candidate) ? "temporarily_closed" : candidate.businessStatus?.toLowerCase() || "unknown",
+    address: hasReadableAddress(candidate) ? "readable" : "missing_or_unreadable",
+    phone: phones.length ? "valid_and_normalized" : "missing_or_invalid",
+    publicBusinessEmail: !candidate.email
+      ? "missing"
+      : candidate.emailMxVerified ? "public_and_mx_verified" : "present_not_yet_mx_verified",
+    sourceWebsite: officialSourceWebsite ? "official_website_found" : "no_official_website_in_source",
+    language: candidate.language || "unknown",
+    locationCount: candidate.singleLocationStatus || "not_yet_checked",
+    duplicateMatch: Array.isArray(extra?.matchedFields) ? extra.matchedFields : [],
+  };
+}
+
 function decisionEvidence(candidate: Candidate, extra?: Record<string, unknown>): Prisma.InputJsonValue {
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   return JSON.parse(JSON.stringify({
@@ -114,6 +136,7 @@ function decisionEvidence(candidate: Candidate, extra?: Record<string, unknown>)
     singleLocationStatus: candidate.singleLocationStatus,
     singleLocationReason: candidate.singleLocationReason,
     locationEvidence: candidate.locationEvidence,
+    checkResults: candidateCheckResults(candidate, extra),
     ...extra,
   }));
 }
@@ -369,9 +392,10 @@ async function sourceRecord(candidate: Candidate) {
 }
 
 async function markDecision(candidate: Candidate, decision: string, reasonCode: string, leadId?: string, extraEvidence?: Record<string, unknown>) {
+  const evidence = decisionEvidence(candidate, extraEvidence);
   await prisma.sourceRecord.update({
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: { decision, reasonCode, decisionEvidence: decisionEvidence(candidate, extraEvidence), processedAt: new Date(), leadId },
+    data: { decision, reasonCode, decisionEvidence: evidence, processedAt: new Date(), leadId },
   });
   await prisma.searchCombination.updateMany({
     where: {
@@ -387,9 +411,17 @@ async function markDecision(candidate: Candidate, decision: string, reasonCode: 
       ...(decision === "stored" ? { lastSuccessAt: new Date() } : {}),
     },
   });
-  if (reasonCode.startsWith("SKIPPED_")) {
-    console.info(JSON.stringify({ step: "candidate_skipped", source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId, companyName: candidate.companyName, reasonCode }));
-  }
+  console.info(JSON.stringify({
+    step: "candidate_decision",
+    source: candidate.source ?? "OPENSTREETMAP",
+    sourceRecordId: candidate.externalPlaceId,
+    companyName: candidate.companyName,
+    decision,
+    reasonCode,
+    leadId,
+    databaseWriteConfirmed: decision === "stored" && Boolean(leadId),
+    checkResults: candidateCheckResults(candidate, extraEvidence),
+  }));
 }
 
 type KnownCandidateMatch = {
@@ -765,6 +797,25 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       select: { fingerprint: true, leadId: true },
     });
     if (conflictingIdentity?.leadId) throw new DuplicateIdentityError(conflictingIdentity.fingerprint, conflictingIdentity.leadId);
+    const storedLead = await tx.lead.findUnique({
+      where: { id: lead.id },
+      select: {
+        id: true,
+        pipelineStageId: true,
+        isActive: true,
+        phoneNumber: true,
+        email: true,
+      },
+    });
+    if (
+      !storedLead
+      || storedLead.pipelineStageId !== NEW_PIPELINE_STAGE_ID
+      || !storedLead.isActive
+      || !storedLead.phoneNumber
+      || !storedLead.email
+    ) {
+      throw new Error("LEAD_DATABASE_READBACK_FAILED");
+    }
     return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
   }, { maxWait: 5_000, timeout: 20_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 }

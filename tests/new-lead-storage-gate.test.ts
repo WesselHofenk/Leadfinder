@@ -3,8 +3,8 @@ import type { Candidate } from "@/lib/leads/eligibility";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 vi.mock("server-only", () => ({}));
-const { leadCreate, sourceUpdate, fingerprintCreateMany, fingerprintFindFirst, validationUpdate, combinationUpdate, prismaTransaction } = vi.hoisted(() => ({
-  leadCreate: vi.fn(), sourceUpdate: vi.fn(), fingerprintCreateMany: vi.fn(), fingerprintFindFirst: vi.fn(), validationUpdate: vi.fn(), combinationUpdate: vi.fn(), prismaTransaction: vi.fn(),
+const { leadCreate, leadFindUnique, sourceUpdate, fingerprintCreateMany, fingerprintFindFirst, validationUpdate, combinationUpdate, prismaTransaction } = vi.hoisted(() => ({
+  leadCreate: vi.fn(), leadFindUnique: vi.fn(), sourceUpdate: vi.fn(), fingerprintCreateMany: vi.fn(), fingerprintFindFirst: vi.fn(), validationUpdate: vi.fn(), combinationUpdate: vi.fn(), prismaTransaction: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
   lead: { create: leadCreate },
@@ -32,8 +32,15 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     leadCreate.mockResolvedValue({ id: "lead-new" });
+    leadFindUnique.mockResolvedValue({
+      id: "lead-new",
+      pipelineStageId: "pipeline-nieuw",
+      isActive: true,
+      phoneNumber: "+31201234567",
+      email: "info@nieuwbedrijf.nl",
+    });
     prismaTransaction.mockImplementation(async (callback: (tx: unknown) => unknown) => callback({
-      lead: { create: leadCreate }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { createMany: fingerprintCreateMany, findFirst: fingerprintFindFirst }, validationCandidate: { updateMany: validationUpdate }, searchCombination: { updateMany: combinationUpdate },
+      lead: { create: leadCreate, findUnique: leadFindUnique }, sourceRecord: { upsert: sourceUpdate }, duplicateFingerprint: { createMany: fingerprintCreateMany, findFirst: fingerprintFindFirst }, validationCandidate: { updateMany: validationUpdate }, searchCombination: { updateMany: combinationUpdate },
     }));
   });
 
@@ -56,6 +63,10 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     }) }));
     expect(validationUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "PROMOTED_TO_LEAD", promotedLeadId: "lead-new" }) }));
     expect(sourceUpdate).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ leadId: "lead-new", decision: "stored" }) }));
+    expect(leadFindUnique).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "lead-new" },
+      select: expect.objectContaining({ pipelineStageId: true, phoneNumber: true, email: true }),
+    }));
   });
 
   it("weigert ook vlak voor opslag een kandidaat zonder geldig telefoonnummer", async () => {
@@ -93,6 +104,17 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     leadCreate.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(storeNewLead(base, confirmed)).rejects.toThrow("database unavailable");
     expect(validationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rolt terug wanneer de database-readback niet bevestigt dat de lead in Nieuw staat", async () => {
+    leadFindUnique.mockResolvedValueOnce({
+      id: "lead-new",
+      pipelineStageId: "pipeline-belletje-1",
+      isActive: true,
+      phoneNumber: "+31201234567",
+      email: "info@nieuwbedrijf.nl",
+    });
+    await expect(storeNewLead(base, confirmed)).rejects.toThrow("LEAD_DATABASE_READBACK_FAILED");
   });
 
   it("draait de promotie in een serialiseerbare transactie met een expliciete timeout", async () => {

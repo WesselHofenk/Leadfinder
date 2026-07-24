@@ -51,6 +51,7 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
     expect(query).not.toContain('["contact:phone"]');
+    expect(query).toContain('[~"^(email|contact:email)$"~"."]');
     expect(query).toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
@@ -107,7 +108,9 @@ describe("gerichte Overpass-query", () => {
     expect(overpassSearchPlan(6)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "email", id: "t0-node-email" });
     expect(overpassSearchPlan(24)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
     expect(overpassSearchPlan(27)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
-    expect(buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 })).not.toMatch(/\["(?:contact:)?(?:phone|mobile|telephone|email)"\]/);
+    const completeContactQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 });
+    expect(completeContactQuery).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
+    expect(completeContactQuery).toContain('[~"^(email|contact:email)$"~"."]');
   });
 
   it("spreidt nieuwe plaats/branche-combinaties stabiel over contact- en elementstrategieën", () => {
@@ -115,8 +118,9 @@ describe("gerichte Overpass-query", () => {
       .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
         .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
     expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
-    expect(new Set(cursors).size).toBeGreaterThan(15);
+    expect(new Set(cursors).size).toBeGreaterThan(6);
     expect(cursors.every((cursor) => cursor >= 0 && cursor < 27)).toBe(true);
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "node")).toBe(true);
     expect(cursors.map((cursor) => overpassSearchPlan(cursor).contact)).toContain("any");
   });
 

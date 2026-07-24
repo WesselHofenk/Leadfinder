@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
 import { isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
 import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
+import { completedRunMessage, preservedCandidateCount } from "@/lib/jobs/generation-summary";
 
 type Run = {
   id: string;
@@ -64,21 +65,18 @@ type Run = {
   updatedAt: string;
 };
 
-function resultMessage(run: Run) {
+export function resultMessage(run: Run) {
   const conciseReason = run.stopReason?.split(" Resultaten:")[0]?.trim();
-  // Pending run candidates and manual-review candidates can refer to the
-  // same durable retry rows, so never add these counters together.
-  const preserved = Math.max(run.pendingCandidates ?? 0, run.manualReview ?? 0);
+  const preserved = preservedCandidateCount(run);
   if (run.status === "COMPLETE") {
-    if (run.stored === 0 && run.candidatesChecked >= (run.maxCandidates ?? MAX_CANDIDATES_PER_RUN)) return `${run.candidatesChecked} kandidaten zijn gecontroleerd, maar geen nieuw bedrijf voldeed aan alle ingestelde criteria. Bestaande gegevens zijn behouden.`;
-    return `${run.stored} nieuwe gekwalificeerde leads zijn veilig opgeslagen in Nieuw.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}`;
+    return completedRunMessage(run);
   }
-  if (run.status === "PARTIALLY_COMPLETED") return `Zoekrun gedeeltelijk afgerond: ${run.stored} nieuwe gekwalificeerde leads opgeslagen.${preserved ? ` ${preserved} kandidaten blijven bewaard voor een volgende controle.` : ""}${conciseReason ? ` ${conciseReason}` : ""}`;
+  if (run.status === "PARTIALLY_COMPLETED") return `Zoekrun gedeeltelijk afgerond. ${completedRunMessage(run)}${conciseReason ? ` ${conciseReason}` : ""}`;
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
   if (run.status === "TIMED_OUT") {
-    if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${run.stored} nieuwe gekwalificeerde leads zijn opgeslagen. ${run.candidatesChecked} kandidaten zijn gecontroleerd.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : ""}`;
+    if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${completedRunMessage(run)}`;
     if ((run.consecutiveSourceFailures ?? 0) > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
-    return `De maximale verwerkingstijd is bereikt. ${run.candidatesChecked} kandidaten zijn gecontroleerd, maar nog geen bedrijf voldeed aan alle ingestelde criteria.${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : " Een volgende klik probeert andere zoeksegmenten."}`;
+    return `De maximale verwerkingstijd is bereikt. ${completedRunMessage(run)}${preserved ? "" : " Een volgende klik probeert andere zoeksegmenten."}`;
   }
   return conciseReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
 }

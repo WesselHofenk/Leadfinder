@@ -15,8 +15,26 @@ describe("live openbare-bron-smoketest", () => {
       radius: 12_000, category: "kapper", timeoutMs: 8_000,
       totalTimeoutMs: 12_000, retriesPerEndpoint: 2, hedgeDelayMs: 1_250,
     });
-    console.info(JSON.stringify({ endpoint: result.endpoint, tile: result.tile.id, queryType: result.queryType, candidates: result.candidates.length }));
+    console.info(JSON.stringify({
+      endpoint: result.endpoint,
+      tile: result.tile.id,
+      queryType: result.queryType,
+      candidates: result.candidates.length,
+      sample: result.candidates.slice(0, 3).map((candidate) => ({
+        sourceRecordId: candidate.externalPlaceId,
+        companyName: candidate.companyName,
+        hasPhone: Boolean(candidate.phoneNumber || candidate.internationalPhoneNumber),
+        hasPublicEmail: Boolean(candidate.email && candidate.emailPubliclyListed && candidate.emailSourceUrl),
+        address: candidate.formattedAddress || candidate.streetAddress,
+      })),
+    }));
     expect(result.endpoint).toMatch(/^https:\/\//);
-    expect(Array.isArray(result.candidates)).toBe(true);
+    expect(result.candidates.length).toBeGreaterThan(0);
+    expect(result.candidates.every((candidate) => Boolean(
+      (candidate.phoneNumber || candidate.internationalPhoneNumber)
+      && candidate.email
+      && candidate.emailPubliclyListed
+      && candidate.emailSourceUrl,
+    ))).toBe(true);
   }, 20_000);
 });

@@ -71,9 +71,13 @@ export function initialOverpassSearchCursor(country: string, city: string, categ
     hash ^= character.charCodeAt(0);
     hash = Math.imul(hash, 16_777_619);
   }
-  // Distribute new combinations across all contact and element strategies
-  // in the first tile. The persisted cursor then continues without resets.
-  return (hash >>> 0) % (elementStrategies.length * contactStrategies.length);
+  // Most named local businesses in OSM are mapped as nodes. Start every new
+  // combination on a node query while still distributing the contact tag that
+  // is used. Persisted cursors continue through ways and relations afterwards,
+  // so coverage is retained without spending the first request on a sparse
+  // element type.
+  const contactIndex = (hash >>> 0) % contactStrategies.length;
+  return contactIndex * elementStrategies.length;
 }
 
 export function overpassSearchPlan(cursor = 0) {
@@ -285,7 +289,18 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const contact = params.contact ?? "phone";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
   const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
-  const contactConstraint = contact !== "any" ? `["${contact}"]` : "";
+  const anyPhone = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
+  const anyEmail = '[~"^(email|contact:email)$"~"."]';
+  // A lead is only useful after both public contact channels are confirmed.
+  // Requiring both at discovery time prevents phone-only candidates from
+  // consuming the validation budget and then endlessly cycling through the
+  // e-mail enrichment queue. Exact strategies stay in place for stable cursor
+  // compatibility; the complementary contact channel is added as a constraint.
+  const contactConstraint = contact === "any"
+    ? `${anyPhone}${anyEmail}`
+    : contact === "email" || contact === "contact:email"
+      ? `["${contact}"]${anyPhone}`
+      : `["${contact}"]${anyEmail}`;
   const statements = filters
     .map((filter) => `${around}${filter}[name]${contactConstraint}${noOfficialWebsite};`)
     .join("");
