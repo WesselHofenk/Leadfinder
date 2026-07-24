@@ -1095,6 +1095,10 @@ export async function processGenerationBatch(runId: string) {
       const region = `${area.city}, ${area.country}`;
       const tileLabel = overpassSearchPlan(tileCursor).id;
       const segment = `${area.country}:${area.city}:${area.category}:${tileLabel}`;
+      // Record the attempt before the external request. Failed public-source
+      // calls must also rotate the run to another city instead of repeatedly
+      // consuming the time budget on the same temporarily unhealthy area.
+      if (!places.includes(segment)) places.push(segment);
       const sourceStartedAt = Date.now();
 
       run.progress = Math.max(run.progress, phaseProgress("source"));
@@ -1115,7 +1119,6 @@ export async function processGenerationBatch(runId: string) {
         const attemptDelta = sourceAttemptDelta(true);
         const sourceDurationMs = Date.now() - sourceStartedAt;
         warnings.push(...result.warnings);
-        if (!places.includes(segment)) places.push(segment);
         const normalizedCandidates = result.candidates.map((candidate) => ({
           ...candidate,
           province: candidate.province || area.region,
