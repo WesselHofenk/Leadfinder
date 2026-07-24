@@ -69,6 +69,15 @@ describe("adaptieve zoekplanning", () => {
     expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 7, now: new Date() })?.id).toBe("unseen");
   });
 
+  it("laat een expliciete beheerprioriteit de gebiedskeuze daadwerkelijk sturen", () => {
+    const areas = [
+      area({ id: "normal", city: "Haarlem", priority: 100, lastScannedAt: new Date(0) }),
+      area({ id: "priority", priority: 1, lastScannedAt: new Date() }),
+    ];
+    expect(selectAdaptiveSearchArea({ areas, categories, combinations: [], sequence: 0, now: new Date() })?.id)
+      .toBe("priority");
+  });
+
   it("spreidt opeenvolgende bronverzoeken over verschillende steden", () => {
     const areas = [
       area({ id: "amsterdam-kapper" }),

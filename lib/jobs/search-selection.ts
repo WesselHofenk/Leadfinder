@@ -77,10 +77,15 @@ export function selectAdaptiveSearchArea(input: {
     const yieldRate = validLeads / Math.max(1, useCount);
     const zeroYieldPenalty = useCount >= 3 && validLeads === 0 ? Math.min(240, useCount * 20) : 0;
     const reliabilityPenalty = (metric?.errorCount ?? 0) * 6;
+    // Coverage priority is an explicit admin control. Previously it was only
+    // consulted as a final sort tie-breaker, so changing 100 to 1 could still
+    // have no practical effect. Give it enough weight to steer the search
+    // while historical yield and circuit-health signals remain relevant.
+    const coveragePriorityPenalty = Math.max(0, area.priority) * 5;
     if (mode === "exploit") {
-      return yieldRate * 1_000 + Math.min(168, recency) - categoryPriority - zeroYieldPenalty - reliabilityPenalty;
+      return yieldRate * 1_000 + Math.min(168, recency) - categoryPriority - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
     }
-    return (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriority - reliabilityPenalty;
+    return (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriority - coveragePriorityPenalty - reliabilityPenalty;
   };
 
   return eligible.slice().sort((left, right) =>

@@ -18,6 +18,7 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:smoke": "tsx scripts/smoke-database.ts",
     "generation:diagnose": "tsx scripts/diagnose-generation-run.ts",
+    "generation:e2e-qualified": "tsx scripts/e2e-qualified-lead.ts",
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
     "db:backup:sqlite": "tsx scripts/backup-local.ts",
     "db:restore:sqlite": "tsx scripts/restore-local.ts",
@@ -31,6 +32,7 @@
     "next": "^15.2.4",
     "react": "^19.0.0",
     "react-dom": "^19.2.7",
+    "server-only": "0.0.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {
