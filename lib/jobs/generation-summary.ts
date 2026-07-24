@@ -59,7 +59,10 @@ export function completedRunMessage(run: GenerationOutcomeCounts) {
   const rejected = run.rejected ?? 0;
   const preserved = preservedCandidateCount(run);
   if (stored > 0) {
-    return `${stored} nieuwe gekwalificeerde leads zijn opgeslagen in Nieuw. ${checked} kandidaten zijn gecontroleerd, ${rejected} zijn afgewezen${preserved ? ` en ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd` : ""}.`;
+    const storedSentence = stored === 1
+      ? "1 nieuwe gekwalificeerde lead is opgeslagen in Nieuw."
+      : `${stored} nieuwe gekwalificeerde leads zijn opgeslagen in Nieuw.`;
+    return `${storedSentence} ${checked} kandidaten zijn gecontroleerd, ${rejected} zijn afgewezen${preserved ? ` en ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd` : ""}.`;
   }
   const breakdown = rejectionBreakdown(run);
   return `${checked} kandidaten zijn gecontroleerd. Geen kandidaten voldeden aan alle vaste criteria.${breakdown ? ` Meest voorkomende redenen: ${breakdown}.` : ""}${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : ""}`;

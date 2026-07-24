@@ -36,6 +36,13 @@ describe("eindmelding leadgeneratie", () => {
     );
   });
 
+  it("gebruikt enkelvoud wanneer precies één lead is opgeslagen", () => {
+    expect(completedRunMessage({ candidatesChecked: 6, stored: 1, rejected: 2, manualReview: 4 })).toBe(
+      "1 nieuwe gekwalificeerde lead is opgeslagen in Nieuw. "
+      + "6 kandidaten zijn gecontroleerd, 2 zijn afgewezen en 4 kandidaten worden tijdens een volgende run verder gecontroleerd.",
+    );
+  });
+
   it("beperkt de redenlijst tot de belangrijkste backendcategorieën", () => {
     expect(rejectionBreakdown({
       websitesFound: 82,
