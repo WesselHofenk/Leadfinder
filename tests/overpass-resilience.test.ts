@@ -73,6 +73,8 @@ describe("gerichte Overpass-query", () => {
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
     expect(result.tile).toMatchObject({ id: "t0-node-common", latitude: base.latitude, longitude: base.longitude, radius: 12_000 });
     expect(result.query).toContain(`node(around:12000,${base.latitude.toFixed(7)},${base.longitude.toFixed(7)})`);
+    expect(result.query).toContain('["phone"]["contact:email"]');
+    expect(result.query.match(/node\(around:/g)).toHaveLength(4);
   });
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
@@ -95,6 +97,7 @@ describe("gerichte Overpass-query", () => {
     expect(categoryFilters("schilder")).toEqual(['["craft"="painter"]']);
     expect(categoryFilters("elektricien")).toEqual(['["craft"="electrician"]']);
     expect(categoryFilters("loodgieter")).toEqual(['["craft"~"^(plumber|hvac)$"]']);
+    expect(categoryFilters("slagerij")).toEqual(['["shop"="butcher"]']);
   });
 
   it("voorkomt dat een tijdelijke bronfout dezelfde tegel oneindig blijft herhalen", () => {

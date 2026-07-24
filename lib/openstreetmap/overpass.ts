@@ -59,10 +59,9 @@ const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-// Start with the two common same-namespace pairs: this keeps the public query
-// small enough for free Overpass hosts. The exhaustive cross-key query remains
-// the next plan, so less common but valid public contact combinations are not
-// lost.
+// Start with the four common phone/e-mail pairs. Public records frequently mix
+// `phone` with `contact:email` (or the reverse); omitting those combinations
+// hid otherwise contact-complete businesses until a much later cursor.
 const contactStrategies: readonly OverpassContactStrategy[] = ["common", "any"];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
@@ -247,6 +246,7 @@ function normalizedCategory(category = "") {
 export function categoryFilters(category?: string) {
   const value = normalizedCategory(category);
   if (/restaurant|lunchroom|cafe|catering/.test(value)) return ['["amenity"~"^(restaurant|cafe|fast_food|food_court)$"]'];
+  if (/slager|butcher/.test(value)) return ['["shop"="butcher"]'];
   if (/hotel|bed and breakfast/.test(value)) return ['["tourism"~"^(hotel|guest_house|hostel|apartment)$"]'];
   if (/kapper|barbier|coiffeur|schoonheid|estheticienne|nagel|wellness/.test(value)) return ['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]'];
   if (/fysio|personal trainer|coach|opleiding|kinderopvang/.test(value)) return ['["healthcare"]', '["amenity"~"^(doctors|clinic|kindergarten|training)$"]'];
@@ -295,7 +295,7 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   // instead of regex-key selectors: public Overpass hosts resolve those much
   // faster and are consequently far less likely to time out.
   const contactConstraints = contact === "common"
-    ? ['["phone"]["email"]', '["contact:phone"]["contact:email"]']
+    ? ['["phone"]["email"]', '["phone"]["contact:email"]', '["contact:phone"]["email"]', '["contact:phone"]["contact:email"]']
     : contact === "any"
     ? phoneKeys.flatMap((phone) => emailKeys.map((email) => `["${phone}"]["${email}"]`))
     : contact === "email" || contact === "contact:email"
