@@ -17,11 +17,22 @@ export async function PATCH(request: NextRequest) {
   if (!hasValidOrigin(request)) return NextResponse.json({ error: "Ongeldige aanvraag" }, { status: 403 });
   const input = schema.safeParse(await request.json().catch(() => null));
   if (!input.success) return NextResponse.json({ error: "Ongeldig zoekgebied" }, { status: 400 });
-  const result = await prisma.coverageArea.updateMany({
-    where: { country: input.data.country, city: { equals: input.data.city, mode: "insensitive" } },
-    data: { priority: input.data.priority, nextScanAt: new Date() },
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    const updated = await tx.coverageArea.updateMany({
+      where: { country: input.data.country, city: { equals: input.data.city, mode: "insensitive" } },
+      data: { priority: input.data.priority, nextScanAt: now },
+    });
+    if (updated.count) {
+      await tx.searchCombination.updateMany({
+        where: { country: input.data.country, city: { equals: input.data.city, mode: "insensitive" }, source: "OPENSTREETMAP" },
+        // A deliberate priority change requests a fresh, fast node/contact
+        // scan instead of resuming an old sparse way/relation cursor.
+        data: { tileCursor: 0, nextEligibleAt: now },
+      });
+    }
+    return updated;
   });
   if (!result.count) return NextResponse.json({ error: "Zoekgebied niet gevonden" }, { status: 404 });
   return NextResponse.json({ ok: true, updated: result.count });
 }
-
