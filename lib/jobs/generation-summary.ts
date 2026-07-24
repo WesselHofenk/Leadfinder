@@ -64,3 +64,12 @@ export function completedRunMessage(run: GenerationOutcomeCounts) {
   const breakdown = rejectionBreakdown(run);
   return `${checked} kandidaten zijn gecontroleerd. Geen kandidaten voldeden aan alle vaste criteria.${breakdown ? ` Meest voorkomende redenen: ${breakdown}.` : ""}${preserved ? ` ${preserved} kandidaten worden tijdens een volgende run verder gecontroleerd.` : ""}`;
 }
+
+export function exhaustedSearchAreasReason(run: GenerationOutcomeCounts) {
+  const stored = run.stored ?? 0;
+  if (stored > 0) {
+    const noun = stored === 1 ? "lead blijft" : "leads blijven";
+    return `Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt. ${stored} gekwalificeerde ${noun} veilig opgeslagen in Nieuw.`;
+  }
+  return "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt; geen kandidaat voldeed aan alle vaste criteria.";
+}

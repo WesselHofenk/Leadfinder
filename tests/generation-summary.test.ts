@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { completedRunMessage, preservedCandidateCount, rejectionBreakdown } from "@/lib/jobs/generation-summary";
+import { completedRunMessage, exhaustedSearchAreasReason, preservedCandidateCount, rejectionBreakdown } from "@/lib/jobs/generation-summary";
 
 describe("eindmelding leadgeneratie", () => {
   it("gebruikt de werkelijke backendtellingen en verklaart een nulresultaat", () => {
@@ -45,6 +45,15 @@ describe("eindmelding leadgeneratie", () => {
       emailsInvalid: 5,
     }, 3)).toBe(
       "82 hadden een eigen website, 47 hadden geen geldig telefoonnummer, 31 waren duplicaten",
+    );
+  });
+
+  it("spreekt succesvolle opslag niet tegen wanneer alle zoekgebieden zijn verwerkt", () => {
+    expect(exhaustedSearchAreasReason({ candidatesChecked: 6, stored: 1, rejected: 2, manualReview: 4 })).toBe(
+      "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt. 1 gekwalificeerde lead blijft veilig opgeslagen in Nieuw.",
+    );
+    expect(exhaustedSearchAreasReason({ candidatesChecked: 6, stored: 0, rejected: 2, manualReview: 4 })).toBe(
+      "Alle beschikbare openbare zoekgebieden zijn voor deze run verwerkt; geen kandidaat voldeed aan alle vaste criteria.",
     );
   });
 });

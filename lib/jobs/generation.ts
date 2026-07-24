@@ -21,6 +21,7 @@ import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN, RUN_DRAIN_WINDOW_MS } from "./generation-config";
+import { exhaustedSearchAreasReason } from "./generation-summary";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
 import { lowYieldCooldownMs, preferUnusedCities, selectAdaptiveSearchArea } from "./search-selection";
 
@@ -1094,7 +1095,17 @@ export async function processGenerationBatch(runId: string) {
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
       const usedCityKeys = new Set(places.map((segment) => segment.split(":").slice(0, 2).join(":")));
       const selected = await nextSearchArea(usedCityKeys);
-      if (!selected) return terminalRun(runId, stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar; er zijn geen nieuwe geldige leads opgeslagen.");
+      if (!selected) {
+        return terminalRun(
+          runId,
+          stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED,
+          stats,
+          places,
+          errors,
+          warnings,
+          exhaustedSearchAreasReason({ candidatesChecked: stats.checked, stored: stats.stored, rejected: stats.rejected, manualReview: stats.manualReview }),
+        );
+      }
       const { area, combination, tileCursor, remainingSegments } = selected;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
