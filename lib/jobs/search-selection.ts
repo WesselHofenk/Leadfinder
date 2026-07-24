@@ -78,15 +78,20 @@ export function selectAdaptiveSearchArea(input: {
     const yieldRate = validLeads / Math.max(1, useCount);
     const zeroYieldPenalty = useCount >= 3 && validLeads === 0 ? Math.min(240, useCount * 20) : 0;
     const reliabilityPenalty = (metric?.errorCount ?? 0) * 6;
+    // Values 1-5 are deliberate operator overrides rather than ordinary
+    // ranking hints. They must also beat the exploration bonus for an unused
+    // combination; otherwise setting both Amsterdam and `kapper` to priority
+    // 1 can still select an unrelated unused category.
+    const explicitPriorityBoost = (categoryPriority <= 5 ? 16_000 : 0) + (area.priority <= 5 ? 16_000 : 0);
     // Coverage priority is an explicit admin control. Previously it was only
     // consulted as a final sort tie-breaker, so changing 100 to 1 could still
     // have no practical effect. Give it enough weight to steer the search
     // while historical yield and circuit-health signals remain relevant.
     const coveragePriorityPenalty = Math.max(0, area.priority) * 5;
     if (mode === "exploit") {
-      return yieldRate * 1_000 + Math.min(168, recency) - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
+      return explicitPriorityBoost + yieldRate * 1_000 + Math.min(168, recency) - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
     }
-    return (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriorityPenalty - coveragePriorityPenalty - reliabilityPenalty;
+    return explicitPriorityBoost + (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriorityPenalty - coveragePriorityPenalty - reliabilityPenalty;
   };
 
   return eligible.slice().sort((left, right) =>
