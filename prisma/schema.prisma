@@ -318,6 +318,31 @@ model BlockedLocationLeadBackup {
   @@index([cleanupRunId, area])
 }
 
+model LeadPipelineResetAudit {
+  id                String   @id
+  resetKey          String   @unique
+  totalBefore       Int
+  backupsCreated    Int
+  exclusionsCreated Int
+  removed           Int
+  totalAfter        Int
+  reason            String
+  backupTable       String
+  createdAt         DateTime @default(now())
+}
+
+model LeadPipelineResetBackup {
+  id              String   @id
+  resetRunId      String
+  originalLeadId  String
+  leadSnapshot    Json
+  relatedSnapshot Json
+  createdAt       DateTime @default(now())
+
+  @@unique([resetRunId, originalLeadId])
+  @@index([resetRunId, createdAt])
+}
+
 model GenerationRun {
   id                         String                @id @default(cuid())
   status                     JobStatus             @default(PENDING)
