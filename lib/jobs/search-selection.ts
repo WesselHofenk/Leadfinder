@@ -71,6 +71,7 @@ export function selectAdaptiveSearchArea(input: {
   const score = (area: SearchAreaCandidate) => {
     const metric = metrics.get(key(area));
     const categoryPriority = categories.get(area.category) ?? 100;
+    const categoryPriorityPenalty = Math.max(0, categoryPriority) * 5;
     const recency = ageHours(metric?.lastUsedAt ?? area.lastScannedAt, now);
     const useCount = metric?.useCount ?? 0;
     const validLeads = metric?.validLeads ?? 0;
@@ -83,9 +84,9 @@ export function selectAdaptiveSearchArea(input: {
     // while historical yield and circuit-health signals remain relevant.
     const coveragePriorityPenalty = Math.max(0, area.priority) * 5;
     if (mode === "exploit") {
-      return yieldRate * 1_000 + Math.min(168, recency) - categoryPriority - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
+      return yieldRate * 1_000 + Math.min(168, recency) - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
     }
-    return (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriority - coveragePriorityPenalty - reliabilityPenalty;
+    return (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriorityPenalty - coveragePriorityPenalty - reliabilityPenalty;
   };
 
   return eligible.slice().sort((left, right) =>

@@ -78,6 +78,20 @@ describe("adaptieve zoekplanning", () => {
       .toBe("priority");
   });
 
+  it("laat een expliciete brancheprioriteit de categorie binnen een gebied sturen", () => {
+    const areas = [
+      area({ id: "normal", category: "schilder", priority: 1, lastScannedAt: new Date(0) }),
+      area({ id: "category-priority", category: "kapper", priority: 1, lastScannedAt: new Date() }),
+    ];
+    expect(selectAdaptiveSearchArea({
+      areas,
+      categories: [{ name: "kapper", priority: 1 }, { name: "schilder", priority: 100 }],
+      combinations: [],
+      sequence: 0,
+      now: new Date(),
+    })?.id).toBe("category-priority");
+  });
+
   it("spreidt opeenvolgende bronverzoeken over verschillende steden", () => {
     const areas = [
       area({ id: "amsterdam-kapper" }),
