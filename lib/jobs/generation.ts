@@ -850,6 +850,10 @@ function strictReasonMessage(reason: StrictLeadReason) {
 
 async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
   const now = new Date();
+  const usedCities = [...usedCityKeys].map((cityKey) => {
+    const [country, ...cityParts] = cityKey.split(":");
+    return { country, city: cityParts.join(":") };
+  }).filter(({ country, city }) => Boolean(country && city));
   const activeCategories = await prisma.category.findMany({
     where: { isActive: true },
     select: { name: true, priority: true },
@@ -864,6 +868,7 @@ async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
       { country: "NL" },
       { country: "BE", region: { in: ["Antwerpen", "Limburg", "Oost-Vlaanderen", "Vlaams-Brabant", "West-Vlaanderen"] } },
     ],
+    NOT: usedCities,
   };
   // Keep exploration, but always include a pool of high-priority local trades.
   // A single oldest-first slice became dominated by never-scanned low-yield
