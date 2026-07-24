@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   adaptiveSearchMode,
   lowYieldCooldownMs,
+  preferUnusedCities,
   selectAdaptiveSearchArea,
   type SearchAreaCandidate,
   type SearchCombinationMetric,
@@ -66,6 +67,17 @@ describe("adaptieve zoekplanning", () => {
     const areas = [area({ id: "used" }), area({ id: "unseen", city: "Haarlem" })];
     const combinations = [metric({ useCount: 8, candidatesFound: 20, validLeads: 4 })];
     expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 7, now: new Date() })?.id).toBe("unseen");
+  });
+
+  it("spreidt opeenvolgende bronverzoeken over verschillende steden", () => {
+    const areas = [
+      area({ id: "amsterdam-kapper" }),
+      area({ id: "amsterdam-schilder", category: "schilder" }),
+      area({ id: "haarlem-kapper", city: "Haarlem" }),
+    ];
+    expect(preferUnusedCities(areas, new Set(["NL:Amsterdam"])).map(({ id }) => id))
+      .toEqual(["haarlem-kapper"]);
+    expect(preferUnusedCities(areas, new Set(["NL:Amsterdam", "NL:Haarlem"]))).toBe(areas);
   });
 
   it("slaat een combinatie met een actieve cooldown over", () => {

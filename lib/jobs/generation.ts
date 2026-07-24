@@ -22,7 +22,7 @@ import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN, RUN_DRAIN_WINDOW_MS } from "./generation-config";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
-import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
+import { lowYieldCooldownMs, preferUnusedCities, selectAdaptiveSearchArea } from "./search-selection";
 
 type Stats = {
   found: number;
@@ -848,7 +848,7 @@ function strictReasonMessage(reason: StrictLeadReason) {
   } satisfies Record<StrictLeadReason, string>)[reason];
 }
 
-async function nextSearchArea() {
+async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
   const now = new Date();
   const activeCategories = await prisma.category.findMany({
     where: { isActive: true },
@@ -874,7 +874,10 @@ async function nextSearchArea() {
     where: { id: { in: blockedAreaIds } },
     data: { status: "PAUSED", errorMessage: "Uitgesloten door harde locatieblokkade: Brussel/Gent" },
   });
-  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id));
+  const areas = preferUnusedCities(
+    candidates.filter(({ id }) => !blockedAreaIds.includes(id)),
+    usedCityKeys,
+  );
   if (!areas.length) return null;
   const combinations = await prisma.searchCombination.findMany({
     where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
@@ -1072,7 +1075,8 @@ export async function processGenerationBatch(runId: string) {
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
-      const selected = await nextSearchArea();
+      const usedCityKeys = new Set(places.map((segment) => segment.split(":").slice(0, 2).join(":")));
+      const selected = await nextSearchArea(usedCityKeys);
       if (!selected) return terminalRun(runId, stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar; er zijn geen nieuwe geldige leads opgeslagen.");
       const { area, combination, tileCursor, remainingSegments } = selected;
       const adapter = adapters[0];

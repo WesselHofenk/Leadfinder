@@ -118,10 +118,9 @@ describe("gerichte Overpass-query", () => {
       .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
         .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
     expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
-    expect(new Set(cursors).size).toBeGreaterThan(6);
-    expect(cursors.every((cursor) => cursor >= 0 && cursor < 27)).toBe(true);
+    expect(new Set(cursors)).toEqual(new Set([24]));
     expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "node")).toBe(true);
-    expect(cursors.map((cursor) => overpassSearchPlan(cursor).contact)).toContain("any");
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "any")).toBe(true);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

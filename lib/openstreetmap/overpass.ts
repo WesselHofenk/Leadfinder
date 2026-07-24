@@ -64,20 +64,13 @@ const contactStrategies: readonly OverpassContactStrategy[] = [
 ];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
-export function initialOverpassSearchCursor(country: string, city: string, category: string) {
-  const identity = `${country}:${city}:${category}`.toLowerCase();
-  let hash = 2_166_136_261;
-  for (const character of identity) {
-    hash ^= character.charCodeAt(0);
-    hash = Math.imul(hash, 16_777_619);
-  }
-  // Most named local businesses in OSM are mapped as nodes. Start every new
-  // combination on a node query while still distributing the contact tag that
-  // is used. Persisted cursors continue through ways and relations afterwards,
-  // so coverage is retained without spending the first request on a sparse
-  // element type.
-  const contactIndex = (hash >>> 0) % contactStrategies.length;
-  return contactIndex * elementStrategies.length;
+export function initialOverpassSearchCursor(_country: string, _city: string, _category: string) {
+  // Most named local businesses in OSM are mapped as nodes. New combinations
+  // start with the broad contact-complete strategy so differences between
+  // `phone` and `contact:phone` (or `email` and `contact:email`) cannot hide an
+  // otherwise qualified candidate. Persisted cursors continue through the
+  // exact tag, way and relation strategies afterwards.
+  return contactStrategies.indexOf("any") * elementStrategies.length;
 }
 
 export function overpassSearchPlan(cursor = 0) {

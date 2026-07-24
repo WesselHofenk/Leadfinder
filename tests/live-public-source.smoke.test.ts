@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { searchOverpassHedged } from "@/lib/openstreetmap/overpass";
+import { initialOverpassSearchCursor, searchOverpassHedged } from "@/lib/openstreetmap/overpass";
 
 describe("live openbare-bron-smoketest", () => {
   it.runIf(process.env.LIVE_SOURCE_SMOKE === "true")("ontvangt echte OSM-data via een onafhankelijke providerfallback", async () => {
@@ -13,6 +13,7 @@ describe("live openbare-bron-smoketest", () => {
       ],
       country: "NL", city: "Amsterdam", latitude: 52.3676, longitude: 4.9041,
       radius: 12_000, category: "kapper", timeoutMs: 8_000,
+      tileCursor: initialOverpassSearchCursor("NL", "Amsterdam", "kapper"),
       totalTimeoutMs: 12_000, retriesPerEndpoint: 2, hedgeDelayMs: 1_250,
     });
     console.info(JSON.stringify({

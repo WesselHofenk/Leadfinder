@@ -32,6 +32,11 @@ export type AdaptiveSearchMode = "exploit" | "explore";
 const key = (value: Pick<SearchAreaCandidate, "country" | "city" | "category">) =>
   `${value.country}:${value.city}:${value.category}`;
 
+export function preferUnusedCities(areas: SearchAreaCandidate[], usedCityKeys: ReadonlySet<string>) {
+  const unused = areas.filter((area) => !usedCityKeys.has(`${area.country}:${area.city}`));
+  return unused.length ? unused : areas;
+}
+
 export function adaptiveSearchMode(sequence: number): AdaptiveSearchMode {
   // Retry candidates consume their own bounded ~10% quota in generation-state.
   // The remaining fresh-source work is split 70/20 between proven yield and
