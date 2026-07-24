@@ -402,7 +402,15 @@ export async function searchOverpass(params: SearchParams) {
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
-  const tile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
+  const baseTile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
+  // The first query is already restricted to named nodes with both common
+  // phone and e-mail tags and no website tag. That result set is small enough
+  // to scan the complete configured city radius safely. Previously this first
+  // query only covered the central 2.4 km; productive outer-city businesses
+  // could then remain unreachable for dozens of city/category rotations.
+  const tile = plan.tileCursor === 0 && plan.strategy === "node" && plan.contact === "common"
+    ? { ...baseTile, latitude: params.latitude, longitude: params.longitude, radius: Math.min(12_000, Math.max(baseTile.radius, params.radius)) }
+    : baseTile;
   const queryType = params.queryTypeOverride ?? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`;
   const query = params.queryOverride ?? buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, contact: plan.contact, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
   const tileLabel = params.tileLabelOverride ?? plan.id;
