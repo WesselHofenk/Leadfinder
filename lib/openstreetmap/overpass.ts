@@ -280,12 +280,17 @@ export function overpassTile(latitude: number, longitude: number, radius: number
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
-export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy; contact?: OverpassContactStrategy }) {
+export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy; contact?: OverpassContactStrategy; boundingBox?: boolean }) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
   const contact = params.contact ?? "phone";
   const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
-  const around = `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
+  const latitudeDelta = params.radius / 111_320;
+  const longitudeDelta = params.radius / (111_320 * Math.max(0.2, Math.cos(params.latitude * Math.PI / 180)));
+  const spatial = params.boundingBox
+    ? `(${(params.latitude - latitudeDelta).toFixed(7)},${(params.longitude - longitudeDelta).toFixed(7)},${(params.latitude + latitudeDelta).toFixed(7)},${(params.longitude + longitudeDelta).toFixed(7)})`
+    : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
+  const around = `${strategy}${spatial}`;
   const phoneKeys = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"] as const;
   const emailKeys = ["email", "contact:email"] as const;
   // A lead is only useful after both public contact channels are confirmed.
@@ -412,7 +417,14 @@ export async function searchOverpass(params: SearchParams) {
     ? { ...baseTile, latitude: params.latitude, longitude: params.longitude, radius: Math.min(12_000, Math.max(baseTile.radius, params.radius)) }
     : baseTile;
   const queryType = params.queryTypeOverride ?? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`;
-  const query = params.queryOverride ?? buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, contact: plan.contact, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
+  const query = params.queryOverride ?? buildOverpassQuery({
+    ...tile,
+    category: params.category,
+    strategy: plan.strategy,
+    contact: plan.contact,
+    boundingBox: plan.tileCursor === 0 && plan.strategy === "node" && plan.contact === "common",
+    timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1),
+  });
   const tileLabel = params.tileLabelOverride ?? plan.id;
   const fetchImpl = params.fetchImpl ?? fetch;
   const sleep = params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));

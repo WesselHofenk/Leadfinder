@@ -72,9 +72,10 @@ describe("gerichte Overpass-query", () => {
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
     expect(result.tile).toMatchObject({ id: "t0-node-common", latitude: base.latitude, longitude: base.longitude, radius: 12_000 });
-    expect(result.query).toContain(`node(around:12000,${base.latitude.toFixed(7)},${base.longitude.toFixed(7)})`);
+    expect(result.query).toMatch(/node\(\d+\.\d+,\d+\.\d+,\d+\.\d+,\d+\.\d+\)/);
+    expect(result.query).not.toContain("node(around:");
     expect(result.query).toContain('["phone"]["contact:email"]');
-    expect(result.query.match(/node\(around:/g)).toHaveLength(4);
+    expect(result.query.match(/node\(\d+\.\d+,\d+\.\d+,\d+\.\d+,\d+\.\d+\)/g)).toHaveLength(4);
   });
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
