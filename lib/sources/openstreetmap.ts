@@ -88,8 +88,13 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       latitude: candidate.latitude,
       longitude: candidate.longitude,
       radius: 250_000,
-      timeoutMs: Math.min(4_000, this.timeoutMs),
-      totalTimeoutMs: Math.min(6_000, this.totalTimeoutMs),
+      // Exact identity lookups are global and can take longer than a small
+      // discovery tile on free Overpass hosts. Six seconds caused valid,
+      // contact-complete candidates to be marked uncertain just before the
+      // website/storage gate. Keep the request bounded, but allow the healthy
+      // hedged provider enough time to return the indexed identity matches.
+      timeoutMs: Math.min(8_000, this.timeoutMs),
+      totalTimeoutMs: Math.min(12_000, this.totalTimeoutMs),
       maxResponseBytes: this.maxResponseBytes,
       retriesPerEndpoint: 1,
       hedgeDelayMs: 500,

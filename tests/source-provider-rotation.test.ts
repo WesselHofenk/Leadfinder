@@ -9,7 +9,10 @@ vi.mock("@/lib/env", () => ({ serverEnv: () => ({
   OVERPASS_TOTAL_TIMEOUT_MS: 28_000,
   OVERPASS_MAX_RESPONSE_BYTES: 2_000_000,
 }) }));
-vi.mock("@/lib/openstreetmap/overpass", () => ({ searchOverpassHedged }));
+vi.mock("@/lib/openstreetmap/overpass", () => ({
+  searchOverpassHedged,
+  buildOverpassIdentityQuery: vi.fn(() => "[out:json];node(42);out;"),
+}));
 
 import { OpenStreetMapAdapter } from "@/lib/sources/openstreetmap";
 
@@ -36,6 +39,24 @@ describe("rotatie van gratis OSM-providers", () => {
     await adapter.searchBusinesses({ ...input, tileCursor: 1 });
     expect(searchOverpassHedged).toHaveBeenCalledWith(expect.objectContaining({
       endpoints: ["https://overpass.private.coffee/api/interpreter", "https://maps.mail.ru/osm/tools/overpass/api/interpreter", "https://overpass-api.de/api/interpreter"],
+    }));
+  });
+
+  it("geeft de begrensde identiteitscontrole genoeg tijd voor een gratis wereldwijde lookup", async () => {
+    const adapter = new OpenStreetMapAdapter();
+    await adapter.findIdentityMatches({
+      ...input,
+      externalPlaceId: "osm:node/42",
+      companyName: "Lokale ondernemer",
+      phoneNumber: "+31 76 123 45 67",
+      email: "info@lokale-ondernemer.nl",
+      streetAddress: "Markt 1",
+      googleMapsUrl: "https://www.openstreetmap.org/node/42",
+    });
+    expect(searchOverpassHedged).toHaveBeenCalledWith(expect.objectContaining({
+      timeoutMs: 8_000,
+      totalTimeoutMs: 12_000,
+      queryTypeOverride: "identity-location-count",
     }));
   });
 });
