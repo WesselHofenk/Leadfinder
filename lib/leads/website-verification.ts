@@ -24,10 +24,6 @@ export type WebsiteVerificationResult = {
 
 const legalForms = /\b(bv|b\.v\.?|vof|v\.o\.f\.?|nv|n\.v\.?|eenmanszaak|cv|maatschap)\b/gi;
 const weakNameTokens = new Set(["de", "den", "der", "het", "the", "van", "voor", "en", "and", "bij", "by"]);
-const descriptorTokens = new Set([
-  "opticien", "opticiens", "kapper", "kapsalon", "salon", "restaurant", "cafe", "winkel", "shop", "store",
-  "praktijk", "studio", "centrum", "center", "services", "service", "bedrijf", "bedrijven",
-]);
 const publicEmailDomains = new Set([
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.nl", "live.com", "live.nl", "yahoo.com",
   "icloud.com", "proton.me", "protonmail.com", "ziggo.nl", "kpnmail.nl", "planet.nl", "xs4all.nl", "telenet.be", "skynet.be",
@@ -44,25 +40,22 @@ function words(value?: string) {
   return normalizeText(value ?? "").split(" ").filter(Boolean);
 }
 
-function identityTerms(candidate: Candidate) {
-  const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
-  const company = words(candidate.companyName.replace(legalForms, ""));
-  const brand = [...words(candidate.brand), ...words(candidate.operator)];
-  return [...new Set([...brand, ...company].filter((token) =>
-    token.length >= 4 && !weakNameTokens.has(token) && !descriptorTokens.has(token) && !locations.has(token),
-  ))];
-}
-
 /** Domain candidates are intentionally broad: short brand domains such as pearle.nl must be checked too. */
 export function candidateDomains(candidate: Candidate) {
   const countrySuffix = candidate.country.toUpperCase() === "BE" ? "be" : "nl";
   const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
   const companyWords = words(candidate.companyName.replace(legalForms, "")).filter((token) => !locations.has(token));
-  const terms = identityTerms(candidate);
+  const exactCompanyWords = companyWords.filter((token) => !weakNameTokens.has(token));
+  const explicitBrandRoots = [words(candidate.brand).join(""), words(candidate.operator).join("")];
+  // A responding domain for only the first word of a multi-word company is
+  // not proof of ownership (`gladys.nl` need not belong to "Gladys
+  // Internacional Hair"). Probe short roots only for an explicit brand or a
+  // genuinely one-word company; otherwise keep the complete business name.
+  const oneWordCompanyRoot = companyWords.length === 1 ? companyWords[0] : "";
   const roots = [
-    words(candidate.brand).join(""), words(candidate.operator).join(""), terms[0], terms.slice(0, 2).join(""),
-    companyWords.filter((token) => !weakNameTokens.has(token)).join(""), companyWords.join(""),
-    companyWords.filter((token) => !weakNameTokens.has(token)).join("-"), companyWords.join("-"),
+    ...explicitBrandRoots, oneWordCompanyRoot,
+    exactCompanyWords.join(""), companyWords.join(""),
+    exactCompanyWords.join("-"), companyWords.join("-"),
   ].filter((root): root is string => Boolean(root && root.length >= 4 && root.length <= 63 && /[a-z]/.test(root)));
   const emailDomains = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])
     .map((email) => email.split("@")[1]).filter((domain) => domain && !publicEmailDomains.has(domain));

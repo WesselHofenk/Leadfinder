@@ -20,6 +20,12 @@ describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();c
     expect(hasStrongAutomaticAbsenceEvidence({...strong,sourceUpdatedAt:"2020-01-01T00:00:00Z"})).toBe(false);
   });
   it("controleert een zakelijk e-maildomein vóór website-afwezigheid",()=>expect(candidateDomains({...base,email:"contact@onverwacht-bedrijf.nl"})[0]).toBe("onverwacht-bedrijf.nl"));
+  it("ziet een los eerste woord van een meerwoordige bedrijfsnaam niet als bewijs van website-eigendom",()=>{
+    const domains=candidateDomains({...base,companyName:"Slagerij Waterland",email:"slagerijwaterland@outlook.com"});
+    expect(domains).toContain("slagerijwaterland.nl");
+    expect(domains).not.toContain("slagerij.nl");
+    expect(domains).not.toContain("waterland.nl");
+  });
   it("bevestigt alleen een expliciete bronafwezigheid nadat alle domeinkandidaten ontbreken",async()=>expect(await verifyWebsiteCandidate({...base,websiteAbsenceConfirmed:true})).toMatchObject({status:"NO_WEBSITE_CONFIRMED",confidence:90}));
   it("houdt een DNS-netwerkfout onzeker",async()=>{vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("temporary"),{code:"EAI_AGAIN"}));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
   it("maakt van HTTP 403 geen geen-websitelead",async()=>{vi.mocked(resolveAny).mockResolvedValue([]);vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(null,{status:403})));expect(await verifyWebsiteCandidate(base)).toMatchObject({status:"UNKNOWN"});});
