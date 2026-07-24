@@ -101,25 +101,26 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3);
-    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
-    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "any", id: "t0-way-any" });
-    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "any", id: "t0-relation-any" });
-    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "any", id: "t1-node-any" });
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 2);
+    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "common", id: "t0-node-common" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "common", id: "t0-way-common" });
+    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "common", id: "t0-relation-common" });
+    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
+    expect(overpassSearchPlan(6)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "common", id: "t1-node-common" });
     const completeContactQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 });
     expect(completeContactQuery).toContain('["phone"]["email"]');
     expect(completeContactQuery).toContain('["contact:telephone"]["contact:email"]');
     expect(completeContactQuery.match(/node\(around:/g)).toHaveLength(12);
   });
 
-  it("start iedere nieuwe plaats/branche-combinatie met de brede contact-complete nodequery", () => {
+  it("start iedere nieuwe plaats/branche-combinatie met de snelle contact-complete nodequery", () => {
     const cursors = ["Leeuwarden", "Lelystad", "Brugge", "Utrecht", "Breda", "Zwolle", "Haarlem", "Arnhem"]
       .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
         .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
     expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
     expect(new Set(cursors)).toEqual(new Set([0]));
     expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "node")).toBe(true);
-    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "any")).toBe(true);
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "common")).toBe(true);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

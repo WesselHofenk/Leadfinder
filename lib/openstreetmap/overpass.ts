@@ -52,19 +52,18 @@ type SearchParams = {
 export type OverpassElementStrategy = "node" | "way" | "relation";
 export type OverpassContactStrategy =
   | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone"
-  | "email" | "contact:email" | "any";
+  | "email" | "contact:email" | "common" | "any";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-// `any` emits all indexed phone/e-mail tag pairs in one query. The former
-// exact-tag strategies were strict subsets of this query, so cycling through
-// them spent most of a run rediscovering the same (or no) candidates before
-// moving to another map tile. Keep only the contact-complete plan and use the
-// cursor budget for element types and geographic tiles instead.
-const contactStrategies: readonly OverpassContactStrategy[] = ["any"];
+// Start with the two common same-namespace pairs: this keeps the public query
+// small enough for free Overpass hosts. The exhaustive cross-key query remains
+// the next plan, so less common but valid public contact combinations are not
+// lost.
+const contactStrategies: readonly OverpassContactStrategy[] = ["common", "any"];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
 export function initialOverpassSearchCursor(country: string, city: string, category: string) {
@@ -295,7 +294,9 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   // e-mail enrichment queue. Explicit indexed tag combinations are used
   // instead of regex-key selectors: public Overpass hosts resolve those much
   // faster and are consequently far less likely to time out.
-  const contactConstraints = contact === "any"
+  const contactConstraints = contact === "common"
+    ? ['["phone"]["email"]', '["contact:phone"]["contact:email"]']
+    : contact === "any"
     ? phoneKeys.flatMap((phone) => emailKeys.map((email) => `["${phone}"]["${email}"]`))
     : contact === "email" || contact === "contact:email"
       ? phoneKeys.map((phone) => `["${contact}"]["${phone}"]`)
