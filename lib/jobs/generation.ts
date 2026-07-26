@@ -788,13 +788,14 @@ export async function saveValidatedLead(candidate: Candidate, verification: Webs
       },
       data: { validLeads: { increment: 1 } },
     });
-    const fingerprints = fingerprintValues(candidateDedupeKeys(candidate));
+    const candidateFingerprints = fingerprintValues(candidateDedupeKeys(candidate));
+    const identityFingerprints = strongIdentityFingerprintValues(candidateDedupeKeys(candidate));
     await tx.duplicateFingerprint.createMany({
-      data: fingerprints.map((item) => ({ ...item, leadId: lead.id })),
+      data: candidateFingerprints.map((item) => ({ ...item, leadId: lead.id })),
       skipDuplicates: true,
     });
     const conflictingIdentity = await tx.duplicateFingerprint.findFirst({
-      where: { fingerprint: { in: fingerprints.map(({ fingerprint }) => fingerprint) }, NOT: { leadId: lead.id } },
+      where: { fingerprint: { in: identityFingerprints.map(({ fingerprint }) => fingerprint) }, NOT: { leadId: lead.id } },
       select: { fingerprint: true, leadId: true },
     });
     if (conflictingIdentity?.leadId) throw new DuplicateIdentityError(conflictingIdentity.fingerprint, conflictingIdentity.leadId);

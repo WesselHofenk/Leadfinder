@@ -18,6 +18,22 @@ describe("deduplicatie binnen een run", () => {
   it("wijst dezelfde naam en postcode op een ander adres niet onterecht af", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys(base)); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", streetAddress: "Andere straat 2" }))).toBe(false); });
   it("dedupliceert dezelfde genormaliseerde naam op exact hetzelfde adres", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys({ ...base, companyName: "De Schilder B.V." })); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "de schilder bv" }))).toBe(true); });
   it("dedupliceert op genormaliseerd domein en e-mail", () => { const first = candidateDedupeKeys({ ...base, website: "https://www.Bedrijf.nl/contact", email: "INFO@BEDRIJF.NL" }); const second = candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "Andere naam", postalCode: "3521 AA", streetAddress: "Andere straat 2", category: "aannemer", website: "http://bedrijf.nl", email: "info@bedrijf.nl" }); const index = new RunDeduplicator(); index.hasOrAdd(first); expect(index.hasOrAdd(second)).toBe(true); expect(fingerprintValues(first).map((item) => item.kind)).toEqual(expect.arrayContaining(["domain", "email"])); });
+  it("dedupliceert op hetzelfde eigen domein zonder hetzelfde e-mailadres nodig te hebben", () => {
+    const index = new RunDeduplicator();
+    index.hasOrAdd(candidateDedupeKeys({ ...base, website: "https://bedrijf.nl", email: undefined }));
+    expect(index.hasOrAdd(candidateDedupeKeys({
+      ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "Andere naam",
+      postalCode: "3521 AA", streetAddress: "Andere straat 2", website: "https://www.bedrijf.nl/contact", email: undefined,
+    }))).toBe(true);
+  });
+  it("wijst twee generiek genaamde bedrijven in dezelfde stad en categorie niet als duplicaat af", () => {
+    const index = new RunDeduplicator();
+    index.hasOrAdd(candidateDedupeKeys({ ...base, companyName: "Kapsalon", category: "kapper" }));
+    expect(index.hasOrAdd(candidateDedupeKeys({
+      ...base, externalPlaceId: "place-2", companyName: "Kapsalon", category: "kapper", phoneNumber: "06 87654321",
+      postalCode: "3521 AA", streetAddress: "Kanaalweg 22",
+    }))).toBe(false);
+  });
   it("herstelt bestaande records alleen via sterke identiteitssleutels", () => expect(strongIdentityFingerprintValues(candidateDedupeKeys(base)).map((item) => item.kind)).toEqual(["external", "phone", "address"]));
   it("dedupliceert over bronnen heen op Google Place ID", () => {
     const index = new RunDeduplicator();

@@ -67,6 +67,15 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
       where: { id: "lead-new" },
       select: expect.objectContaining({ pipelineStageId: true, phoneNumber: true, email: true }),
     }));
+    const conflictFingerprints = fingerprintFindFirst.mock.calls[0]?.[0]?.where?.fingerprint?.in as string[];
+    expect(conflictFingerprints).toEqual(expect.arrayContaining([
+      "external:source-1",
+      "google_place_id:ChIJ-source-1",
+      "phone:+31201234567",
+      "email:info@nieuwbedrijf.nl",
+    ]));
+    expect(conflictFingerprints.some((fingerprint) => fingerprint.startsWith("postal:"))).toBe(false);
+    expect(conflictFingerprints.some((fingerprint) => fingerprint.startsWith("name_city_category:"))).toBe(false);
   });
 
   it("weigert ook vlak voor opslag een kandidaat zonder geldig telefoonnummer", async () => {

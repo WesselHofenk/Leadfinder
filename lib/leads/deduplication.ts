@@ -29,7 +29,7 @@ export function fingerprintValues(keys: DedupeKeys) {
 }
 
 export function strongIdentityFingerprintValues(keys: DedupeKeys) {
-  const strongKinds = new Set(["external", "google_place_id", "phone", "email", "address"]);
+  const strongKinds = new Set(["external", "google_place_id", "phone", "email", "domain", "address"]);
   return fingerprintValues(keys).filter(({ kind }) => strongKinds.has(kind));
 }
 
