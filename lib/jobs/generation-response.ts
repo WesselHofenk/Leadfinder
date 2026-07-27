@@ -46,9 +46,10 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
   const rejectedWithWebsite = run?.websitesFound ?? 0;
   return {
     success,
+    backgroundWorker: Boolean(process.env.CRON_SECRET && process.env.CRON_SECRET.length >= 32),
     jobId: run?.id ?? null,
     status: run?.status ?? null,
-    requestedCount: run?.targetCount ?? 50,
+    requestedCount: run?.targetCount ?? 10,
     maxCandidates: Math.min(run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN, MAX_CANDIDATES_PER_RUN),
     candidatesReserved: run?.candidatesReserved ?? 0,
     savedCount: run?.stored ?? 0,

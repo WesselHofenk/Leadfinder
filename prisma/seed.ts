@@ -41,6 +41,13 @@ const centers = [
   ["NL", "Zuid-Holland", "Delft", 52.0116, 4.3571],
   ["NL", "Overijssel", "Deventer", 52.2661, 6.1552],
   ["NL", "Limburg", "Maastricht", 50.8514, 5.6910],
+  ["BE", "Antwerpen", "Antwerpen", 51.2194, 4.4025],
+  ["BE", "Antwerpen", "Mechelen", 51.0259, 4.4776],
+  ["BE", "West-Vlaanderen", "Brugge", 51.2093, 3.2247],
+  ["BE", "West-Vlaanderen", "Kortrijk", 50.8280, 3.2649],
+  ["BE", "Vlaams-Brabant", "Leuven", 50.8798, 4.7005],
+  ["BE", "Limburg", "Hasselt", 50.9307, 5.3325],
+  ["BE", "Oost-Vlaanderen", "Aalst", 50.9383, 4.0392],
 ] as const;
 
 async function main() {

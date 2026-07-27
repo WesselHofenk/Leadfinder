@@ -104,11 +104,20 @@ enum WebsiteStatus {
   WEBSITE_FOUND
   WEBSITE_OUTDATED
   WEBSITE_BROKEN
+  IMPROVABLE_WEBSITE
   MANUAL_REVIEW_REQUIRED
   NO_OWN_WEBSITE
   OWN_WEBSITE
   OUTDATED
   IMPROVABLE
+  UNKNOWN
+}
+
+enum ContactValidationStatus {
+  PENDING
+  DELIVERABLE
+  VALID
+  INVALID
   UNKNOWN
 }
 
@@ -140,19 +149,25 @@ model Session {
 }
 
 model Lead {
-  id                            String                 @id @default(cuid())
-  externalPlaceId               String                 @unique
+  id                            String                  @id @default(cuid())
+  externalPlaceId               String                  @unique
   companyName                   String
   normalizedCompanyName         String
   contactPersonName             String?
   email                         String?
   emailSource                   String?
   emailSourceUrl                String?
-  emailMxVerified               Boolean                @default(false)
+  emailMxVerified               Boolean                 @default(false)
   emailVerifiedAt               DateTime?
+  emailValidationStatus         ContactValidationStatus @default(PENDING)
+  emailValidationSource         String?
+  emailValidatedAt              DateTime?
   phoneNumber                   String
-  normalizedPhoneNumber         String?                @unique
+  normalizedPhoneNumber         String?                 @unique
   internationalPhoneNumber      String?
+  phoneValidationStatus         ContactValidationStatus @default(PENDING)
+  phoneValidationSource         String?
+  phoneValidatedAt              DateTime?
   category                      String
   subCategory                   String?
   country                       String
@@ -164,56 +179,59 @@ model Lead {
   formattedAddress              String?
   houseNumber                   String?
   normalizedAddress             String
-  latitude                      Decimal                @db.Decimal(10, 7)
-  longitude                     Decimal                @db.Decimal(10, 7)
+  latitude                      Decimal                 @db.Decimal(10, 7)
+  longitude                     Decimal                 @db.Decimal(10, 7)
   googleMapsUrl                 String
   website                       String?
   websiteUrl                    String?
   normalizedDomain              String?
-  websiteStatus                 WebsiteStatus          @default(UNKNOWN)
+  websiteStatus                 WebsiteStatus           @default(UNKNOWN)
   websiteStatusReason           String?
-  websiteConfidence             Int                    @default(0)
+  websiteConfidence             Int                     @default(0)
   websiteSource                 String?
   sourceUrl                     String?
   sourceFetchedAt               DateTime?
-  googlePlaceId                 String?                @unique
+  googlePlaceId                 String?                 @unique
   googleBusinessProfileUrl      String?
-  googleBusinessProfileVerified Boolean                @default(false)
+  googleBusinessProfileVerified Boolean                 @default(false)
   googleBusinessVerifiedAt      DateTime?
   googleWebsiteCheckAttemptedAt DateTime?
   googleWebsiteVerifiedAt       DateTime?
   googleWebsitePresent          Boolean?
   employeeCount                 Int?
-  leadType                      LeadType               @default(NO_WEBSITE)
-  opportunityScore              Int                    @default(0)
+  qualificationReason           String?
+  batchId                       String?
+  dedupeFingerprint             String?                 @unique
+  leadType                      LeadType                @default(NO_WEBSITE)
+  opportunityScore              Int                     @default(0)
   conversionQualityScore        Int?
-  isFiltered                    Boolean                @default(false)
+  isFiltered                    Boolean                 @default(false)
   filterReason                  String?
-  doNotContact                  Boolean                @default(false)
+  doNotContact                  Boolean                 @default(false)
   lastWebsiteAnalysisAt         DateTime?
   businessStatus                BusinessStatus
-  statusConfidence              Int                    @default(0)
+  statusConfidence              Int                     @default(0)
   language                      String?
-  languageConfidence            Int                    @default(0)
+  languageConfidence            Int                     @default(0)
   regionLanguage                String?
   verificationSource            String?
-  singleLocationVerified        Boolean                @default(false)
+  singleLocationVerified        Boolean                 @default(false)
   singleLocationReason          String?
   singleLocationVerifiedAt      DateTime?
-  socialUrls                    Json                   @default("[]")
-  source                        LeadSource             @default(OPENSTREETMAP)
-  confidenceScore               Int                    @default(50)
-  confidenceLevel               ConfidenceLevel        @default(MEDIUM)
-  isActive                      Boolean                @default(true)
-  isSuppressed                  Boolean                @default(false)
-  firstDiscoveredAt             DateTime               @default(now())
-  lastVerifiedAt                DateTime               @default(now())
-  createdAt                     DateTime               @default(now())
-  updatedAt                     DateTime               @updatedAt
-  legacyStatus                  LegacyLeadStatus       @default(NEW) @map("status")
-  pipelineStageId               String                 @default("pipeline-nieuw")
-  pipelineStage                 PipelineStage          @relation(fields: [pipelineStageId], references: [id], onDelete: Restrict)
-  notes                         String                 @default("")
+  socialUrls                    Json                    @default("[]")
+  source                        LeadSource              @default(OPENSTREETMAP)
+  confidenceScore               Int                     @default(50)
+  confidenceLevel               ConfidenceLevel         @default(MEDIUM)
+  isActive                      Boolean                 @default(true)
+  isSuppressed                  Boolean                 @default(false)
+  firstDiscoveredAt             DateTime                @default(now())
+  lastVerifiedAt                DateTime                @default(now())
+  createdAt                     DateTime                @default(now())
+  updatedAt                     DateTime                @updatedAt
+  legacyStatus                  LegacyLeadStatus        @default(NEW) @map("status")
+  pipelineStageId               String                  @default("pipeline-nieuw")
+  pipelineStage                 PipelineStage           @relation(fields: [pipelineStageId], references: [id], onDelete: Restrict)
+  notes                         String                  @default("")
   lastContactAt                 DateTime?
   nextFollowUpAt                DateTime?
   contactPerson                 String?
@@ -249,6 +267,7 @@ model Lead {
   @@index([pipelineStageId, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
+  @@index([batchId])
 }
 
 model PipelineStage {
@@ -398,9 +417,22 @@ model GenerationRun {
   updatedAt                  DateTime              @updatedAt
   logs                       SourceLog[]
   candidates                 GenerationCandidate[]
+  qualifiedDrafts            QualifiedLeadDraft[]
 
   @@index([status, createdAt])
   @@index([status, updatedAt])
+}
+
+model QualifiedLeadDraft {
+  id          String        @id @default(cuid())
+  runId       String
+  run         GenerationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  fingerprint String        @unique
+  payload     Json
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([runId, createdAt])
 }
 
 model GenerationCandidate {

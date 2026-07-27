@@ -1,4 +1,5 @@
 import { resolveAny } from "node:dns/promises";
+import { assertPublicUrl } from "@/lib/website/url-safety";
 import type { Candidate } from "./eligibility";
 import { normalizeEmails, normalizeText } from "./normalization";
 import { determineWebsiteStatus, extractWebsiteEntries, isNonOwnedWebsite, normalizeWebsite } from "./website";
@@ -10,6 +11,7 @@ export type LocalWebsiteStatus =
   | "WEBSITE_FOUND"
   | "WEBSITE_OUTDATED"
   | "WEBSITE_BROKEN"
+  | "IMPROVABLE_WEBSITE"
   | "MANUAL_REVIEW_REQUIRED"
   | "UNKNOWN";
 
@@ -93,14 +95,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
 async function requestWithRedirects(url: string, method: "HEAD" | "GET", fetchImpl: typeof fetch, maxRedirects = 3) {
   let current = url;
   for (let redirect = 0; redirect <= maxRedirects; redirect += 1) {
-    const response = await fetchImpl(current, {
+    const safeUrl = await assertPublicUrl(current);
+    const response = await fetchImpl(safeUrl, {
       method, redirect: "manual", signal: AbortSignal.timeout(2_500),
       headers: { "User-Agent": "LeadfinderSitora/4.0 local-website-verification" },
     });
     if (response.status < 300 || response.status >= 400) return response;
     const location = response.headers.get("location");
     if (!location || redirect === maxRedirects) return response;
-    current = new URL(location, current).toString();
+    current = (await assertPublicUrl(new URL(location, safeUrl).toString())).toString();
   }
   throw new Error("redirect_limit");
 }

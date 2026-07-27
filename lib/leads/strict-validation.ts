@@ -8,7 +8,7 @@ import { normalizeEmails, normalizePhones } from "./normalization";
 export type StrictLeadReason =
   | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "EMAIL_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
   | "BUSINESS_NOT_CONFIRMED_ACTIVE" | "BUSINESS_CLOSED" | "ADDRESS_NOT_USABLE"
-  | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND" | "SINGLE_LOCATION_NOT_CONFIRMED";
+  | "WEBSITE_NOT_QUALIFIED" | "OWN_WEBSITE_FOUND" | "SINGLE_LOCATION_NOT_CONFIRMED";
 
 const dutchWords = /\b(de|het|een|en|voor|van|met|winkel|bedrijf|kapper|schilder|loodgieter|open|gesloten|afspraak|contact|welkom)\b/gi;
 const frenchWords = /\b(le|la|les|des|une|et|pour|avec|entreprise|magasin|coiffeur|peintre|plombier|ouvert|ferme|rendez vous)\b/gi;
@@ -41,11 +41,24 @@ export function detectDutchBusinessLanguage(candidate: Candidate) {
   if (fr >= 2 && fr >= nl + 1) return { language: "fr", confidence: Math.min(90, 65 + fr * 5) };
   const phone = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
   if (fr === 0 && candidate.country.toUpperCase() === "NL" && phone?.startsWith("+31")) return { language: "nl", confidence: 80 };
+  const flemishRegion = normalized([
+    candidate.regionLanguage,
+    candidate.province,
+    candidate.region,
+    candidate.municipality,
+  ].filter(Boolean).join(" "));
+  if (
+    fr === 0
+    && candidate.country.toUpperCase() === "BE"
+    && phone?.startsWith("+32")
+    && /\b(vlaanderen|vlaams|nederlands|antwerpen|limburg|west vlaanderen|oost vlaanderen|vlaams brabant)\b/.test(flemishRegion)
+  ) return { language: "nl", confidence: 82 };
   return { language: "unknown", confidence: 0 };
 }
 
 export function allowedDutchRegion(candidate: Candidate) {
-  return candidate.country.toUpperCase() === "NL";
+  return ["NL", "BE"].includes(candidate.country.toUpperCase())
+    && !detectBlockedLocation(candidate as Candidate & Record<string, unknown>).blocked;
 }
 
 export function hasVerifiedPublicBusinessProfile(candidate: Candidate) {
@@ -93,7 +106,7 @@ export function validateStrictLead(
   if (blocked.area === "BRUSSELS") reasons.push("BLOCKED_BRUSSELS");
   if (blocked.area === "GHENT") reasons.push("BLOCKED_GHENT");
   if (options.requirePhone !== false && !normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
-  if (options.requireEmail === true && !normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])]).length) reasons.push("EMAIL_REQUIRED");
+  if (options.requireEmail !== false && (!normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])]).length || candidate.emailMxVerified !== true || !candidate.emailSourceUrl?.trim())) reasons.push("EMAIL_REQUIRED");
   if (!hasVerifiedPublicBusinessProfile(candidate)) reasons.push("NO_PUBLIC_BUSINESS_PROFILE");
   if (!allowedDutchRegion(candidate)) reasons.push("REGION_NOT_ALLOWED");
   if (language.language !== "nl" || language.confidence < 70) reasons.push("LANGUAGE_NOT_DUTCH");
@@ -102,8 +115,8 @@ export function validateStrictLead(
   if (!hasReadableAddress(candidate)) reasons.push("ADDRESS_NOT_USABLE");
   if (options.requireSingleLocation !== false && candidate.singleLocationStatus !== "CONFIRMED") reasons.push("SINGLE_LOCATION_NOT_CONFIRMED");
   if (verification) {
-    if (["WEBSITE_FOUND", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status)) reasons.push("OWN_WEBSITE_FOUND");
-    else if (verification.status !== "NO_WEBSITE_CONFIRMED") reasons.push("WEBSITE_NOT_CONFIRMED_ABSENT");
+    if (verification.status === "WEBSITE_FOUND") reasons.push("OWN_WEBSITE_FOUND");
+    else if (!["NO_WEBSITE_CONFIRMED", "WEBSITE_OUTDATED", "WEBSITE_BROKEN", "IMPROVABLE_WEBSITE"].includes(verification.status)) reasons.push("WEBSITE_NOT_QUALIFIED");
   }
   return { valid: reasons.length === 0, reasons, language, active, blocked };
 }

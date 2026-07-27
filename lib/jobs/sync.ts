@@ -9,13 +9,20 @@ export async function runDiscoveryJob() {
   await markStaleGenerationRuns();
   const active = await prisma.generationRun.findFirst({ where: { status: { in: ["PENDING", "RUNNING"] } } });
   const run = active ?? await createGenerationRun();
-  const batch = await processGenerationBatch(run.id);
-  const finished = batch.status === "RUNNING" ? await prisma.generationRun.update({ where: { id: run.id }, data: {
-    status: "COMPLETE", progress: 100, currentPhase: "Automatische batch voltooid", finishedAt: new Date(),
-    stopReason: "De dagelijkse serverless zoekbatch is afgerond; een volgende run gebruikt een nieuw segment.",
-    message: "De dagelijkse zoekbatch is veilig en zonder langlopende achtergrondtaak afgerond.",
-  } }) : batch;
-  return { skipped: false, runId: run.id, status: finished.status, found: finished.candidatesFound, stored: finished.stored, sourceFailures: finished.sourceFailures };
+  const deadline = Date.now() + 250_000;
+  let current = run;
+  do {
+    current = await processGenerationBatch(run.id);
+  } while (["PENDING", "RUNNING"].includes(current.status) && Date.now() < deadline);
+  return {
+    skipped: false,
+    runId: run.id,
+    status: current.status,
+    found: current.candidatesFound,
+    qualified: current.stored,
+    sourceFailures: current.sourceFailures,
+    continuationRequired: ["PENDING", "RUNNING"].includes(current.status),
+  };
 }
 
 export async function reverifyStaleLeads() {

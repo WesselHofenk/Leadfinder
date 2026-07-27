@@ -35,7 +35,9 @@ export type EligibleBase = Candidate & {
   normalizedDomain: string | null; email?: string; businessStatus: "OPERATIONAL" | "UNKNOWN";
   confidenceScore: number; confidenceLevel: "LOW" | "MEDIUM" | "HIGH";
 };
-export type EligibleLead = EligibleBase & { leadType: "NO_WEBSITE" };
+export type EligibleLead = EligibleBase & {
+  leadType: "NO_WEBSITE" | "WEBSITE_OUTDATED" | "WEBSITE_BROKEN" | "IMPROVABLE_WEBSITE";
+};
 
 const MAX_OSM_SOURCE_AGE_MS = 6 * 365.25 * 24 * 60 * 60 * 1000;
 
@@ -43,9 +45,15 @@ export function hasPlausibleBusinessLocation(candidate: Candidate) {
   const country = candidate.country.toUpperCase();
   const postalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, country);
   const hasHouseNumber = Boolean(candidate.houseNumber?.trim() || /\d/.test(candidate.streetAddress));
-  const bounds = country === "NL"
+  const bounds = (
+    country === "NL"
     && candidate.latitude >= 50.7 && candidate.latitude <= 53.7
-    && candidate.longitude >= 3.2 && candidate.longitude <= 7.3;
+    && candidate.longitude >= 3.2 && candidate.longitude <= 7.3
+  ) || (
+    country === "BE"
+    && candidate.latitude >= 49.45 && candidate.latitude <= 51.55
+    && candidate.longitude >= 2.45 && candidate.longitude <= 6.45
+  );
   const preciseAddress = Boolean(postalCode && hasHouseNumber && candidate.streetAddress.trim().length >= 6);
   const usableMappedLocation = Boolean(
     candidate.city.trim()
@@ -65,7 +73,7 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   if (blocked.blocked) return { ok: false, reason: blocked.reason ?? "blocked_location" };
-  if (candidate.country.toUpperCase() !== "NL") return { ok: false, reason: "buiten_gebied" };
+  if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
   if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
@@ -97,7 +105,24 @@ export function qualifyCandidate(candidate: Candidate, verification?: Parameters
   if (!basic.ok) return basic;
   const gate = evaluateNewLeadGate(candidate, verification);
   if (!gate.allowed) return { ok: false, reason: gate.reason === "SKIPPED_HAS_WEBSITE" ? "eigen_website" : gate.reason === "SKIPPED_PERMANENTLY_CLOSED" ? "niet_operationeel" : "website_onzeker" };
-  return { ok: true, lead: { ...basic.lead, website: isNonOwnedWebsite(candidate.website) ? undefined : candidate.website, normalizedDomain: null, leadType: "NO_WEBSITE" } };
+  const leadType: EligibleLead["leadType"] = verification?.status === "WEBSITE_OUTDATED"
+    ? "WEBSITE_OUTDATED"
+    : verification?.status === "WEBSITE_BROKEN"
+      ? "WEBSITE_BROKEN"
+      : verification?.status === "IMPROVABLE_WEBSITE"
+        ? "IMPROVABLE_WEBSITE"
+        : "NO_WEBSITE";
+  const qualifiedWebsite = leadType !== "NO_WEBSITE";
+  const website = qualifiedWebsite ? verification?.website ?? candidate.website : isNonOwnedWebsite(candidate.website) ? undefined : candidate.website;
+  return {
+    ok: true,
+    lead: {
+      ...basic.lead,
+      website,
+      normalizedDomain: qualifiedWebsite ? normalizeDomain(website) : null,
+      leadType,
+    },
+  };
 }
 
 const chainNames = ["mcdonalds","burger king","subway","dominos","kfc","starbucks","hema","action","aldi","lidl","jumbo","ah to go","albert heijn","kruidvat","etos","gamma","praxis","kwikfit","basic fit","anytime fitness","van der valk","fletcher hotels","ibis hotel"];

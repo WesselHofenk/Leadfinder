@@ -43,7 +43,7 @@ beforeEach(() => clearOverpassCircuitState());
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); clearOverpassCircuitState(); });
 
 describe("gerichte Overpass-query", () => {
-  it("maakt een kleine geen-websitegerichte tegelquery voor de gekozen branche", () => {
+  it("maakt een kleine tegelquery die ook verbeterbare websites kan vinden", () => {
     const tile = overpassTile(52.3676, 4.9041, 12_000, 0);
     const query = buildOverpassQuery({ ...tile, category: "kapper", timeoutSeconds: 10 });
     expect(tile.radius).toBe(2_400);
@@ -52,7 +52,7 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain('["phone"]');
     expect(query).not.toContain('["contact:phone"]');
     expect(query).not.toContain('["email"]');
-    expect(query).toContain('[!"website"][!"contact:website"]');
+    expect(query).not.toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
     expect(query).toContain("node(around:");

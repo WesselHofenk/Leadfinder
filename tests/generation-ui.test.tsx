@@ -124,9 +124,7 @@ describe("frontend polling en eindstatus", () => {
     const message = await screen.findByRole("status");
     expect(message.className).toBe("warning-message");
     expect(message.textContent).toContain("De maximale verwerkingstijd is bereikt");
-    expect(message.textContent).toContain("3 nieuwe gekwalificeerde leads");
-    expect(message.textContent).toContain("4 kandidaten worden tijdens een volgende run verder gecontroleerd");
-    expect(message.textContent).not.toContain("6 kandidaten");
+    expect(message.textContent).toContain("3 gekwalificeerde concepten blijven veilig bewaard");
     expect(message.textContent).not.toContain("Resultaten:");
   });
 });

@@ -19,6 +19,10 @@ const { generation, findFirst, acquireJobLock, releaseStartLock } = vi.hoisted((
 
 vi.mock("@/lib/auth/session", () => ({ currentUser: vi.fn(async () => ({ id: "user-1" })) }));
 vi.mock("@/lib/jobs/generation", () => generation);
+vi.mock("@/lib/jobs/generation-worker", () => ({
+  generationWorkerAvailable: vi.fn(() => false),
+  triggerGenerationWorker: vi.fn(),
+}));
 vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock }));
 vi.mock("@/lib/prisma", () => ({ prisma: { generationRun: { findFirst } } }));
 vi.mock("@/lib/security/request", () => ({ hasValidOrigin: vi.fn(() => true), rateLimit: vi.fn(() => true), requestIp: vi.fn(() => "127.0.0.1") }));
@@ -47,7 +51,7 @@ describe("serverless generation API", () => {
   it("maakt een queued job zonder een lang open startrequest", async () => {
     const response = await POST(request("POST"));
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual(expect.objectContaining({ success: true, jobId: runId, status: "PENDING", requestedCount: 50, savedCount: 0, run: pendingRun }));
+    expect(await response.json()).toEqual(expect.objectContaining({ success: true, jobId: runId, status: "PENDING", requestedCount: 10, savedCount: 0, run: pendingRun }));
     expect(generation.processGenerationBatch).not.toHaveBeenCalled();
     expect(releaseStartLock).toHaveBeenCalledOnce();
   });
@@ -90,7 +94,7 @@ describe("serverless generation API", () => {
     expect(generation.processGenerationBatch).toHaveBeenCalledWith(runId);
     expect(await response.json()).toEqual(expect.objectContaining({
       success: true, jobId: runId, status: "RUNNING", progress: 45,
-      requestedCount: 50, savedCount: 0, candidatesChecked: 0,
+      requestedCount: 10, savedCount: 0, candidatesChecked: 0,
       rejectedWithWebsite: 0, rejectedClosed: 0, rejectedDuplicate: 0, rejectedInvalid: 0, failedQueries: 0,
     }));
   });

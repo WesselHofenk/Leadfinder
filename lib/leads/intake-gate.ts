@@ -2,7 +2,7 @@ import { isPermanentlyClosed } from "./company-status";
 import { extractCompanyWebsite } from "./website";
 import type { WebsiteVerificationResult } from "./website-verification";
 
-export type IntakeWebsiteStatus = "HAS_WEBSITE" | "NO_WEBSITE_CONFIRMED" | "UNKNOWN";
+export type IntakeWebsiteStatus = "QUALIFIED_WEBSITE" | "HAS_WEBSITE" | "NO_WEBSITE_CONFIRMED" | "UNKNOWN";
 export type IntakeSkipReason = "SKIPPED_PERMANENTLY_CLOSED" | "SKIPPED_HAS_WEBSITE" | "SKIPPED_WEBSITE_UNKNOWN";
 
 export type IntakeWebsiteDecision = {
@@ -13,19 +13,28 @@ export type IntakeWebsiteDecision = {
 
 export function determineIntakeWebsiteStatus(company: unknown, verification?: Pick<WebsiteVerificationResult, "status" | "website" | "reason">): IntakeWebsiteDecision {
   const sourceWebsite = extractCompanyWebsite(company);
-  if (sourceWebsite) return { status: "HAS_WEBSITE", website: sourceWebsite, reason: "Eigen bedrijfswebsite rechtstreeks in de brongegevens gevonden." };
   if (!verification) return { status: "UNKNOWN", website: null, reason: "Website-afwezigheid is niet bevestigd." };
-  if (["WEBSITE_FOUND", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status)) {
+  if (["WEBSITE_OUTDATED", "WEBSITE_BROKEN", "IMPROVABLE_WEBSITE"].includes(verification.status)) {
+    return { status: "QUALIFIED_WEBSITE", website: verification.website ?? sourceWebsite, reason: verification.reason };
+  }
+  if (verification.status === "WEBSITE_FOUND") {
     return { status: "HAS_WEBSITE", website: verification.website, reason: verification.reason };
   }
   if (verification.status === "NO_WEBSITE_CONFIRMED") {
+    if (sourceWebsite) {
+      return {
+        status: "UNKNOWN",
+        website: sourceWebsite,
+        reason: "De bron bevat een website, maar de websitecontrole meldt tegenstrijdig dat er geen website is.",
+      };
+    }
     return { status: "NO_WEBSITE_CONFIRMED", website: null, reason: verification.reason };
   }
   return { status: "UNKNOWN", website: null, reason: verification.reason };
 }
 
 export type NewLeadGateDecision =
-  | { allowed: true; websiteStatus: "NO_WEBSITE_CONFIRMED"; reason: string }
+  | { allowed: true; websiteStatus: "NO_WEBSITE_CONFIRMED" | "QUALIFIED_WEBSITE"; reason: string }
   | { allowed: false; websiteStatus: IntakeWebsiteStatus; reason: IntakeSkipReason; detail: string; website: string | null };
 
 /** Final fail-closed gate. Call this immediately before every new Lead insert. */
@@ -40,5 +49,5 @@ export function evaluateNewLeadGate(company: unknown, verification?: Pick<Websit
   if (website.status === "UNKNOWN") {
     return { allowed: false, websiteStatus: website.status, reason: "SKIPPED_WEBSITE_UNKNOWN", detail: website.reason, website: null };
   }
-  return { allowed: true, websiteStatus: "NO_WEBSITE_CONFIRMED", reason: website.reason };
+  return { allowed: true, websiteStatus: website.status, reason: website.reason };
 }

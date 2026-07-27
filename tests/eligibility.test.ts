@@ -7,11 +7,18 @@ const confirmed = { status:"NO_WEBSITE_CONFIRMED" as const,website:null,reason:"
 describe("leadkwalificatie",()=>{
   it("accepteert operationeel bedrijf alleen met bevestigde website-afwezigheid",()=>expect(qualifyCandidate(candidate,confirmed).ok).toBe(true));
   it("weigert ontbrekende website-afwezigheidsbevestiging",()=>expect(qualifyCandidate(candidate)).toMatchObject({ok:false,reason:"website_onzeker"}));
-  it("weigert een bedrijf met een eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"},confirmed)).toMatchObject({ok:false,reason:"eigen_website"}));
+  it("laat een eigen website pas door nadat die aantoonbaar verouderd is",()=>{
+    expect(qualifyCandidate({...candidate,website:"https://voorbeeld.nl"},confirmed)).toMatchObject({ok:false,reason:"website_onzeker"});
+    expect(qualifyCandidate(
+      {...candidate,website:"https://voorbeeld.nl"},
+      {status:"WEBSITE_OUTDATED",website:"https://voorbeeld.nl",reason:"Aantoonbaar verouderd"},
+    )).toMatchObject({ok:true,lead:{leadType:"WEBSITE_OUTDATED",normalizedDomain:"voorbeeld.nl"}});
+  });
   it("telt een socialmediaprofiel niet als eigen website",()=>expect(qualifyCandidate({...candidate,website:"https://facebook.com/degoodeloodgieter"},confirmed)).toMatchObject({ok:true,lead:{leadType:"NO_WEBSITE",website:undefined}}));
   it("weigert een bedrijf zonder geldig openbaar telefoonnummer",()=>expect(qualifyCandidate({...candidate,phoneNumber:undefined},confirmed)).toMatchObject({ok:false,reason:"invalid_phone"}));
-  it("accepteert een strikt bruikbaar telefoonlead zonder optioneel e-mailadres",()=>expect(qualifyCandidate({...candidate,email:undefined},confirmed)).toMatchObject({ok:true,lead:{email:undefined}}));
-  it("weigert een bedrijf buiten Nederland",()=>expect(qualifyCandidate({...candidate,country:"BE",phoneNumber:"+32 3 123 45 67",city:"Antwerpen",latitude:51.2194,longitude:4.4025},confirmed)).toMatchObject({ok:false,reason:"buiten_gebied"}));
+  it("laat een telefoonlead voorlopig door naar de verplichte e-mailverrijking",()=>expect(qualifyCandidate({...candidate,email:undefined},confirmed)).toMatchObject({ok:true,lead:{email:undefined}}));
+  it("accepteert ook een plausibele Vlaamse locatie",()=>expect(qualifyCandidate({...candidate,country:"BE",phoneNumber:"+32 3 123 45 67",city:"Antwerpen",latitude:51.2194,longitude:4.4025},confirmed)).toMatchObject({ok:true}));
+  it("weigert een bedrijf buiten Nederland en België",()=>expect(qualifyCandidate({...candidate,country:"DE",city:"Aken"},confirmed)).toMatchObject({ok:false,reason:"buiten_gebied"}));
   it("weigert permanent gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_PERMANENTLY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
   it("weigert tijdelijk gesloten bedrijf",()=>expect(qualifyCandidate({...candidate,businessStatus:"CLOSED_TEMPORARILY"},confirmed)).toMatchObject({ok:false,reason:"niet_operationeel"}));
   it("weigert een privé/onvolledig adres",()=>expect(qualifyCandidate({...candidate,companyName:""},confirmed)).toMatchObject({ok:false,reason:"onvolledig"}));

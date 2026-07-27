@@ -14,7 +14,7 @@ export function candidateQualityScore(candidate: Candidate) {
   if (candidate.sourceUpdatedAt && Number.isFinite(Date.parse(candidate.sourceUpdatedAt))) score += 5;
   if (candidate.activitySignals?.length) score += 5;
   if (candidate.googleBusinessProfileVerified) score += 10;
-  if (extractCompanyWebsite(candidate)) score -= 100;
-  if (candidate.email && !/@(?:gmail|hotmail|outlook|live|icloud|yahoo)\./i.test(candidate.email)) score -= 25;
+  if (extractCompanyWebsite(candidate)) score += 5;
+  if (candidate.email && !/@(?:gmail|hotmail|outlook|live|icloud|yahoo)\./i.test(candidate.email)) score += 25;
   return score;
 }

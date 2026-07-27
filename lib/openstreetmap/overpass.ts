@@ -284,7 +284,6 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
   const contact = params.contact ?? "phone";
-  const noOfficialWebsite = '[!"website"][!"contact:website"][!"url"][!"contact:url"][!"operator:website"][!"brand:website"]';
   const latitudeDelta = params.radius / 111_320;
   const longitudeDelta = params.radius / (111_320 * Math.max(0.2, Math.cos(params.latitude * Math.PI / 180)));
   const spatial = params.boundingBox
@@ -292,7 +291,7 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
     : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const around = `${strategy}${spatial}`;
   const statements = filters
-    .map((filter) => `${around}${filter}[name]["${contact}"]${noOfficialWebsite};`)
+    .map((filter) => `${around}${filter}[name]["${contact}"];`)
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
@@ -308,7 +307,8 @@ export function buildOverpassIdentityQuery(candidate: Candidate, timeoutSeconds 
   const statements = new Set<string>();
   // Exact indexed tag lookups inside the Netherlands are materially
   // cheaper and more complete than the former 250 km around-query.
-  const areas = 'area["ISO3166-1"="NL"][admin_level="2"]->.allowedCountries;';
+  const country = /^(NL|BE)$/i.test(candidate.country) ? candidate.country.toUpperCase() : "NL";
+  const areas = `area["ISO3166-1"="${country}"][admin_level="2"]->.allowedCountries;`;
   const insideAllowedCountries = "nwr(area.allowedCountries)";
   statements.add(`${insideAllowedCountries}["name"="${qlLiteral(candidate.companyName)}"];`);
   for (const key of contactKeys) {

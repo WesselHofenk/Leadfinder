@@ -3,7 +3,7 @@ import { z } from "zod";
 const schema = z.object({
   AUTH_SECRET: z.string().min(32).optional(),
   CRON_SECRET: z.string().min(32).optional(),
-  LEAD_GENERATION_TARGET: z.coerce.number().int().min(1).max(50).default(50),
+  LEAD_GENERATION_TARGET: z.coerce.number().int().min(10).max(50).default(10),
   LEAD_CANDIDATE_BUFFER: z.coerce.number().int().min(50).max(200).default(200),
   OVERPASS_API_URL: z.string().url().default("https://overpass-api.de/api/interpreter"),
   OVERPASS_API_URLS: z.string().default("https://overpass-api.de/api/interpreter,https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter"),
@@ -16,7 +16,8 @@ const schema = z.object({
   GENERATION_BATCH_DURATION_SECONDS: z.coerce.number().int().min(20).max(50).default(45),
   GENERATION_MAX_SOURCE_CALLS: z.coerce.number().int().min(1).max(200).default(40),
   GENERATION_MAX_SOURCE_FAILURES: z.coerce.number().int().min(3).max(50).default(12),
-  GENERATION_MAX_RUN_MINUTES: z.coerce.number().int().min(2).max(30).default(15),
+  GENERATION_MAX_RUN_MINUTES: z.coerce.number().int().min(15).max(180).default(120),
+  QUALIFIED_DRAFT_MAX_AGE_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   WEBSITE_CHECK_CONCURRENCY: z.coerce.number().int().min(1).max(6).default(3),
   WEBSITE_FETCH_MAX_BYTES: z.coerce.number().int().min(100000).max(2000000).default(1000000),
   OSM_SOURCE_ENABLED: z.enum(["true", "false"]).default("true").transform((value) => value === "true"),

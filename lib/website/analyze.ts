@@ -16,23 +16,51 @@ export type WebsiteAnalysisResult = {
   reasons: { code: string; label: string; weight: number }[]; rawSignals: Record<string, unknown>;
 };
 
-function privateAddress(address: string) {
-  return /^(127\.|10\.|0\.|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.|169\.254\.|192\.168\.|198\.(1[89])\.|172\.(1[6-9]|2\d|3[01])\.|::1$|f[cd][0-9a-f]{2}:|fe80:)/i.test(address);
+export function privateAddress(address: string) {
+  const normalized = address.toLowerCase().split("%")[0];
+  const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (mappedIpv4) return privateAddress(mappedIpv4);
+  if (normalized.includes(":")) {
+    return normalized === "::"
+      || normalized === "::1"
+      || /^f[cd][0-9a-f]{2}:/.test(normalized)
+      || /^fe[89ab][0-9a-f]:/.test(normalized)
+      || /^ff[0-9a-f]{2}:/.test(normalized);
+  }
+  const octets = normalized.split(".").map(Number);
+  if (octets.length !== 4 || octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return true;
+  const [a, b] = octets;
+  return a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || (a === 198 && (b === 18 || b === 19))
+    || a >= 224;
 }
 
 export async function assertPublicUrl(value: string) {
   const url = new URL(value);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Ongeldige website-URL");
-  if (["localhost", "metadata.google.internal"].includes(url.hostname.toLowerCase())) throw new Error("Lokale adressen zijn niet toegestaan");
+  const hostname = url.hostname.toLowerCase().replace(/\.$/, "");
+  if (
+    hostname === "localhost"
+    || hostname.endsWith(".localhost")
+    || hostname === "metadata.google.internal"
+    || hostname === "169.254.169.254"
+    || (isIP(hostname) && privateAddress(hostname))
+  ) throw new Error("Lokale adressen zijn niet toegestaan");
   const records = await lookup(url.hostname, { all: true });
   if (!records.length || records.some((record) => privateAddress(record.address) || !isIP(record.address))) throw new Error("Privéadressen zijn niet toegestaan");
   return url;
 }
 
-async function safeFetch(urlValue: string, init: RequestInit = {}, timeoutMs = 12_000) {
+export async function safeFetch(urlValue: string, init: RequestInit = {}, timeoutMs = 12_000, fetchImpl: typeof fetch = fetch) {
   let url = await assertPublicUrl(urlValue);
   for (let redirect = 0; redirect < 4; redirect += 1) {
-    const response = await fetch(url, {
+    const response = await fetchImpl(url, {
       ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs),
       headers: { "User-Agent": "LeadfinderSitora/2.0 website-quality-check", "Accept": "text/html,application/xhtml+xml", ...(init.headers || {}) },
     });

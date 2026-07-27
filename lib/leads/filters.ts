@@ -2,7 +2,7 @@ import { z } from "zod";
 import { pipelineStatuses } from "./pipeline";
 
 export const leadStatuses = pipelineStatuses;
-export const websiteStatuses = ["NO_WEBSITE_CONFIRMED","NO_WEBSITE_LIKELY","SOCIAL_ONLY","WEBSITE_FOUND","WEBSITE_OUTDATED","WEBSITE_BROKEN","MANUAL_REVIEW_REQUIRED","UNKNOWN"] as const;
+export const websiteStatuses = ["NO_WEBSITE_CONFIRMED","NO_WEBSITE_LIKELY","SOCIAL_ONLY","WEBSITE_FOUND","WEBSITE_OUTDATED","WEBSITE_BROKEN","IMPROVABLE_WEBSITE","MANUAL_REVIEW_REQUIRED","UNKNOWN"] as const;
 export const sortOptions = ["confidence_desc","opportunity_desc","newest","oldest","checked_desc","city","category","status","contacts_desc"] as const;
 
 export const leadFilterSchema = z.object({

@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:dns/promises",()=>({resolveAny:vi.fn()}));
-import { resolveAny } from "node:dns/promises";
+vi.mock("node:dns/promises",()=>({lookup:vi.fn(),resolveAny:vi.fn()}));
+import { lookup, resolveAny } from "node:dns/promises";
 import { candidateDomains, clearDomainProbeCache, hasStrongAutomaticAbsenceEvidence, isConfirmedNoWebsite, verifyWebsiteCandidate } from "@/lib/leads/website-verification";
 import type { Candidate } from "@/lib/leads/eligibility";
 
 const base:Candidate={externalPlaceId:"osm:node/1",source:"OPENSTREETMAP",companyName:"By Yoel",phoneNumber:"0201234567",country:"NL",category:"salon",city:"Abcoude",postalCode:"1391AA",streetAddress:"Kerkstraat 1",latitude:52.2,longitude:4.9,googleMapsUrl:"https://www.openstreetmap.org/node/1"};
-describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();clearDomainProbeCache();vi.mocked(resolveAny).mockReset();vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("not found"),{code:"ENOTFOUND"}));delete process.env.WEBSITE_CANDIDATE_DNS_CHECK;});
+describe("lokale websiteverificatie",()=>{beforeEach(()=>{vi.restoreAllMocks();clearDomainProbeCache();vi.mocked(lookup).mockReset();vi.mocked(lookup).mockResolvedValue([{address:"93.184.216.34",family:4}] as never);vi.mocked(resolveAny).mockReset();vi.mocked(resolveAny).mockRejectedValue(Object.assign(new Error("not found"),{code:"ENOTFOUND"}));delete process.env.WEBSITE_CANDIDATE_DNS_CHECK;});
   it("herkent een eigen website rechtstreeks",async()=>expect(await verifyWebsiteCandidate({...base,website:"https://byyoel.nl"})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://byyoel.nl"}));
   it("herkent een domein zonder protocol",async()=>expect(await verifyWebsiteCandidate({...base,website:"byyoel.nl"})).toMatchObject({status:"WEBSITE_FOUND",confidence:100}));
   it("herkent een website in geneste ruwe brondata",async()=>expect(await verifyWebsiteCandidate({...base,rawData:{contactInfo:{officialWebsite:"bruna.nl"}}})).toMatchObject({status:"WEBSITE_FOUND",confidence:100,website:"https://bruna.nl"}));

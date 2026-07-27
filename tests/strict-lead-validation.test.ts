@@ -21,6 +21,11 @@ const base: Candidate = {
   companyName: "De Lokale Schilder",
   phoneNumber: "+31 30 123 45 67",
   email: "info@delokaleschilder.nl",
+  emailSource: "GOOGLE_PLACES",
+  emailSourceUrl: "https://www.google.com/maps/place/Voorbeeldbedrijf",
+  emailPubliclyListed: true,
+  emailMxVerified: true,
+  emailVerifiedAt: "2026-07-27T12:00:00.000Z",
   description: "Schilderbedrijf voor onderhoud en renovatie",
   language: "nl",
   languageConfidence: 95,
@@ -48,9 +53,10 @@ describe("centrale strikte leadvalidatie", () => {
     expect(result.reasons).toContain("OWN_WEBSITE_FOUND");
   });
 
-  it("maakt e-mail optioneel maar ondersteunt een expliciete e-mailgate", () => {
-    expect(validateStrictLead({ ...base, email: undefined }, noWebsite).reasons).not.toContain("EMAIL_REQUIRED");
-    expect(validateStrictLead({ ...base, email: undefined }, noWebsite, { requireEmail: true }).reasons).toContain("EMAIL_REQUIRED");
+  it("vereist een openbaar gevonden e-mailadres met bevestigde mailserver", () => {
+    expect(validateStrictLead({ ...base, email: undefined }, noWebsite).reasons).toContain("EMAIL_REQUIRED");
+    expect(validateStrictLead({ ...base, emailMxVerified: false }, noWebsite).reasons).toContain("EMAIL_REQUIRED");
+    expect(validateStrictLead({ ...base, emailSourceUrl: undefined }, noWebsite).reasons).toContain("EMAIL_REQUIRED");
   });
 
   it.each(["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"])("wijst status %s af", (businessStatus) => {
@@ -59,7 +65,8 @@ describe("centrale strikte leadvalidatie", () => {
 
   it("wijst een Franstalig Waals bedrijf af", () => {
     const result = validateStrictLead({ ...base, country: "BE", province: "Luik", city: "Liège", language: "fr", languageConfidence: 95, description: "Entreprise de peinture pour votre maison" }, noWebsite);
-    expect(result.reasons).toEqual(expect.arrayContaining(["REGION_NOT_ALLOWED", "LANGUAGE_NOT_DUTCH"]));
+    expect(result.reasons).toContain("LANGUAGE_NOT_DUTCH");
+    expect(result.reasons).not.toContain("REGION_NOT_ALLOWED");
   });
 
   it("wijst een bedrijf zonder aantoonbare openbare bedrijfsvermelding af", () => {
@@ -94,9 +101,9 @@ describe("centrale strikte leadvalidatie", () => {
     expect(validateStrictLeadBeforeLocation({ ...candidate, phoneNumber: undefined }).reasons).toContain("PHONE_REQUIRED");
   });
 
-  it("wijst ook een actief Nederlandstalig Vlaams bedrijf af", () => {
+  it("accepteert een actief Nederlandstalig Vlaams bedrijf", () => {
     const candidate = { ...base, phoneNumber: "+32 3 123 45 67", country: "BE", province: "Antwerpen", city: "Antwerpen", postalCode: "2000", streetAddress: "Meir 1", formattedAddress: "Meir 1, 2000 Antwerpen, België", latitude: 51.2194, longitude: 4.4025 };
-    expect(validateStrictLead(candidate, noWebsite).reasons).toContain("REGION_NOT_ALLOWED");
+    expect(validateStrictLead(candidate, noWebsite)).toMatchObject({ valid: true, reasons: [] });
   });
 
   it("blokkeert Brussel altijd, ook met sterk expliciet Nederlands bewijs", () => {

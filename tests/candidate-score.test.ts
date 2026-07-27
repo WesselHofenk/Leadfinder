@@ -25,7 +25,7 @@ describe("kandidaatprioritering", () => {
     expect(candidateQualityScore(candidate)).toBeGreaterThan(candidateQualityScore({ ...candidate, phoneNumber: undefined, postalCode: undefined, businessStatus: "UNKNOWN" }));
   });
 
-  it("laat een score nooit een zichtbare website verhullen", () => {
-    expect(candidateQualityScore({ ...candidate, website: "https://jansen.nl" })).toBeLessThan(0);
+  it("houdt kandidaten met een website beschikbaar voor de kwaliteitscontrole", () => {
+    expect(candidateQualityScore({ ...candidate, website: "https://jansen.nl" })).toBeGreaterThan(candidateQualityScore(candidate));
   });
 });
