@@ -7,6 +7,8 @@ type GenerationSummaryRun = {
   maxCandidates?: number;
   candidatesReserved?: number;
   stored?: number;
+  validDrafts?: number;
+  retryQueueCount?: number;
   candidatesChecked?: number;
   websitesFound?: number;
   permanentlyClosed?: number;
@@ -53,6 +55,8 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     maxCandidates: Math.min(run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN, MAX_CANDIDATES_PER_RUN),
     candidatesReserved: run?.candidatesReserved ?? 0,
     savedCount: run?.stored ?? 0,
+    validDraftCount: run?.validDrafts ?? 0,
+    retryQueueCount: run?.retryQueueCount ?? 0,
     candidatesChecked: run?.candidatesChecked ?? 0,
     rejectedWithWebsite,
     rejectedClosed: (run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0),

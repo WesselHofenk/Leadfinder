@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue } from "@/lib/jobs/generation-state";
+import { candidateReservationLimit, candidateRetryStatus, GENERATION_MAX_RUN_MINUTES, generationCompletionStatus, generationDeadline, generationProgress, generationRemainingMs, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalStatusForStoredLeads } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -72,10 +72,25 @@ describe("persistente generatiejobstatus", () => {
     expect(progress).toBeLessThanOrEqual(94);
   });
 
-  it("stopt een run op de echte totale looptijd", () => {
-    const now = new Date("2026-07-15T12:15:00Z");
-    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:00Z"), 15, now)).toBe(true);
-    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:01Z"), 15, now)).toBe(false);
+  it("stopt exact tien minuten na het oorspronkelijke startmoment", () => {
+    const startedAt = new Date("2026-07-15T12:00:00Z");
+    expect(GENERATION_MAX_RUN_MINUTES).toBe(10);
+    expect(generationDeadline(startedAt)).toEqual(new Date("2026-07-15T12:10:00Z"));
+    expect(isGenerationRunExpired(startedAt, 10, new Date("2026-07-15T12:09:59.999Z"))).toBe(false);
+    expect(isGenerationRunExpired(startedAt, 10, new Date("2026-07-15T12:10:00Z"))).toBe(true);
+  });
+
+  it("hervat met dezelfde startedAt en start de timer niet opnieuw", () => {
+    const originalStart = new Date("2026-07-15T12:00:00Z");
+    const resumedAt = new Date("2026-07-15T12:07:30Z");
+    expect(generationRemainingMs(originalStart, resumedAt)).toBe(150_000);
+    expect(generationRemainingMs(resumedAt, resumedAt)).toBe(600_000);
+  });
+
+  it("gebruikt na normale afloop geen FAILED-status", () => {
+    expect(terminalStatusForStoredLeads(0)).toBe("COMPLETE");
+    expect(terminalStatusForStoredLeads(1)).toBe("PARTIALLY_COMPLETED");
+    expect(terminalStatusForStoredLeads(10)).toBe("PARTIALLY_COMPLETED");
   });
 
   it("geeft bij langdurige bronuitval alleen periodiek een waarschuwing en geen stopbesluit", () => {

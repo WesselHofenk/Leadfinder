@@ -4,6 +4,7 @@ export type GenerationOutcomeCounts = {
   stored?: number;
   manualReview?: number;
   pendingCandidates?: number;
+  retryQueueCount?: number;
   websitesFound?: number;
   invalidPhone?: number;
   emailsMissing?: number;
@@ -24,7 +25,7 @@ export function preservedCandidateCount(run: GenerationOutcomeCounts) {
   // A pending generation row and a durable retry row can describe the same
   // candidate. Taking the maximum prevents the completion message from
   // reporting that candidate twice.
-  return Math.max(run.pendingCandidates ?? 0, run.manualReview ?? 0);
+  return Math.max(run.retryQueueCount ?? 0, run.pendingCandidates ?? 0, run.manualReview ?? 0);
 }
 
 export function rejectionReasonCounts(run: GenerationOutcomeCounts): ReasonCount[] {

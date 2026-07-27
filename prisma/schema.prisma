@@ -352,6 +352,7 @@ model GenerationRun {
   duplicates                 Int                   @default(0)
   rejected                   Int                   @default(0)
   stored                     Int                   @default(0)
+  validDrafts                Int                   @default(0)
   manualReview               Int                   @default(0)
   websitesChecked            Int                   @default(0)
   websitesFound              Int                   @default(0)
@@ -398,6 +399,7 @@ model GenerationRun {
   processedSegments          Int                   @default(0)
   batchNumber                Int                   @default(0)
   pendingCandidates          Int                   @default(0)
+  retryQueueCount            Int                   @default(0)
   retriedCandidates          Int                   @default(0)
   lastBatchDurationMs        Int?
   existingLeads              Int                   @default(0)
@@ -429,10 +431,12 @@ model QualifiedLeadDraft {
   run         GenerationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
   fingerprint String        @unique
   payload     Json
+  validatedAt DateTime?
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
   @@index([runId, createdAt])
+  @@index([runId, validatedAt])
 }
 
 model GenerationCandidate {

@@ -3,9 +3,12 @@
   "framework": "nextjs",
   "buildCommand": "pnpm vercel-build",
   "installCommand": "pnpm install --frozen-lockfile",
+  "env": {
+    "GENERATION_MAX_RUN_MINUTES": "10"
+  },
   "functions": {
     "app/api/generation/route.ts": { "maxDuration": 60 },
-    "app/api/cron/generation/route.ts": { "maxDuration": 60 },
+    "app/api/cron/generation/route.ts": { "maxDuration": 300 },
     "app/api/queues/generation/route.ts": {
       "maxDuration": 60,
       "experimentalTriggers": [
@@ -22,6 +25,7 @@
     "app/api/cron/analyze/route.ts": { "maxDuration": 300 }
   },
   "crons": [
+    { "path": "/api/cron/generation", "schedule": "* * * * *" },
     { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
     { "path": "/api/cron/reverify", "schedule": "43 2 * * *" },
     { "path": "/api/cron/analyze", "schedule": "7 3 * * *" }

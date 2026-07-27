@@ -1,4 +1,6 @@
 export const terminalGenerationStatuses = ["COMPLETE", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"] as const;
+export const GENERATION_MAX_RUN_MINUTES = 10;
+export const GENERATION_MAX_RUN_MS = GENERATION_MAX_RUN_MINUTES * 60_000;
 
 export function isTerminalGenerationStatus(status: string) {
   return (terminalGenerationStatuses as readonly string[]).includes(status);
@@ -18,6 +20,18 @@ export function isBatchDeadlineNear(deadlineMs: number, nowMs = Date.now(), rese
 
 export function isGenerationRunExpired(startedAt: Date | null, maxMinutes: number, now = new Date()) {
   return Boolean(startedAt && now.getTime() - startedAt.getTime() >= maxMinutes * 60_000);
+}
+
+export function generationDeadline(startedAt: Date, maxMinutes = GENERATION_MAX_RUN_MINUTES) {
+  return new Date(startedAt.getTime() + maxMinutes * 60_000);
+}
+
+export function generationRemainingMs(startedAt: Date, now = new Date(), maxMinutes = GENERATION_MAX_RUN_MINUTES) {
+  return Math.max(0, generationDeadline(startedAt, maxMinutes).getTime() - now.getTime());
+}
+
+export function terminalStatusForStoredLeads(stored: number) {
+  return stored > 0 ? "PARTIALLY_COMPLETED" as const : "COMPLETE" as const;
 }
 
 export function sourceAttemptDelta(sourceSucceeded: boolean) {

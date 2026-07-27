@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
-import { isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
+import { GENERATION_MAX_RUN_MINUTES, isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
 import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
 import { completedRunMessage, consistentTerminalReason, preservedCandidateCount } from "@/lib/jobs/generation-summary";
 
@@ -21,6 +21,7 @@ type Run = {
   externallyValidated: number;
   cacheHits: number;
   stored: number;
+  validDrafts: number;
   withoutWebsite: number;
   manualReview: number;
   duplicates: number;
@@ -57,6 +58,7 @@ type Run = {
   locationCountUncertain: number;
   duplicateListingsMerged: number;
   pendingCandidates: number;
+  retryQueueCount: number;
   retriedCandidates: number;
   batchNumber: number;
   exhausted: boolean;
@@ -75,15 +77,12 @@ type Run = {
 
 export function resultMessage(run: Run) {
   const conciseReason = consistentTerminalReason(run).split(" Resultaten:")[0]?.trim();
-  const preserved = preservedCandidateCount(run);
-  if (run.status === "COMPLETE") {
-    return completedRunMessage(run);
-  }
-  if (run.status === "PARTIALLY_COMPLETED") {
-    return `Zoekrun gedeeltelijk afgerond. ${conciseReason || `${run.stored} gekwalificeerde concepten blijven veilig bewaard voor aanvulling tot ${run.targetCount}.`}`;
+  if (run.status === "COMPLETE" || run.status === "PARTIALLY_COMPLETED") {
+    return conciseReason || `De zoekrun van 10 minuten is afgerond. ${run.stored} volledig gekwalificeerde leads zijn opgeslagen in de pipeline. ${run.retryQueueCount ?? run.manualReview} onzekere kandidaten blijven bewaard voor een volgende run.`;
   }
   if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
   if (run.status === "TIMED_OUT") {
+    const preserved = preservedCandidateCount(run);
     if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${run.stored} gekwalificeerde concepten blijven veilig bewaard voor een vervolgrun.`;
     if ((run.consecutiveSourceFailures ?? 0) > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
     return `De maximale verwerkingstijd is bereikt. ${completedRunMessage(run)}${preserved ? "" : " Een volgende klik probeert andere zoeksegmenten."}`;
@@ -92,8 +91,8 @@ export function resultMessage(run: Run) {
 }
 
 function resultClass(status?: string) {
-  if (status === "COMPLETE") return "success-message";
-  if (status === "PARTIALLY_COMPLETED" || status === "TIMED_OUT") return "warning-message";
+  if (status === "COMPLETE" || status === "PARTIALLY_COMPLETED") return "success-message";
+  if (status === "TIMED_OUT") return "warning-message";
   return "alert";
 }
 
@@ -246,7 +245,9 @@ export function GenerationButton() {
   const progress = pending ? Math.max(2, Math.min(100, run?.progress ?? 2)) : Math.min(100, run?.progress ?? 0);
   const activity = pending && (run?.candidatesFound ?? 0) === 0;
   const elapsedSeconds = run?.startedAt ? Math.max(0, Math.floor((now - new Date(run.startedAt).getTime()) / 1_000)) : 0;
+  const remainingSeconds = Math.max(0, GENERATION_MAX_RUN_MINUTES * 60 - elapsedSeconds);
   const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
+  const remaining = `${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, "0")}`;
   return <div className="generation-control">
     <button className="button button-primary" onClick={generate} disabled={pending} aria-busy={pending}>
       {pending ? <LoaderCircle className="animate-spin" size={15}/> : message ? <RotateCcw size={15}/> : <Plus size={15}/>} {pending ? "Leads controleren…" : message ? "Opnieuw genereren" : "Nieuwe leads genereren"}
@@ -254,11 +255,12 @@ export function GenerationButton() {
     {pending && <section className="generation-progress" aria-live="polite" aria-label="Voortgang leadgeneratie">
       <div className="generation-progress-head"><span>{run?.currentPhase || "Zoekopdracht valideren"}</span><strong>{Math.round(progress)}%</strong></div>
       <div className={`progress${activity ? " progress-active" : ""}`}><span style={{ width: `${progress}%` }}/></div>
-      <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0} · {elapsed}</p>
+      <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0}</p>
+      <p className="generation-source-note">Verstreken tijd {elapsed} · resterende tijd {remaining} van 10:00</p>
       <p className="generation-source-note">{run?.message || "De eerste kleine zoekbatch start binnen enkele seconden."}</p>
       <div className="generation-metrics">
         <Metric label="Ruw gevonden" value={run?.candidatesFound ?? 0}/><Metric label="Uniek gereserveerd" value={`${run?.candidatesReserved ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/>
-        <Metric label="Gecontroleerd" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
+        <Metric label="Gecontroleerde kandidaten" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
         <Metric label="Extern gevalideerd" value={run?.externallyValidated ?? 0}/><Metric label="Cachehits" value={run?.cacheHits ?? 0}/>
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
@@ -272,18 +274,18 @@ export function GenerationButton() {
         <Metric label="Franchises" value={run?.franchiseRejected ?? 0}/><Metric label="Zelfde naam, ander adres" value={run?.sameNameMultipleAddresses ?? 0}/>
         <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
         <Metric label="Dubbele vermeldingen samengevoegd" value={run?.duplicateListingsMerged ?? 0}/><Metric label="Bestaand" value={run?.existingLeads ?? 0}/>
-        <Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
+        <Metric label="Kandidaten in retryqueue" value={run?.retryQueueCount ?? run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
         <Metric label="Bronverzoeken" value={run?.sourceRequests ?? 0}/><Metric label="Bronverzoeken geslaagd" value={run?.sourceSuccesses ?? 0}/>
         <Metric label="Geldig vóór opslag" value={run?.validCandidates ?? 0}/><Metric label="Databasepogingen" value={run?.databaseInsertAttempts ?? 0}/>
         <Metric label="Databasefouten" value={run?.databaseInsertFailures ?? 0}/><Metric label="Mislukte zoekbatches" value={run?.sourceFailures ?? 0}/>
-        <Metric label="Gekwalificeerd voor batch" value={`${run?.stored ?? 0}/${run?.targetCount ?? 10}`} strong/>
+        <Metric label="Geldige concepten" value={run?.validDrafts ?? 0}/><Metric label="Definitief opgeslagen leads" value={run?.stored ?? 0} strong/>
       </div>
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten totaal · {run?.consecutiveSourceFailures ?? 0} achter elkaar</p>
       <button className="button button-secondary generation-cancel" onClick={cancel}><Square size={13}/>Zoekrun annuleren</button>
     </section>}
     {message && <p className={resultClass(run?.status)} role="status">
-      {run?.status === "COMPLETE" && <CheckCircle2 size={15}/>}
-      {["PARTIALLY_COMPLETED", "TIMED_OUT"].includes(run?.status ?? "") && <AlertTriangle size={15}/>}
+      {["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") && <CheckCircle2 size={15}/>}
+      {run?.status === "TIMED_OUT" && <AlertTriangle size={15}/>}
       {message}
     </p>}
   </div>;
