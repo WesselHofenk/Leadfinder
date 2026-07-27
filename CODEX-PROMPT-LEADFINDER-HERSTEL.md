@@ -41,10 +41,12 @@ Bewaar een nieuwe lead alleen als al deze punten opnieuw zijn gecontroleerd vlak
 
 - Verwerk kleine, hervatbare batches met een database-lock en lease.
 - Herstel verlopen locks en kandidaten die tijdens een onderbroken batch op `PROCESSING` bleven staan.
-- Start na iedere actieve batch automatisch de volgende beveiligde workerbatch.
-- Bescherm de workerroute met een constant-time gecontroleerd geheim.
+- Publiceer na iedere actieve batch een nieuw, idempotent bericht op een duurzame Vercel Queue.
+- Gebruik een private queue-consumer met automatische retries; laat een Vercel-functie zichzelf niet rechtstreeks via HTTP aanroepen, omdat Vercels recursiebeveiliging zulke ketens met HTTP 508 stopt.
+- Gebruik een stabiele idempotentiesleutel per run en voltooid batchnummer, zodat dubbele bezorging nooit dubbele verwerking of opslag veroorzaakt.
+- Bescherm eventuele handmatige cron-fallbacks met een constant-time gecontroleerd geheim.
 - Houd iedere Vercel-functie binnen de ingestelde maximale duur.
-- De UI mag alleen pollen en mag niet verantwoordelijk zijn voor het voortzetten van de run.
+- De UI mag alleen pollen en mag niet verantwoordelijk zijn voor het voortzetten van de run; een stale-run-watchdog mag hooguit hetzelfde idempotente queuebericht opnieuw aanbieden.
 - De dagelijkse cron mag een actieve run hervatten, maar mag die niet na één batch ten onrechte als voltooid markeren.
 
 ## Atomaire opslag
@@ -78,7 +80,7 @@ Voeg of actualiseer tests voor:
 - duurzame retryqueue en stale-lockherstel;
 - exact 10 als enige succesvolle atomaire batchgrootte;
 - duplicaten binnen de batch en tegen bestaande leads;
-- achtergrondworker en browseronafhankelijke voortzetting;
+- duurzame queue, dubbele berichtbezorging, automatische retries en browseronafhankelijke voortzetting;
 - eerlijke UI-meldingen voor gedeeltelijk, timeout, bronuitval en voltooid.
 
 Voer daarna achtereenvolgens uit:
