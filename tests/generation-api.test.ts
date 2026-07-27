@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const runId = "cmrlz4csu0000l6046xanxs8s";
-const pendingRun = { id: runId, status: "PENDING", progress: 2, batchNumber: 0, updatedAt: new Date() };
+const pendingRun = { id: runId, status: "PENDING", progress: 2, batchNumber: 0, startedAt: new Date(), createdAt: new Date(), updatedAt: new Date() };
 
 const { generation, findFirst, acquireJobLock, releaseStartLock, worker } = vi.hoisted(() => ({
   generation: {
@@ -17,6 +17,7 @@ const { generation, findFirst, acquireJobLock, releaseStartLock, worker } = vi.h
   releaseStartLock: vi.fn(),
   worker: {
     generationWorkerAvailable: vi.fn(() => false),
+    scheduleGenerationWatchdog: vi.fn(),
     triggerGenerationWorker: vi.fn(),
   },
 }));
@@ -48,6 +49,7 @@ describe("serverless generation API", () => {
     generation.processGenerationBatch.mockResolvedValue({ ...pendingRun, status: "RUNNING", progress: 45 });
     generation.cancelGenerationRun.mockResolvedValue({ ...pendingRun, status: "CANCELLED", progress: 100 });
     worker.generationWorkerAvailable.mockReturnValue(false);
+    worker.scheduleGenerationWatchdog.mockResolvedValue(true);
     worker.triggerGenerationWorker.mockResolvedValue(true);
   });
 

@@ -2,13 +2,13 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("productieconfiguratie voor tienminutenruns", () => {
-  it("zet zowel de Vercel-omgeving als de minuutwatchdog correct", () => {
+  it("zet de Vercel-omgeving op tien minuten zonder een betaald croninterval te vereisen", () => {
     const config = JSON.parse(readFileSync("vercel.json", "utf8")) as {
       env?: Record<string, string>;
       crons?: Array<{ path: string; schedule: string }>;
     };
     expect(config.env?.GENERATION_MAX_RUN_MINUTES).toBe("10");
-    expect(config.crons).toContainEqual({ path: "/api/cron/generation", schedule: "* * * * *" });
+    expect(config.crons).not.toContainEqual({ path: "/api/cron/generation", schedule: "* * * * *" });
   });
 
   it("houdt de databasemigratie additief", () => {

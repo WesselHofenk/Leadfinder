@@ -25,7 +25,6 @@
     "app/api/cron/analyze/route.ts": { "maxDuration": 300 }
   },
   "crons": [
-    { "path": "/api/cron/generation", "schedule": "* * * * *" },
     { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
     { "path": "/api/cron/reverify", "schedule": "43 2 * * *" },
     { "path": "/api/cron/analyze", "schedule": "7 3 * * *" }

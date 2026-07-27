@@ -1,6 +1,7 @@
 import "server-only";
 
 import { DuplicateMessageError, send } from "@vercel/queue";
+import { GENERATION_MAX_RUN_MINUTES } from "./generation-state";
 
 export const GENERATION_QUEUE_TOPIC = "lead-generation";
 
@@ -10,6 +11,10 @@ export function generationWorkerAvailable() {
 
 export function generationQueueKey(runId: string, batchNumber: number) {
   return `generation:${runId}:after-batch:${Math.max(0, batchNumber)}`;
+}
+
+export function generationWatchdogKey(runId: string) {
+  return `generation:${runId}:deadline-watchdog`;
 }
 
 export async function triggerGenerationWorker(runId: string, batchNumber: number) {
@@ -30,6 +35,27 @@ export async function triggerGenerationWorker(runId: string, batchNumber: number
     return true;
   } catch (error) {
     // The same run/batch key means an equivalent continuation is already queued.
+    if (error instanceof DuplicateMessageError) return true;
+    throw error;
+  }
+}
+
+export async function scheduleGenerationWatchdog(runId: string, startedAt: Date) {
+  if (!generationWorkerAvailable()) return false;
+  const deadline = startedAt.getTime() + GENERATION_MAX_RUN_MINUTES * 60_000;
+  const delaySeconds = Math.max(1, Math.ceil((deadline - Date.now()) / 1_000) + 2);
+  try {
+    await send(
+      GENERATION_QUEUE_TOPIC,
+      { runId },
+      {
+        idempotencyKey: generationWatchdogKey(runId),
+        retentionSeconds: 86_400,
+        delaySeconds,
+      },
+    );
+    return true;
+  } catch (error) {
     if (error instanceof DuplicateMessageError) return true;
     throw error;
   }

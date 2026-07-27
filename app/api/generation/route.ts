@@ -5,7 +5,7 @@ import { z } from "zod";
 import { currentUser } from "@/lib/auth/session";
 import { cancelGenerationRun, createGenerationRun, latestGenerationRun, markStaleGenerationRuns, processGenerationBatch } from "@/lib/jobs/generation";
 import { generationResponse } from "@/lib/jobs/generation-response";
-import { generationWorkerAvailable, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
+import { generationWorkerAvailable, scheduleGenerationWatchdog, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
 import { acquireJobLock } from "@/lib/jobs/lock";
 import { prisma } from "@/lib/prisma";
 import { hasValidOrigin, rateLimit, requestIp } from "@/lib/security/request";
@@ -50,14 +50,27 @@ export async function POST(request: NextRequest) {
     await markStaleGenerationRuns();
     const active = await prisma.generationRun.findFirst({ where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } }, orderBy: { createdAt: "desc" } });
     if (active) {
-      if (generationWorkerAvailable()) after(() => triggerGenerationWorker(active.id, active.batchNumber).catch(() => undefined));
+      if (generationWorkerAvailable()) after(async () => {
+        await Promise.allSettled([
+          triggerGenerationWorker(active.id, active.batchNumber),
+          scheduleGenerationWatchdog(active.id, active.startedAt ?? active.createdAt),
+        ]);
+      });
       return NextResponse.json(generationResponse(active, false, "Er draait al een leadgeneratie."), { status: 409 });
     }
     const run = await createGenerationRun();
     if (generationWorkerAvailable()) {
-      after(() => triggerGenerationWorker(run.id, run.batchNumber).catch((error) => {
-        console.error(JSON.stringify({ jobId: run.id, step: "background_worker_start_failed", message: error instanceof Error ? error.message : String(error) }));
-      }));
+      after(async () => {
+        const results = await Promise.allSettled([
+          triggerGenerationWorker(run.id, run.batchNumber),
+          scheduleGenerationWatchdog(run.id, run.startedAt ?? run.createdAt),
+        ]);
+        for (const result of results) {
+          if (result.status === "rejected") {
+            console.error(JSON.stringify({ jobId: run.id, step: "background_worker_start_failed", message: result.reason instanceof Error ? result.reason.message : String(result.reason) }));
+          }
+        }
+      });
     }
     return NextResponse.json(generationResponse(run), { status: 202 });
   } finally {

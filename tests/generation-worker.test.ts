@@ -8,12 +8,12 @@ vi.mock("@vercel/queue", () => ({
   DuplicateMessageError: class DuplicateMessageError extends Error {},
 }));
 
-import { generationWorkerAvailable, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
+import { generationWorkerAvailable, scheduleGenerationWatchdog, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
 
 describe("automatische achtergrondvoortzetting", () => {
   afterEach(() => {
     delete process.env.VERCEL;
-    vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("blijft lokaal uitgeschakeld zonder Vercel-runtime", async () => {
@@ -33,6 +33,23 @@ describe("automatische achtergrondvoortzetting", () => {
       {
         idempotencyKey: "generation:run-1:after-batch:4",
         retentionSeconds: 86_400,
+      },
+    );
+  });
+
+  it("plant bij de oorspronkelijke start een eenmalige watchdog na de tienminutendeadline", async () => {
+    process.env.VERCEL = "1";
+    send.mockResolvedValue({ messageId: "watchdog-1" });
+    vi.spyOn(Date, "now").mockReturnValue(new Date("2026-07-15T12:00:00Z").getTime());
+
+    await expect(scheduleGenerationWatchdog("run-1", new Date("2026-07-15T12:00:00Z"))).resolves.toBe(true);
+    expect(send).toHaveBeenCalledWith(
+      "lead-generation",
+      { runId: "run-1" },
+      {
+        idempotencyKey: "generation:run-1:deadline-watchdog",
+        retentionSeconds: 86_400,
+        delaySeconds: 602,
       },
     );
   });
