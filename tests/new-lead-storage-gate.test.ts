@@ -11,7 +11,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
   $transaction: prismaTransaction,
 } }));
 
-import { storeNewLead } from "@/lib/jobs/generation";
+import { DuplicateIdentityError, storeNewLead } from "@/lib/jobs/generation";
 
 const base: Candidate = {
   externalPlaceId: "source-1", companyName: "Nieuw bedrijf", phoneNumber: "0201234567",
@@ -120,6 +120,12 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     leadCreate.mockRejectedValueOnce(new Error("database unavailable"));
     await expect(storeNewLead(base, confirmed)).rejects.toThrow("database unavailable");
     expect(validationUpdate).not.toHaveBeenCalled();
+  });
+
+  it("weigert een duurzame identiteitsmatch uit een eerdere run binnen dezelfde atomaire transactie", async () => {
+    fingerprintFindFirst.mockResolvedValueOnce({ fingerprint: "phone:+31201234567", leadId: "lead-existing" });
+    await expect(storeNewLead(base, confirmed)).rejects.toBeInstanceOf(DuplicateIdentityError);
+    expect(fingerprintFindFirst).toHaveBeenCalledOnce();
   });
 
   it("rolt terug wanneer de database-readback niet bevestigt dat de lead in Nieuw staat", async () => {

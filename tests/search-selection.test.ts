@@ -122,6 +122,18 @@ describe("adaptieve zoekplanning", () => {
     expect(selectAdaptiveSearchArea({ areas: [area()], categories, combinations, sequence: 0, now: new Date() })).toBeNull();
   });
 
+  it("kan na uitputting van direct beschikbare gebieden een afgekoelde combinatie als nieuwe strategie hervatten", () => {
+    const combinations = [metric({ nextEligibleAt: new Date(Date.now() + 60_000) })];
+    expect(selectAdaptiveSearchArea({
+      areas: [area({ nextScanAt: new Date(Date.now() + 60_000) })],
+      categories,
+      combinations,
+      sequence: 0,
+      now: new Date(),
+      ignoreCooldowns: true,
+    })?.id).toBe("area-1");
+  });
+
   it("slaat een categorie over die niet in de actieve categorie-instellingen staat", () => {
     expect(selectAdaptiveSearchArea({
       areas: [area({ category: "uitgeschakeld" })],

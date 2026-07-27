@@ -16,13 +16,14 @@ import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
 import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
 import { extractCompanyWebsite } from "@/lib/leads/website";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
-import { initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { initialOverpassSearchCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN, RUN_DRAIN_WINDOW_MS } from "./generation-config";
 import { exhaustedSearchAreasReason } from "./generation-summary";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses } from "./generation-state";
+import { nextUnattemptedCursor, reserveNextCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
 import { lowYieldCooldownMs, preferUnusedCities, selectAdaptiveSearchArea } from "./search-selection";
 
 type Stats = {
@@ -870,66 +871,68 @@ function strictReasonMessage(reason: StrictLeadReason) {
   } satisfies Record<StrictLeadReason, string>)[reason];
 }
 
-async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
+async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
   const now = new Date();
-  const usedCities = [...usedCityKeys].map((cityKey) => {
-    const [country, ...cityParts] = cityKey.split(":");
-    return { country, city: cityParts.join(":") };
-  }).filter(({ country, city }) => Boolean(country && city));
+  const usedCityKeys = new Set([...attemptedSegments].map((segment) => segment.split(":").slice(0, 2).join(":")));
   const activeCategories = await prisma.category.findMany({
     where: { isActive: true },
     select: { name: true, priority: true },
     orderBy: [{ priority: "asc" }, { name: "asc" }],
   });
-  if (!activeCategories.length) return null;
+  if (!activeCategories.length) return { selected: null, totalStrategies: 0, attemptedStrategies: 0, remainingSegments: 0 };
   const coverageWhere = {
     status: { not: "PAUSED" as const },
-    nextScanAt: { lte: now },
     category: { in: activeCategories.map(({ name }) => name) },
     country: "NL",
-    NOT: usedCities,
   };
-  // Keep exploration, but always include a pool of high-priority local trades.
-  // A single oldest-first slice became dominated by never-scanned low-yield
-  // categories and could exclude productive city/category pairs for many runs.
-  const [oldestCoverage, priorityCoverage] = await Promise.all([
-    prisma.coverageArea.findMany({
-      where: coverageWhere,
-      orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
-      take: 180,
-    }),
-    prisma.coverageArea.findMany({
-      where: coverageWhere,
-      orderBy: [{ priority: "asc" }, { lastScannedAt: { sort: "asc", nulls: "first" } }, { city: "asc" }, { category: "asc" }],
-      take: 180,
-    }),
-  ]);
-  const candidates = [...new Map([...oldestCoverage, ...priorityCoverage].map((area) => [area.id, area])).values()];
+  // Cooldowns prioritize polite source use but are not durable exhaustion.
+  // Load the complete active NL search space so a later run can continue with
+  // another page/tag/element strategy even when every area was recently used.
+  const candidates = await prisma.coverageArea.findMany({
+    where: coverageWhere,
+    orderBy: [{ priority: "asc" }, { lastScannedAt: { sort: "asc", nulls: "first" } }, { city: "asc" }, { category: "asc" }],
+  });
   const blockedAreaIds = candidates.filter((area) => detectBlockedLocation(area as typeof area & Record<string, unknown>).blocked).map(({ id }) => id);
   if (blockedAreaIds.length) await prisma.coverageArea.updateMany({
     where: { id: { in: blockedAreaIds } },
     data: { status: "PAUSED", errorMessage: "Uitgesloten door harde locatieblokkade: Brussel/Gent" },
   });
-  const areas = preferUnusedCities(
-    candidates.filter(({ id }) => !blockedAreaIds.includes(id)),
-    usedCityKeys,
-  );
-  if (!areas.length) return null;
+  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id));
+  const space = searchSpaceProgress(areas, attemptedSegments, OSM_SEARCH_CURSOR_COUNT);
+  if (!areas.length) return { selected: null, totalStrategies: 0, attemptedStrategies: 0, remainingSegments: 0 };
   const combinations = await prisma.searchCombination.findMany({
     where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
     select: {
+      id: true, tileCursor: true,
       country: true, city: true, category: true, useCount: true, candidatesFound: true,
       validLeads: true, errorCount: true, lastUsedAt: true, nextEligibleAt: true,
     },
   });
-  const area = selectAdaptiveSearchArea({
-    areas,
-    categories: activeCategories,
-    combinations,
-    sequence: combinations.reduce((sum, item) => sum + item.useCount, 0),
-    now,
+  const combinationByArea = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item]));
+  const availableAreas = areas.filter((area) => nextUnattemptedCursor({
+    area,
+    currentCursor: combinationByArea.get(`${area.country}:${area.city}:${area.category}`)?.tileCursor
+      ?? initialOverpassSearchCursor(area.country, area.city, area.category),
+    cursorCount: OSM_SEARCH_CURSOR_COUNT,
+    attemptedSegments,
+    cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
+  }) !== null);
+  if (!availableAreas.length) return {
+    selected: null,
+    totalStrategies: space.total,
+    attemptedStrategies: space.attempted,
+    remainingSegments: space.remaining,
+  };
+  const sequence = combinations.reduce((sum, item) => sum + item.useCount, 0);
+  const unusedCities = preferUnusedCities(availableAreas, usedCityKeys);
+  const select = (candidateAreas: typeof areas, ignoreCooldowns = false) => selectAdaptiveSearchArea({
+    areas: candidateAreas, categories: activeCategories, combinations, sequence, now, ignoreCooldowns,
   });
-  if (!area) return null;
+  const area = select(unusedCities)
+    ?? (unusedCities.length === availableAreas.length ? null : select(availableAreas))
+    ?? select(unusedCities, true)
+    ?? (unusedCities.length === availableAreas.length ? null : select(availableAreas, true));
+  if (!area) throw new Error("Er resteert zoekruimte, maar er kon geen zoeksegment worden geselecteerd.");
   const combination = await prisma.searchCombination.upsert({
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
     create: {
@@ -939,10 +942,35 @@ async function nextSearchArea(usedCityKeys: ReadonlySet<string>) {
     },
     update: { region: area.region, searchTerm: area.category },
   });
-  return { area, combination, tileCursor: combination.tileCursor % OSM_SEARCH_CURSOR_COUNT, remainingSegments: areas.length };
+  const tileCursor = await reserveNextCursor({
+    area,
+    cursorCount: OSM_SEARCH_CURSOR_COUNT,
+    attemptedSegments,
+    cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
+    loadCursor: async () => (await prisma.searchCombination.findUniqueOrThrow({
+      where: { id: combination.id },
+      select: { tileCursor: true },
+    })).tileCursor,
+    compareAndSwap: async (currentCursor, nextCursor) => (await prisma.searchCombination.updateMany({
+      where: { id: combination.id, tileCursor: currentCursor },
+      data: { tileCursor: nextCursor },
+    })).count === 1,
+  });
+  if (tileCursor === null) return {
+    selected: null,
+    totalStrategies: space.total,
+    attemptedStrategies: space.total,
+    remainingSegments: 0,
+  };
+  return {
+    selected: { area, combination, tileCursor },
+    totalStrategies: space.total,
+    attemptedStrategies: space.attempted,
+    remainingSegments: Math.max(0, space.remaining - 1),
+  };
 }
 
-async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
+async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string, exhausted = false) {
   const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, maxCandidates: true, candidatesReserved: true, sourceRequests: true, sourceSuccesses: true, startedAt: true, createdAt: true } });
   const summary = `Resultaten: bronverzoeken ${current.sourceRequests}; succesvol ${current.sourceSuccesses}; mislukt ${Math.max(0, current.sourceRequests - current.sourceSuccesses)}; ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; verkeerde locatie ${stats.wrongLocationRejected}; onvoldoende gegevens ${stats.insufficientDataRejected}; geldig vóór opslag ${stats.validCandidates}; databasepogingen ${stats.databaseInsertAttempts}; databasefouten ${stats.databaseInsertFailures}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; zonder geldig telefoonnummer ${stats.invalidPhone}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens/franchises ${stats.chainRejected + stats.franchiseRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; opgeslagen ${stats.stored}/${current.targetCount}.`;
   const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
@@ -958,7 +986,7 @@ async function terminalRun(runId: string, status: JobStatus, stats: Stats, place
       ...runData(stats, places, errors, warnings),
       status,
       progress: 100,
-      exhausted: (status === JobStatus.COMPLETE || status === JobStatus.PARTIALLY_COMPLETED) && stats.stored < current.targetCount,
+      exhausted,
       currentPhase: status === JobStatus.CANCELLED ? "Geannuleerd" : status === JobStatus.TIMED_OUT ? "Tijdslimiet bereikt" : status === JobStatus.FAILED ? "Mislukt" : status === JobStatus.PARTIALLY_COMPLETED ? "Gedeeltelijk afgerond" : "Voltooid",
       message: finalReason,
       stopReason: finalReason,
@@ -1112,9 +1140,11 @@ export async function processGenerationBatch(runId: string) {
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
-      const usedCityKeys = new Set(places.map((segment) => segment.split(":").slice(0, 2).join(":")));
-      const selected = await nextSearchArea(usedCityKeys);
-      if (!selected) {
+      const searchPlan = await nextSearchArea(new Set(places));
+      if (!searchPlan.selected) {
+        const reason = searchPlan.totalStrategies === 0
+          ? "Er zijn geen actieve Nederlandse openbare zoekgebieden en branches geconfigureerd; er zijn geen bronverzoeken uitgevoerd."
+          : `${exhaustedSearchAreasReason({ candidatesChecked: stats.checked, stored: stats.stored, rejected: stats.rejected, manualReview: stats.manualReview })} ${searchPlan.attemptedStrategies}/${searchPlan.totalStrategies} unieke zoekstrategieën zijn in deze run uitgevoerd.`;
         return terminalRun(
           runId,
           stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED,
@@ -1122,14 +1152,16 @@ export async function processGenerationBatch(runId: string) {
           places,
           errors,
           warnings,
-          exhaustedSearchAreasReason({ candidatesChecked: stats.checked, stored: stats.stored, rejected: stats.rejected, manualReview: stats.manualReview }),
+          reason,
+          true,
         );
       }
-      const { area, combination, tileCursor, remainingSegments } = selected;
+      const { area, combination, tileCursor } = searchPlan.selected;
+      const { remainingSegments } = searchPlan;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
       const tileLabel = overpassSearchPlan(tileCursor).id;
-      const segment = `${area.country}:${area.city}:${area.category}:${tileLabel}`;
+      const segment = searchStrategySegment(area, tileCursor, (cursor) => overpassSearchPlan(cursor).id);
       // Record the attempt before the external request. Failed public-source
       // calls must also rotate the run to another city instead of repeatedly
       // consuming the time budget on the same temporarily unhealthy area.
@@ -1140,10 +1172,18 @@ export async function processGenerationBatch(runId: string) {
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: adapter.id, currentRegion: region,
         currentCategory: area.category, currentTile: tileLabel, continuationCursor: segment,
-        remainingSegments,
+        remainingSegments, placesUsed: places,
         progress: run.progress,
-        message: `Zoektegel ${tileLabel} voor ${area.category} in ${region} wordt met een eigen requesttimeout opgehaald.`, heartbeatAt: new Date(),
+        message: `Nieuwe zoekstrategie ${searchPlan.attemptedStrategies + 1}/${searchPlan.totalStrategies} voor deze run: ${tileLabel}, ${area.category} in ${region}.`, heartbeatAt: new Date(),
       } });
+      await logSource(runId, adapter.id, "INFO", JSON.stringify({
+        jobId: runId,
+        step: "search_segment_reserved",
+        segment,
+        attemptedStrategies: searchPlan.attemptedStrategies + 1,
+        totalStrategies: searchPlan.totalStrategies,
+        remainingSegments,
+      }), area.city, area.category);
 
       try {
         const result = await adapter.searchBusinesses({
@@ -1198,7 +1238,7 @@ export async function processGenerationBatch(runId: string) {
             region: area.region, searchTerm: area.category, provider: result.sourceUrl ?? adapter.id,
             totalDurationMs: { increment: BigInt(sourceDurationMs) },
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
-            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: result.tile, lastError: null, nextEligibleAt,
+            lastTile: result.tile, lastError: null, nextEligibleAt,
           } });
           await tx.generationRun.update({ where: { id: runId }, data: {
             processedSegments: { increment: attemptDelta.processedSegments },
@@ -1234,7 +1274,7 @@ export async function processGenerationBatch(runId: string) {
             region: area.region, searchTerm: area.category, provider: adapter.id,
             totalDurationMs: { increment: BigInt(sourceDurationMs) },
             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
-            tileCursor: nextOverpassTileCursor(tileCursor), lastTile: tileLabel, lastError: message,
+            lastTile: tileLabel, lastError: message,
             nextEligibleAt: new Date(Date.now() + 5 * 60_000),
           } }),
           prisma.generationRun.update({ where: { id: runId }, data: {
@@ -1647,7 +1687,7 @@ export async function processGenerationBatch(runId: string) {
     }
     if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS && pendingCandidates === 0) {
       const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
-      return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; er waren geen verdere geschikte kandidaten in deze run.`);
+      return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde leads zijn direct opgeslagen; de veiligheidsgrens van deze run is bereikt terwijl overige zoekstrategieën voor een volgende run beschikbaar blijven.`);
     }
     const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
     if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten blijven veilig in de PostgreSQL-retryqueue.`);

@@ -20,6 +20,7 @@
     "generation:diagnose": "tsx scripts/diagnose-generation-run.ts",
     "generation:e2e-qualified": "node --conditions=react-server --import tsx scripts/e2e-qualified-lead.ts",
     "generation:e2e-source-outage": "node --conditions=react-server --import tsx scripts/e2e-source-outage.ts",
+    "generation:e2e-two-runs": "node --conditions=react-server --import tsx scripts/e2e-two-generation-runs.ts",
     "db:inspect-target": "tsx scripts/inspect-database-target.ts",
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
     "db:backup:sqlite": "tsx scripts/backup-local.ts",

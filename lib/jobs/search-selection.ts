@@ -32,7 +32,7 @@ export type AdaptiveSearchMode = "exploit" | "explore";
 const key = (value: Pick<SearchAreaCandidate, "country" | "city" | "category">) =>
   `${value.country}:${value.city}:${value.category}`;
 
-export function preferUnusedCities(areas: SearchAreaCandidate[], usedCityKeys: ReadonlySet<string>) {
+export function preferUnusedCities<T extends SearchAreaCandidate>(areas: T[], usedCityKeys: ReadonlySet<string>): T[] {
   const unused = areas.filter((area) => !usedCityKeys.has(`${area.country}:${area.city}`));
   return unused.length ? unused : areas;
 }
@@ -54,6 +54,7 @@ export function selectAdaptiveSearchArea(input: {
   combinations: SearchCombinationMetric[];
   sequence: number;
   now?: Date;
+  ignoreCooldowns?: boolean;
 }) {
   const now = input.now ?? new Date();
   const categories = new Map(input.categories.map((category) => [category.name, category.priority]));
@@ -62,8 +63,8 @@ export function selectAdaptiveSearchArea(input: {
     const categoryPriority = categories.get(area.category);
     const combination = metrics.get(key(area));
     return categoryPriority !== undefined
-      && area.nextScanAt <= now
-      && (!combination || combination.nextEligibleAt <= now);
+      && (input.ignoreCooldowns
+        || (area.nextScanAt <= now && (!combination || combination.nextEligibleAt <= now)));
   });
   if (!eligible.length) return null;
 

@@ -72,6 +72,18 @@ describe("serverless generation API", () => {
     expect((await POST(request("POST"))).status).toBe(202);
   });
 
+  it("geeft iedere opeenvolgende hergeneratie na afronding een eigen run-ID", async () => {
+    const secondRun = { ...pendingRun, id: "cmrlz4csu0001l604q7w3f6vn" };
+    generation.createGenerationRun
+      .mockResolvedValueOnce(pendingRun)
+      .mockResolvedValueOnce(secondRun);
+    const firstResponse = await POST(request("POST"));
+    const secondResponse = await POST(request("POST"));
+    expect((await firstResponse.json()).jobId).toBe(runId);
+    expect((await secondResponse.json()).jobId).toBe(secondRun.id);
+    expect(generation.createGenerationRun).toHaveBeenCalledTimes(2);
+  });
+
   it("verwerkt via PATCH precies de gevraagde persistente batch", async () => {
     const response = await PATCH(request("PATCH", { runId }));
     expect(response.status).toBe(200);
