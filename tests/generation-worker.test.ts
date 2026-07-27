@@ -2,32 +2,38 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
 
+const { send } = vi.hoisted(() => ({ send: vi.fn() }));
+vi.mock("@vercel/queue", () => ({
+  send,
+  DuplicateMessageError: class DuplicateMessageError extends Error {},
+}));
+
 import { generationWorkerAvailable, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
 
 describe("automatische achtergrondvoortzetting", () => {
   afterEach(() => {
-    delete process.env.CRON_SECRET;
-    vi.unstubAllGlobals();
+    delete process.env.VERCEL;
+    vi.clearAllMocks();
   });
 
-  it("blijft uitgeschakeld zonder lang workergeheim", async () => {
+  it("blijft lokaal uitgeschakeld zonder Vercel-runtime", async () => {
     expect(generationWorkerAvailable()).toBe(false);
-    await expect(triggerGenerationWorker("run-1", "https://leadfindersitora.nl/admin")).resolves.toBe(false);
+    await expect(triggerGenerationWorker("run-1", 0)).resolves.toBe(false);
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it("start de beveiligde vervolgbatch met hetzelfde run-id", async () => {
-    process.env.CRON_SECRET = "x".repeat(32);
-    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
-    vi.stubGlobal("fetch", fetchImpl);
+  it("zet de vervolgbatch met een stabiele sleutel op de duurzame wachtrij", async () => {
+    process.env.VERCEL = "1";
+    send.mockResolvedValue({ messageId: "message-1" });
 
-    await expect(triggerGenerationWorker("run-1", "https://leadfindersitora.nl/admin")).resolves.toBe(true);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      new URL("https://leadfindersitora.nl/api/cron/generation"),
-      expect.objectContaining({
-        method: "POST",
-        headers: expect.objectContaining({ Authorization: `Bearer ${"x".repeat(32)}` }),
-        body: JSON.stringify({ runId: "run-1" }),
-      }),
+    await expect(triggerGenerationWorker("run-1", 4)).resolves.toBe(true);
+    expect(send).toHaveBeenCalledWith(
+      "lead-generation",
+      { runId: "run-1" },
+      {
+        idempotencyKey: "generation:run-1:after-batch:4",
+        retentionSeconds: 86_400,
+      },
     );
   });
 });

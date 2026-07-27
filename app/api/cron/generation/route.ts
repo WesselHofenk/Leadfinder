@@ -1,5 +1,5 @@
 import { JobStatus } from "@prisma/client";
-import { after, NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 
 import { secureCompare } from "@/lib/auth/session";
@@ -23,16 +23,7 @@ export async function POST(request: NextRequest) {
 
   const run = await processGenerationBatch(parsed.data.runId);
   if (activeStatuses.has(run.status)) {
-    after(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
-      await triggerGenerationWorker(run.id, request.url).catch((error) => {
-        console.error(JSON.stringify({
-          jobId: run.id,
-          step: "background_worker_chain_failed",
-          message: error instanceof Error ? error.message : String(error),
-        }));
-      });
-    });
+    await triggerGenerationWorker(run.id, run.batchNumber);
   }
   return NextResponse.json({ ok: run.status !== JobStatus.FAILED, runId: run.id, status: run.status });
 }

@@ -2,9 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const runId = "cmrlz4csu0000l6046xanxs8s";
-const pendingRun = { id: runId, status: "PENDING", progress: 2 };
+const pendingRun = { id: runId, status: "PENDING", progress: 2, batchNumber: 0, updatedAt: new Date() };
 
-const { generation, findFirst, acquireJobLock, releaseStartLock } = vi.hoisted(() => ({
+const { generation, findFirst, acquireJobLock, releaseStartLock, worker } = vi.hoisted(() => ({
   generation: {
     cancelGenerationRun: vi.fn(),
     createGenerationRun: vi.fn(),
@@ -15,14 +15,15 @@ const { generation, findFirst, acquireJobLock, releaseStartLock } = vi.hoisted((
   findFirst: vi.fn(),
   acquireJobLock: vi.fn(),
   releaseStartLock: vi.fn(),
+  worker: {
+    generationWorkerAvailable: vi.fn(() => false),
+    triggerGenerationWorker: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/auth/session", () => ({ currentUser: vi.fn(async () => ({ id: "user-1" })) }));
 vi.mock("@/lib/jobs/generation", () => generation);
-vi.mock("@/lib/jobs/generation-worker", () => ({
-  generationWorkerAvailable: vi.fn(() => false),
-  triggerGenerationWorker: vi.fn(),
-}));
+vi.mock("@/lib/jobs/generation-worker", () => worker);
 vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock }));
 vi.mock("@/lib/prisma", () => ({ prisma: { generationRun: { findFirst } } }));
 vi.mock("@/lib/security/request", () => ({ hasValidOrigin: vi.fn(() => true), rateLimit: vi.fn(() => true), requestIp: vi.fn(() => "127.0.0.1") }));
@@ -46,12 +47,21 @@ describe("serverless generation API", () => {
     generation.latestGenerationRun.mockResolvedValue(pendingRun);
     generation.processGenerationBatch.mockResolvedValue({ ...pendingRun, status: "RUNNING", progress: 45 });
     generation.cancelGenerationRun.mockResolvedValue({ ...pendingRun, status: "CANCELLED", progress: 100 });
+    worker.generationWorkerAvailable.mockReturnValue(false);
+    worker.triggerGenerationWorker.mockResolvedValue(true);
   });
 
   it("maakt een queued job zonder een lang open startrequest", async () => {
     const response = await POST(request("POST"));
     expect(response.status).toBe(202);
-    expect(await response.json()).toEqual(expect.objectContaining({ success: true, jobId: runId, status: "PENDING", requestedCount: 10, savedCount: 0, run: pendingRun }));
+    expect(await response.json()).toEqual(expect.objectContaining({
+      success: true,
+      jobId: runId,
+      status: "PENDING",
+      requestedCount: 10,
+      savedCount: 0,
+      run: expect.objectContaining({ id: runId, status: "PENDING", batchNumber: 0 }),
+    }));
     expect(generation.processGenerationBatch).not.toHaveBeenCalled();
     expect(releaseStartLock).toHaveBeenCalledOnce();
   });

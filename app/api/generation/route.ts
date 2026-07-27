@@ -20,6 +20,20 @@ async function authorized() { return Boolean(await currentUser()); }
 export async function GET() {
   if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
   const run = await latestGenerationRun();
+  if (
+    run
+    && generationWorkerAvailable()
+    && (run.status === JobStatus.PENDING || run.status === JobStatus.RUNNING)
+    && Date.now() - run.updatedAt.getTime() >= 75_000
+  ) {
+    after(() => triggerGenerationWorker(run.id, run.batchNumber).catch((error) => {
+      console.error(JSON.stringify({
+        jobId: run.id,
+        step: "background_worker_watchdog_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    }));
+  }
   return NextResponse.json(generationResponse(run));
 }
 
@@ -36,12 +50,12 @@ export async function POST(request: NextRequest) {
     await markStaleGenerationRuns();
     const active = await prisma.generationRun.findFirst({ where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } }, orderBy: { createdAt: "desc" } });
     if (active) {
-      if (generationWorkerAvailable()) after(() => triggerGenerationWorker(active.id, request.url).catch(() => undefined));
+      if (generationWorkerAvailable()) after(() => triggerGenerationWorker(active.id, active.batchNumber).catch(() => undefined));
       return NextResponse.json(generationResponse(active, false, "Er draait al een leadgeneratie."), { status: 409 });
     }
     const run = await createGenerationRun();
     if (generationWorkerAvailable()) {
-      after(() => triggerGenerationWorker(run.id, request.url).catch((error) => {
+      after(() => triggerGenerationWorker(run.id, run.batchNumber).catch((error) => {
         console.error(JSON.stringify({ jobId: run.id, step: "background_worker_start_failed", message: error instanceof Error ? error.message : String(error) }));
       }));
     }

@@ -46,7 +46,7 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
   const rejectedWithWebsite = run?.websitesFound ?? 0;
   return {
     success,
-    backgroundWorker: Boolean(process.env.CRON_SECRET && process.env.CRON_SECRET.length >= 32),
+    backgroundWorker: process.env.VERCEL === "1",
     jobId: run?.id ?? null,
     status: run?.status ?? null,
     requestedCount: run?.targetCount ?? 10,

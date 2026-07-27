@@ -1,26 +1,36 @@
 import "server-only";
 
+import { DuplicateMessageError, send } from "@vercel/queue";
+
+export const GENERATION_QUEUE_TOPIC = "lead-generation";
+
 export function generationWorkerAvailable() {
-  return Boolean(process.env.CRON_SECRET && process.env.CRON_SECRET.length >= 32);
+  return process.env.VERCEL === "1";
 }
 
-export async function triggerGenerationWorker(runId: string, requestUrl: string) {
-  const secret = process.env.CRON_SECRET;
-  if (!secret || secret.length < 32) {
-    console.warn(JSON.stringify({ jobId: runId, step: "background_worker_unavailable", reason: "CRON_SECRET ontbreekt" }));
+export function generationQueueKey(runId: string, batchNumber: number) {
+  return `generation:${runId}:after-batch:${Math.max(0, batchNumber)}`;
+}
+
+export async function triggerGenerationWorker(runId: string, batchNumber: number) {
+  if (!generationWorkerAvailable()) {
+    console.warn(JSON.stringify({ jobId: runId, step: "background_worker_unavailable", reason: "Vercel Queue is alleen op Vercel actief" }));
     return false;
   }
-  const endpoint = new URL("/api/cron/generation", requestUrl);
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${secret}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ runId }),
-    cache: "no-store",
-    signal: AbortSignal.timeout(58_000),
-  });
-  if (!response.ok) throw new Error(`Achtergrondworker antwoordde met HTTP ${response.status}.`);
-  return true;
+
+  try {
+    await send(
+      GENERATION_QUEUE_TOPIC,
+      { runId },
+      {
+        idempotencyKey: generationQueueKey(runId, batchNumber),
+        retentionSeconds: 86_400,
+      },
+    );
+    return true;
+  } catch (error) {
+    // The same run/batch key means an equivalent continuation is already queued.
+    if (error instanceof DuplicateMessageError) return true;
+    throw error;
+  }
 }
