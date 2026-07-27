@@ -48,8 +48,9 @@ describe("centrale strikte leadvalidatie", () => {
     expect(result.reasons).toContain("OWN_WEBSITE_FOUND");
   });
 
-  it("wijst een kandidaat zonder zakelijk e-mailadres af", () => {
-    expect(validateStrictLead({ ...base, email: undefined }, noWebsite).reasons).toContain("EMAIL_REQUIRED");
+  it("maakt e-mail optioneel maar ondersteunt een expliciete e-mailgate", () => {
+    expect(validateStrictLead({ ...base, email: undefined }, noWebsite).reasons).not.toContain("EMAIL_REQUIRED");
+    expect(validateStrictLead({ ...base, email: undefined }, noWebsite, { requireEmail: true }).reasons).toContain("EMAIL_REQUIRED");
   });
 
   it.each(["CLOSED_PERMANENTLY", "CLOSED_TEMPORARILY"])("wijst status %s af", (businessStatus) => {
@@ -93,9 +94,9 @@ describe("centrale strikte leadvalidatie", () => {
     expect(validateStrictLeadBeforeLocation({ ...candidate, phoneNumber: undefined }).reasons).toContain("PHONE_REQUIRED");
   });
 
-  it("accepteert een actief Nederlandstalig Vlaams bedrijf", () => {
+  it("wijst ook een actief Nederlandstalig Vlaams bedrijf af", () => {
     const candidate = { ...base, phoneNumber: "+32 3 123 45 67", country: "BE", province: "Antwerpen", city: "Antwerpen", postalCode: "2000", streetAddress: "Meir 1", formattedAddress: "Meir 1, 2000 Antwerpen, België", latitude: 51.2194, longitude: 4.4025 };
-    expect(validateStrictLead(candidate, noWebsite)).toMatchObject({ valid: true });
+    expect(validateStrictLead(candidate, noWebsite).reasons).toContain("REGION_NOT_ALLOWED");
   });
 
   it("blokkeert Brussel altijd, ook met sterk expliciet Nederlands bewijs", () => {

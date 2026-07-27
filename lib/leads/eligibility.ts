@@ -44,8 +44,8 @@ export function hasPlausibleBusinessLocation(candidate: Candidate) {
   const postalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, country);
   const hasHouseNumber = Boolean(candidate.houseNumber?.trim() || /\d/.test(candidate.streetAddress));
   const bounds = country === "NL"
-    ? candidate.latitude >= 50.7 && candidate.latitude <= 53.7 && candidate.longitude >= 3.2 && candidate.longitude <= 7.3
-    : country === "BE" && candidate.latitude >= 49.4 && candidate.latitude <= 51.6 && candidate.longitude >= 2.4 && candidate.longitude <= 6.5;
+    && candidate.latitude >= 50.7 && candidate.latitude <= 53.7
+    && candidate.longitude >= 3.2 && candidate.longitude <= 7.3;
   const preciseAddress = Boolean(postalCode && hasHouseNumber && candidate.streetAddress.trim().length >= 6);
   const usableMappedLocation = Boolean(
     candidate.city.trim()
@@ -65,7 +65,7 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   if (blocked.blocked) return { ok: false, reason: blocked.reason ?? "blocked_location" };
-  if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
+  if (candidate.country.toUpperCase() !== "NL") return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
   if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
@@ -73,7 +73,6 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0] ?? null;
   if (!normalizedPhoneNumber) return { ok: false, reason: "invalid_phone" };
   const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
-  if (!normalizedEmail) return { ok: false, reason: "business_email_required" };
   const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
   let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
   if (status === "UNKNOWN") confidenceScore -= 10;

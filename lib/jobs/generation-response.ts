@@ -14,6 +14,14 @@ type GenerationSummaryRun = {
   duplicates?: number;
   rejected?: number;
   sourceFailures?: number;
+  sourceRequests?: number;
+  sourceSuccesses?: number;
+  wrongLocationRejected?: number;
+  insufficientDataRejected?: number;
+  validCandidates?: number;
+  databaseInsertAttempts?: number;
+  databaseInsertFailures?: number;
+  totalDurationMs?: number | null;
   consecutiveSourceFailures?: number;
   multipleLocationsRejected?: number;
   chainRejected?: number;
@@ -50,6 +58,16 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     rejectedDuplicate: run?.duplicates ?? 0,
     rejectedInvalid: Math.max(0, (run?.rejected ?? 0) - rejectedWithWebsite),
     failedQueries: run?.sourceFailures ?? 0,
+    sourceRequests: run?.sourceRequests ?? 0,
+    sourceSuccesses: run?.sourceSuccesses ?? 0,
+    sourceRequestFailures: Math.max(0, (run?.sourceRequests ?? 0) - (run?.sourceSuccesses ?? 0)),
+    rejectedWrongLocation: run?.wrongLocationRejected ?? 0,
+    rejectedInsufficientData: run?.insufficientDataRejected ?? 0,
+    validCandidates: run?.validCandidates ?? 0,
+    databaseInsertAttempts: run?.databaseInsertAttempts ?? 0,
+    databaseInsertSuccesses: run?.stored ?? 0,
+    databaseInsertFailures: run?.databaseInsertFailures ?? 0,
+    totalDurationMs: run?.totalDurationMs ?? null,
     consecutiveFailedQueries: run?.consecutiveSourceFailures ?? 0,
     rejectedMultipleLocations: run?.multipleLocationsRejected ?? 0,
     rejectedChains: run?.chainRejected ?? 0,

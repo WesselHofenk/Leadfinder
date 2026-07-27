@@ -89,8 +89,8 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       longitude: candidate.longitude,
       radius: 250_000,
       // Exact identity lookups are global and can take longer than a small
-      // discovery tile on free Overpass hosts. Six seconds caused valid,
-      // contact-complete candidates to be marked uncertain just before the
+      // discovery tile on free Overpass hosts. Six seconds caused valid
+      // phone-contactable candidates to be marked uncertain just before the
       // website/storage gate. Keep the request bounded, but allow the healthy
       // hedged provider enough time to return the indexed identity matches.
       timeoutMs: Math.min(10_000, this.timeoutMs),

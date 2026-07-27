@@ -51,13 +51,12 @@ describe("gerichte Overpass-query", () => {
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
     expect(query).not.toContain('["contact:phone"]');
-    expect(query).toContain('["phone"]["email"]');
-    expect(query).toContain('["phone"]["contact:email"]');
+    expect(query).not.toContain('["email"]');
     expect(query).toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
     expect(query).not.toContain('["website"~');
     expect(query).toContain("node(around:");
-    expect(query.match(/node\(around:/g)).toHaveLength(2);
+    expect(query.match(/node\(around:/g)).toHaveLength(1);
     expect(query).not.toContain("nwr(around:");
     expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
@@ -71,11 +70,10 @@ describe("gerichte Overpass-query", () => {
     const result = await searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch });
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
-    expect(result.tile).toMatchObject({ id: "t0-node-common", latitude: base.latitude, longitude: base.longitude, radius: 12_000 });
-    expect(result.query).toMatch(/node\(\d+\.\d+,\d+\.\d+,\d+\.\d+,\d+\.\d+\)/);
-    expect(result.query).not.toContain("node(around:");
-    expect(result.query).toContain('["phone"]["contact:email"]');
-    expect(result.query.match(/node\(\d+\.\d+,\d+\.\d+,\d+\.\d+,\d+\.\d+\)/g)).toHaveLength(4);
+    expect(result.tile).toMatchObject({ id: "t0-node-phone", latitude: base.latitude, longitude: base.longitude, radius: 2_400 });
+    expect(result.query).toContain("node(around:");
+    expect(result.query).toContain('["phone"]');
+    expect(result.query).not.toContain('["email"]');
   });
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
@@ -107,26 +105,26 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 2);
-    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "common", id: "t0-node-common" });
-    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "common", id: "t0-way-common" });
-    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "common", id: "t0-relation-common" });
-    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "any", id: "t0-node-any" });
-    expect(overpassSearchPlan(6)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "common", id: "t1-node-common" });
-    const completeContactQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "any", timeoutSeconds: 10 });
-    expect(completeContactQuery).toContain('["phone"]["email"]');
-    expect(completeContactQuery).toContain('["contact:telephone"]["contact:email"]');
-    expect(completeContactQuery.match(/node\(around:/g)).toHaveLength(12);
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 6);
+    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "phone", id: "t0-node-phone" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "phone", id: "t0-way-phone" });
+    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "phone", id: "t0-relation-phone" });
+    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "contact:phone", id: "t0-node-contact-phone" });
+    expect(overpassSearchPlan(18)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
+    const mobileQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "contact:mobile", timeoutSeconds: 10 });
+    expect(mobileQuery).toContain('["contact:mobile"]');
+    expect(mobileQuery).not.toContain('["email"]');
+    expect(mobileQuery.match(/node\(around:/g)).toHaveLength(1);
   });
 
-  it("start iedere nieuwe plaats/branche-combinatie met de snelle contact-complete nodequery", () => {
+  it("start iedere nieuwe plaats/branche-combinatie met de snelle telefoon-nodequery", () => {
     const cursors = ["Leeuwarden", "Lelystad", "Brugge", "Utrecht", "Breda", "Zwolle", "Haarlem", "Arnhem"]
       .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
         .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
     expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
     expect(new Set(cursors)).toEqual(new Set([0]));
     expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "node")).toBe(true);
-    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "common")).toBe(true);
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "phone")).toBe(true);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {
@@ -182,7 +180,8 @@ describe("timeouts, retries en fallback", () => {
 
   it("bouwt een kleine exacte identiteitsquery zonder websitefilter", () => {
     const query = buildOverpassIdentityQuery({ ...base, externalPlaceId: "osm:node/42", companyName: 'Kapper "De Hoek"', phoneNumber: "+31201234567", streetAddress: "Teststraat 1", googleMapsUrl: "https://www.openstreetmap.org/node/42", rawData: { phone: "+31 20 123 45 67" } });
-    expect(query).toContain('area["ISO3166-1"~"^(NL|BE)$"]');
+    expect(query).toContain('area["ISO3166-1"="NL"]');
+    expect(query).not.toContain("BE");
     expect(query).toContain('nwr(area.allowedCountries)');
     expect(query).not.toContain("around:250000");
     expect(query).toContain('["name"="Kapper \\"De Hoek\\""]');

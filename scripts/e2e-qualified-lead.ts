@@ -1,3 +1,4 @@
+import { PrismaClient } from "@prisma/client";
 import { validatePublicBusinessEmail } from "@/lib/leads/business-email";
 import { applySingleLocationDecision, assessSingleLocation } from "@/lib/leads/single-location";
 import { validateStrictLead } from "@/lib/leads/strict-validation";
@@ -24,6 +25,7 @@ async function main() {
   });
 
   const outcomes: Array<Record<string, unknown>> = [];
+  const beforeLeadCount = await prisma.lead.count();
   for (const sourceCandidate of search.candidates) {
     const existing = await prisma.lead.findFirst({
       where: {
@@ -40,10 +42,6 @@ async function main() {
     }
 
     const email = await validatePublicBusinessEmail(sourceCandidate);
-    if (email.status !== "VALID") {
-      outcomes.push({ companyName: sourceCandidate.companyName, outcome: "email_rejected", reason: email.reason });
-      continue;
-    }
 
     let related;
     try {
@@ -59,12 +57,13 @@ async function main() {
     const location = assessSingleLocation(sourceCandidate, related, true);
     const candidate = applySingleLocationDecision({
       ...sourceCandidate,
-      email: email.email,
-      emailSource: email.source,
-      emailSourceUrl: email.sourceUrl,
-      emailPubliclyListed: true,
-      emailMxVerified: true,
-      emailVerifiedAt: email.checkedAt,
+      email: email.status === "VALID" ? email.email : undefined,
+      emailAddresses: email.status === "VALID" ? [email.email] : [],
+      emailSource: email.status === "VALID" ? email.source : undefined,
+      emailSourceUrl: email.status === "VALID" ? email.sourceUrl : undefined,
+      emailPubliclyListed: email.status === "VALID",
+      emailMxVerified: email.status === "VALID",
+      emailVerifiedAt: email.status === "VALID" ? email.checkedAt : undefined,
     }, location);
     const website = await verifyWebsiteCandidate(candidate);
     const strict = validateStrictLead(candidate, website);
@@ -84,7 +83,9 @@ async function main() {
       outcomes.push({ companyName: candidate.companyName, outcome: "storage_rejected", reason: stored.reason });
       continue;
     }
-    const readback = await prisma.lead.findUniqueOrThrow({
+    await prisma.$disconnect();
+    const refreshedClient = new PrismaClient();
+    const readback = await refreshedClient.lead.findUniqueOrThrow({
       where: { id: stored.leadId },
       select: {
         id: true,
@@ -104,21 +105,27 @@ async function main() {
       readback.pipelineStageId !== "pipeline-nieuw"
       || !readback.isActive
       || !readback.phoneNumber
-      || !readback.email
       || readback.sourceRecords[0]?.decision !== "stored"
     ) {
       throw new Error(`E2E database readback failed for ${readback.id}.`);
     }
+    const afterLeadCount = await refreshedClient.lead.count();
+    await refreshedClient.$disconnect();
     console.info(JSON.stringify({
       success: true,
       source: "OPENSTREETMAP",
+      sourceCandidates: search.candidates.length,
+      candidatesExamined: outcomes.length + 1,
       companyName: readback.companyName,
       leadId: readback.id,
       pipelineStageId: readback.pipelineStageId,
       hasPhone: true,
-      hasPublicMxVerifiedEmail: true,
+      hasPublicMxVerifiedEmail: Boolean(readback.email),
       sourceDecision: readback.sourceRecords[0].decision,
       sourceReasonCode: readback.sourceRecords[0].reasonCode,
+      beforeLeadCount,
+      afterLeadCount,
+      persistedAcrossReconnect: afterLeadCount === beforeLeadCount + 1,
     }));
     return;
   }

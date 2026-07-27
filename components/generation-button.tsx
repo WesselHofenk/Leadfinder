@@ -31,6 +31,14 @@ type Run = {
   permanentlyClosed: number;
   temporarilyClosed: number;
   sourceFailures: number;
+  sourceRequests: number;
+  sourceSuccesses: number;
+  wrongLocationRejected: number;
+  insufficientDataRejected: number;
+  validCandidates: number;
+  databaseInsertAttempts: number;
+  databaseInsertFailures: number;
+  totalDurationMs?: number;
   consecutiveSourceFailures?: number;
   blockedBrussels: number;
   blockedGhent: number;
@@ -253,17 +261,19 @@ export function GenerationButton() {
         <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
         <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
         <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
-        <Metric label="Brussel afgewezen" value={run?.blockedBrussels ?? 0}/><Metric label="Gent afgewezen" value={run?.blockedGhent ?? 0}/>
+        <Metric label="Verkeerde locatie" value={run?.wrongLocationRejected ?? 0}/><Metric label="Onvoldoende gegevens" value={run?.insufficientDataRejected ?? 0}/>
         <Metric label="Zonder geldig telefoonnummer" value={run?.invalidPhone ?? 0}/><Metric label="Niet Nederlandstalig" value={run?.languageRejected ?? 0}/>
         <Metric label="E-mailadres gevonden" value={run?.emailsFound ?? 0}/><Metric label="Zonder e-mailadres" value={run?.emailsMissing ?? 0}/>
-        <Metric label="Ongeldig e-mailadres" value={run?.emailsInvalid ?? 0}/><Metric label="E-mailverrijking in retryqueue" value={run?.emailRetries ?? 0}/>
+        <Metric label="Ongeldig optioneel e-mailadres" value={run?.emailsInvalid ?? 0}/><Metric label="Tijdelijke e-mailcontrolefout" value={run?.emailRetries ?? 0}/>
         <Metric label="E-mailadres extern bevestigd" value={run?.emailsExternallyVerified ?? 0}/><Metric label="Resterende zoeksegmenten" value={run?.remainingSegments ?? "—"}/>
         <Metric label="Meerdere vestigingen" value={run?.multipleLocationsRejected ?? 0}/><Metric label="Ketens" value={run?.chainRejected ?? 0}/>
         <Metric label="Franchises" value={run?.franchiseRejected ?? 0}/><Metric label="Zelfde naam, ander adres" value={run?.sameNameMultipleAddresses ?? 0}/>
         <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
         <Metric label="Dubbele vermeldingen samengevoegd" value={run?.duplicateListingsMerged ?? 0}/><Metric label="Bestaand" value={run?.existingLeads ?? 0}/>
         <Metric label="Onzeker in retryqueue" value={run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
-        <Metric label="Mislukte zoekopdrachten" value={run?.sourceFailures ?? 0}/>
+        <Metric label="Bronverzoeken" value={run?.sourceRequests ?? 0}/><Metric label="Bronverzoeken geslaagd" value={run?.sourceSuccesses ?? 0}/>
+        <Metric label="Geldig vóór opslag" value={run?.validCandidates ?? 0}/><Metric label="Databasepogingen" value={run?.databaseInsertAttempts ?? 0}/>
+        <Metric label="Databasefouten" value={run?.databaseInsertFailures ?? 0}/><Metric label="Mislukte zoekbatches" value={run?.sourceFailures ?? 0}/>
         <Metric label="Nieuw bewaard" value={`${run?.stored ?? 0}/${run?.targetCount ?? 50}`} strong/>
       </div>
       <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten totaal · {run?.consecutiveSourceFailures ?? 0} achter elkaar</p>

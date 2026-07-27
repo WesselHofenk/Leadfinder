@@ -42,7 +42,7 @@ describe("frontend polling en eindstatus", () => {
     const progress = await screen.findByRole("region", { name: "Voortgang leadgeneratie" });
     await waitFor(() => expect(progress.textContent).toContain("15%"));
     expect(progress.textContent).toContain("Gesloten verwijderd");
-    expect(progress.textContent).toContain("Mislukte zoekopdrachten");
+    expect(progress.textContent).toContain("Mislukte zoekbatches");
     const result = await screen.findByRole("status", {}, { timeout: 3_500 });
     expect(result.textContent).toContain("Zoekrun gedeeltelijk afgerond");
     expect(result.textContent).toContain("18 van de gewenste 50 kandidaten gevonden");

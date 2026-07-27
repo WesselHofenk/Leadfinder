@@ -31,8 +31,6 @@ export function rejectionReasonCounts(run: GenerationOutcomeCounts): ReasonCount
   const reasons: ReasonCount[] = [
     { count: run.websitesFound ?? 0, label: "hadden een eigen website" },
     { count: run.invalidPhone ?? 0, label: "hadden geen geldig telefoonnummer" },
-    { count: run.emailsMissing ?? 0, label: "hadden geen openbaar zakelijk e-mailadres" },
-    { count: run.emailsInvalid ?? 0, label: "hadden een ongeldig e-mailadres" },
     { count: run.duplicates ?? 0, label: "waren duplicaten" },
     { count: (run.permanentlyClosed ?? 0) + (run.temporarilyClosed ?? 0), label: "waren gesloten of niet betrouwbaar actief" },
     { count: run.languageRejected ?? 0, label: "waren niet Nederlandstalig" },

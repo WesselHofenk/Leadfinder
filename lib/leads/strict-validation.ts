@@ -10,7 +10,6 @@ export type StrictLeadReason =
   | "BUSINESS_NOT_CONFIRMED_ACTIVE" | "BUSINESS_CLOSED" | "ADDRESS_NOT_USABLE"
   | "WEBSITE_NOT_CONFIRMED_ABSENT" | "OWN_WEBSITE_FOUND" | "SINGLE_LOCATION_NOT_CONFIRMED";
 
-const flemishRegions = new Set(["antwerpen", "limburg", "oost vlaanderen", "vlaams brabant", "west vlaanderen"]);
 const dutchWords = /\b(de|het|een|en|voor|van|met|winkel|bedrijf|kapper|schilder|loodgieter|open|gesloten|afspraak|contact|welkom)\b/gi;
 const frenchWords = /\b(le|la|les|des|une|et|pour|avec|entreprise|magasin|coiffeur|peintre|plombier|ouvert|ferme|rendez vous)\b/gi;
 
@@ -41,19 +40,12 @@ export function detectDutchBusinessLanguage(candidate: Candidate) {
   if (nl >= 2 && nl >= fr + 1) return { language: "nl", confidence: Math.min(90, 65 + nl * 5) };
   if (fr >= 2 && fr >= nl + 1) return { language: "fr", confidence: Math.min(90, 65 + fr * 5) };
   const phone = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
-  const region = normalized(candidate.province || candidate.regionLanguage || "");
   if (fr === 0 && candidate.country.toUpperCase() === "NL" && phone?.startsWith("+31")) return { language: "nl", confidence: 80 };
-  if (fr === 0 && candidate.country.toUpperCase() === "BE" && phone?.startsWith("+32") && flemishRegions.has(region)) return { language: "nl", confidence: 75 };
   return { language: "unknown", confidence: 0 };
 }
 
 export function allowedDutchRegion(candidate: Candidate) {
-  const country = candidate.country.toUpperCase();
-  if (country === "NL") return true;
-  if (country !== "BE") return false;
-  const region = normalized(candidate.province || candidate.regionLanguage || candidate.municipality || "");
-  if (flemishRegions.has(region)) return true;
-  return false;
+  return candidate.country.toUpperCase() === "NL";
 }
 
 export function hasVerifiedPublicBusinessProfile(candidate: Candidate) {
@@ -101,7 +93,7 @@ export function validateStrictLead(
   if (blocked.area === "BRUSSELS") reasons.push("BLOCKED_BRUSSELS");
   if (blocked.area === "GHENT") reasons.push("BLOCKED_GHENT");
   if (options.requirePhone !== false && !normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
-  if (options.requireEmail !== false && !normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])]).length) reasons.push("EMAIL_REQUIRED");
+  if (options.requireEmail === true && !normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])]).length) reasons.push("EMAIL_REQUIRED");
   if (!hasVerifiedPublicBusinessProfile(candidate)) reasons.push("NO_PUBLIC_BUSINESS_PROFILE");
   if (!allowedDutchRegion(candidate)) reasons.push("REGION_NOT_ALLOWED");
   if (language.language !== "nl" || language.confidence < 70) reasons.push("LANGUAGE_NOT_DUTCH");

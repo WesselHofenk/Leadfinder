@@ -83,10 +83,17 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     expect(leadCreate).not.toHaveBeenCalled();
   });
 
-  it("weigert vlak voor opslag een kandidaat zonder geverifieerd openbaar e-mailadres", async () => {
+  it("slaat een geldige telefoonlead zonder optioneel e-mailadres op zonder e-mailbewijs te verzinnen", async () => {
     await expect(storeNewLead({ ...base, email: undefined, emailMxVerified: false }, confirmed))
-      .resolves.toMatchObject({ stored: false, reason: "BUSINESS_EMAIL_NOT_VERIFIED" });
-    expect(leadCreate).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ stored: true, leadId: "lead-new" });
+    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+      email: null,
+      emailSource: null,
+      emailMxVerified: false,
+      emailVerifiedAt: null,
+    }) }));
+    const evidence = leadCreate.mock.calls[0]?.[0]?.data?.evidence?.create as Array<{ checkType: string }>;
+    expect(evidence.some((item) => item.checkType === "BUSINESS_EMAIL")).toBe(false);
   });
 
   it("weigert vlak voor opslag een kandidaat zonder bevestigde enkele vestiging", async () => {
@@ -95,10 +102,10 @@ describe("laatste databasebarrière voor nieuwe leads", () => {
     expect(leadCreate).not.toHaveBeenCalled();
   });
 
-  it("slaat een geldig Belgisch bedrijf zonder website eveneens in Nieuw op", async () => {
+  it("weigert een Belgisch bedrijf omdat nieuwe generatie uitsluitend Nederland betreft", async () => {
     const belgian = { ...base, externalPlaceId: "source-be-1", googlePlaceId: "ChIJ-source-be-1", phoneNumber: "+32 3 123 45 67", country: "BE", province: "Antwerpen", city: "Antwerpen", postalCode: "2000", streetAddress: "Meir 1", formattedAddress: "Meir 1, 2000 Antwerpen, België", latitude: 51.2194, longitude: 4.4025 };
-    await expect(storeNewLead(belgian, confirmed)).resolves.toMatchObject({ stored: true, leadId: "lead-new" });
-    expect(leadCreate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ country: "BE", pipelineStageId: "pipeline-nieuw" }) }));
+    await expect(storeNewLead(belgian, confirmed)).resolves.toMatchObject({ stored: false, reason: "REGION_NOT_ALLOWED" });
+    expect(leadCreate).not.toHaveBeenCalled();
   });
 
   it.each([

@@ -8,13 +8,12 @@ describe("eindmelding leadgeneratie", () => {
       candidatesChecked: 12,
       stored: 0,
       rejected: 10,
-      emailsMissing: 2,
       languageRejected: 5,
       manualReview: 2,
       pendingCandidates: 2,
     })).toBe(
       "12 kandidaten zijn gecontroleerd. Geen kandidaten voldeden aan alle vaste criteria. "
-      + "Meest voorkomende redenen: 5 waren niet Nederlandstalig, 2 hadden geen openbaar zakelijk e-mailadres. "
+      + "Meest voorkomende redenen: 5 waren niet Nederlandstalig. "
       + "2 kandidaten worden tijdens een volgende run verder gecontroleerd.",
     );
   });

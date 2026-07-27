@@ -25,17 +25,14 @@ describe("live openbare-bron-smoketest", () => {
         sourceRecordId: candidate.externalPlaceId,
         companyName: candidate.companyName,
         hasPhone: Boolean(candidate.phoneNumber || candidate.internationalPhoneNumber),
-        hasPublicEmail: Boolean(candidate.email && candidate.emailPubliclyListed && candidate.emailSourceUrl),
+        hasOptionalPublicEmail: Boolean(candidate.email && candidate.emailPubliclyListed && candidate.emailSourceUrl),
         address: candidate.formattedAddress || candidate.streetAddress,
       })),
     }));
     expect(result.endpoint).toMatch(/^https:\/\//);
     expect(result.candidates.length).toBeGreaterThan(0);
     expect(result.candidates.every((candidate) => Boolean(
-      (candidate.phoneNumber || candidate.internationalPhoneNumber)
-      && candidate.email
-      && candidate.emailPubliclyListed
-      && candidate.emailSourceUrl,
+      candidate.phoneNumber || candidate.internationalPhoneNumber,
     ))).toBe(true);
   }, 20_000);
 });

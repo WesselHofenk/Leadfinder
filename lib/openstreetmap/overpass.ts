@@ -51,18 +51,19 @@ type SearchParams = {
 
 export type OverpassElementStrategy = "node" | "way" | "relation";
 export type OverpassContactStrategy =
-  | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone"
-  | "email" | "contact:email" | "common" | "any";
+  | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
 const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
-// Start with the four common phone/e-mail pairs. Public records frequently mix
-// `phone` with `contact:email` (or the reverse); omitting those combinations
-// hid otherwise contact-complete businesses until a much later cursor.
-const contactStrategies: readonly OverpassContactStrategy[] = ["common", "any"];
+// A usable public phone number is the required contact route. Each indexed tag
+// gets its own small request so one expensive key/category combination cannot
+// block the rest of the run on a public Overpass host.
+const contactStrategies: readonly OverpassContactStrategy[] = [
+  "phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone",
+];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
 
 export function initialOverpassSearchCursor(country: string, city: string, category: string) {
@@ -70,9 +71,8 @@ export function initialOverpassSearchCursor(country: string, city: string, categ
   void city;
   void category;
   // Most named local businesses in OSM are mapped as nodes. New combinations
-  // start with the broad contact-complete strategy so differences between
-  // `phone` and `contact:phone` (or `email` and `contact:email`) cannot hide an
-  // otherwise qualified candidate.
+  // start with the common `phone` tag and rotate independently through the
+  // other public-phone keys.
   return 0;
 }
 
@@ -291,24 +291,8 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
     ? `(${(params.latitude - latitudeDelta).toFixed(7)},${(params.longitude - longitudeDelta).toFixed(7)},${(params.latitude + latitudeDelta).toFixed(7)},${(params.longitude + longitudeDelta).toFixed(7)})`
     : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const around = `${strategy}${spatial}`;
-  const phoneKeys = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"] as const;
-  const emailKeys = ["email", "contact:email"] as const;
-  // A lead is only useful after both public contact channels are confirmed.
-  // Requiring both at discovery time prevents phone-only candidates from
-  // consuming the validation budget and then endlessly cycling through the
-  // e-mail enrichment queue. Explicit indexed tag combinations are used
-  // instead of regex-key selectors: public Overpass hosts resolve those much
-  // faster and are consequently far less likely to time out.
-  const contactConstraints = contact === "common"
-    ? ['["phone"]["email"]', '["phone"]["contact:email"]', '["contact:phone"]["email"]', '["contact:phone"]["contact:email"]']
-    : contact === "any"
-    ? phoneKeys.flatMap((phone) => emailKeys.map((email) => `["${phone}"]["${email}"]`))
-    : contact === "email" || contact === "contact:email"
-      ? phoneKeys.map((phone) => `["${contact}"]["${phone}"]`)
-      : emailKeys.map((email) => `["${contact}"]["${email}"]`);
   const statements = filters
-    .flatMap((filter) => contactConstraints.map((contactConstraint) =>
-      `${around}${filter}[name]${contactConstraint}${noOfficialWebsite};`))
+    .map((filter) => `${around}${filter}[name]["${contact}"]${noOfficialWebsite};`)
     .join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
@@ -322,9 +306,9 @@ export function buildOverpassIdentityQuery(candidate: Candidate, timeoutSeconds 
   const raw = candidate.rawData && typeof candidate.rawData === "object" ? candidate.rawData as Record<string, unknown> : {};
   const contactKeys: OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
   const statements = new Set<string>();
-  // Exact indexed tag lookups inside both allowed countries are materially
+  // Exact indexed tag lookups inside the Netherlands are materially
   // cheaper and more complete than the former 250 km around-query.
-  const areas = 'area["ISO3166-1"~"^(NL|BE)$"][admin_level="2"]->.allowedCountries;';
+  const areas = 'area["ISO3166-1"="NL"][admin_level="2"]->.allowedCountries;';
   const insideAllowedCountries = "nwr(area.allowedCountries)";
   statements.add(`${insideAllowedCountries}["name"="${qlLiteral(candidate.companyName)}"];`);
   for (const key of contactKeys) {
@@ -408,21 +392,14 @@ export async function searchOverpass(params: SearchParams) {
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
   const baseTile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
-  // The first query is already restricted to named nodes with both common
-  // phone and e-mail tags and no website tag. That result set is small enough
-  // to scan the complete configured city radius safely. Previously this first
-  // query only covered the central 2.4 km; productive outer-city businesses
-  // could then remain unreachable for dozens of city/category rotations.
-  const tile = plan.tileCursor === 0 && plan.strategy === "node" && plan.contact === "common"
-    ? { ...baseTile, latitude: params.latitude, longitude: params.longitude, radius: Math.min(12_000, Math.max(baseTile.radius, params.radius)) }
-    : baseTile;
+  const tile = baseTile;
   const queryType = params.queryTypeOverride ?? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`;
   const query = params.queryOverride ?? buildOverpassQuery({
     ...tile,
     category: params.category,
     strategy: plan.strategy,
     contact: plan.contact,
-    boundingBox: plan.tileCursor === 0 && plan.strategy === "node" && plan.contact === "common",
+    boundingBox: false,
     timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1),
   });
   const tileLabel = params.tileLabelOverride ?? plan.id;
