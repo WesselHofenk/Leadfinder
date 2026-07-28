@@ -8,7 +8,7 @@ vi.mock("@vercel/queue", () => ({
   DuplicateMessageError: class DuplicateMessageError extends Error {},
 }));
 
-import { generationWorkerAvailable, scheduleGenerationWatchdog, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
+import { generationContinuationDelaySeconds, generationWorkerAvailable, scheduleGenerationWatchdog, triggerGenerationWorker } from "@/lib/jobs/generation-worker";
 
 describe("automatische achtergrondvoortzetting", () => {
   afterEach(() => {
@@ -50,6 +50,22 @@ describe("automatische achtergrondvoortzetting", () => {
         idempotencyKey: "generation:run-1:deadline-watchdog",
         retentionSeconds: 86_400,
         delaySeconds: 602,
+      },
+    );
+  });
+
+  it("plant een circuit-open hervatting vertraagd zonder de run te stoppen", async () => {
+    process.env.VERCEL = "1";
+    send.mockResolvedValue({ messageId: "message-delayed" });
+    expect(generationContinuationDelaySeconds("SOURCE_CIRCUIT_OPEN:30000")).toBe(30);
+    await triggerGenerationWorker("run-1", 6, 30);
+    expect(send).toHaveBeenCalledWith(
+      "lead-generation",
+      { runId: "run-1" },
+      {
+        idempotencyKey: "generation:run-1:after-batch:6",
+        retentionSeconds: 86_400,
+        delaySeconds: 30,
       },
     );
   });

@@ -5,7 +5,7 @@ import type { MessageMetadata } from "@vercel/queue";
 import { z } from "zod";
 
 import { processGenerationBatch } from "./generation";
-import { triggerGenerationWorker } from "./generation-worker";
+import { generationContinuationDelaySeconds, triggerGenerationWorker } from "./generation-worker";
 
 const messageSchema = z.object({ runId: z.string().cuid() });
 const activeStatuses = new Set<JobStatus>([JobStatus.PENDING, JobStatus.RUNNING]);
@@ -25,6 +25,6 @@ export async function handleGenerationQueueMessage(
 
   const run = await processGenerationBatch(parsed.data.runId);
   if (activeStatuses.has(run.status)) {
-    await triggerGenerationWorker(run.id, run.batchNumber);
+    await triggerGenerationWorker(run.id, run.batchNumber, generationContinuationDelaySeconds(run.lastError));
   }
 }

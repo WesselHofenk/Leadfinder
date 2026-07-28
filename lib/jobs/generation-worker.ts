@@ -17,7 +17,7 @@ export function generationWatchdogKey(runId: string) {
   return `generation:${runId}:deadline-watchdog`;
 }
 
-export async function triggerGenerationWorker(runId: string, batchNumber: number) {
+export async function triggerGenerationWorker(runId: string, batchNumber: number, delaySeconds = 0) {
   if (!generationWorkerAvailable()) {
     console.warn(JSON.stringify({ jobId: runId, step: "background_worker_unavailable", reason: "Vercel Queue is alleen op Vercel actief" }));
     return false;
@@ -30,6 +30,7 @@ export async function triggerGenerationWorker(runId: string, batchNumber: number
       {
         idempotencyKey: generationQueueKey(runId, batchNumber),
         retentionSeconds: 86_400,
+        ...(delaySeconds > 0 ? { delaySeconds: Math.min(300, Math.max(1, Math.ceil(delaySeconds))) } : {}),
       },
     );
     return true;
@@ -38,6 +39,10 @@ export async function triggerGenerationWorker(runId: string, batchNumber: number
     if (error instanceof DuplicateMessageError) return true;
     throw error;
   }
+}
+
+export function generationContinuationDelaySeconds(lastError?: string | null) {
+  return lastError?.startsWith("SOURCE_CIRCUIT_OPEN:") ? 30 : 0;
 }
 
 export async function scheduleGenerationWatchdog(runId: string, startedAt: Date) {

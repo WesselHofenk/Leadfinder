@@ -19,7 +19,7 @@ import { extractCompanyWebsite } from "@/lib/leads/website";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 import { initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
-import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
+import { enabledSourceAdapters, SourceCircuitOpenError } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN } from "./generation-config";
 import { exhaustedSearchAreasReason } from "./generation-summary";
@@ -1171,10 +1171,16 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
     },
   });
   const combinationByArea = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item]));
+  const firstCursorForRun = (area: typeof areas[number]) => {
+    const prefix = `${area.country}:${area.city}:${area.category}:`;
+    return [...attemptedSegments].some((segment) => segment.startsWith(prefix))
+      ? combinationByArea.get(`${area.country}:${area.city}:${area.category}`)?.tileCursor
+        ?? initialOverpassSearchCursor(area.country, area.city, area.category)
+      : initialOverpassSearchCursor(area.country, area.city, area.category);
+  };
   const availableAreas = areas.filter((area) => nextUnattemptedCursor({
     area,
-    currentCursor: combinationByArea.get(`${area.country}:${area.city}:${area.category}`)?.tileCursor
-      ?? initialOverpassSearchCursor(area.country, area.city, area.category),
+    currentCursor: firstCursorForRun(area),
     cursorCount: OSM_SEARCH_CURSOR_COUNT,
     attemptedSegments,
     cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
@@ -1207,7 +1213,7 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
   });
   const tileCursor = nextUnattemptedCursor({
     area,
-    currentCursor: combination.tileCursor,
+    currentCursor: firstCursorForRun(area),
     cursorCount: OSM_SEARCH_CURSOR_COUNT,
     attemptedSegments,
     cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
@@ -1572,6 +1578,21 @@ export async function processGenerationBatch(runId: string) {
       } catch (error) {
         const message = errorMessage(error);
         const sourceDurationMs = Date.now() - sourceStartedAt;
+        if (error instanceof SourceCircuitOpenError) {
+          const segmentIndex = places.lastIndexOf(segment);
+          if (segmentIndex >= 0) places.splice(segmentIndex, 1);
+          return prisma.generationRun.update({
+            where: { id: runId },
+            data: {
+              ...runData(stats, places, errors, warnings),
+              status: JobStatus.RUNNING,
+              continuationCursor: segment,
+              lastError: `SOURCE_CIRCUIT_OPEN:${error.retryAfterMs}`,
+              currentPhase: "Bronhosts koelen kort af",
+              message: "Alle bronhosts zitten tijdelijk in hun afkoelperiode. Dezelfde zoekcursor wordt over 30 seconden opnieuw ingepland zonder het foutbudget te verbruiken.",
+            },
+          });
+        }
         const attemptDelta = sourceAttemptDelta(false);
         stats.sourceFailures += attemptDelta.sourceFailures;
         consecutiveSourceFailures = nextConsecutiveSourceFailures(consecutiveSourceFailures, false);

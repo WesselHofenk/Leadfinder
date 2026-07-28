@@ -30,6 +30,15 @@ export function configuredOverpassEndpoints() {
   });
 }
 
+export class SourceCircuitOpenError extends Error {
+  readonly retryAfterMs = 30_000;
+
+  constructor(message: string) {
+    super(message);
+    this.name = "SourceCircuitOpenError";
+  }
+}
+
 export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   readonly id = "OPENSTREETMAP";
   readonly enabled: boolean;
@@ -61,7 +70,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     const healthy = await healthySourceEndpoints(rotated);
     const endpoints = healthy.slice(0, Math.min(3, healthy.length));
     if (!endpoints.length) {
-      throw new Error("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; deze zoekcursor blijft voor een volgende run bewaard.");
+      throw new SourceCircuitOpenError("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; deze zoekcursor blijft bewaard.");
     }
     const result = await searchOverpassHedged({
       endpoints,
@@ -91,7 +100,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     const rotated = [...this.endpoints.slice(start), ...this.endpoints.slice(0, start)];
     const endpoints = (await healthySourceEndpoints(rotated)).slice(0, 3);
     if (!endpoints.length) {
-      throw new Error("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; de identiteitscontrole wordt later hervat.");
+      throw new SourceCircuitOpenError("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; de identiteitscontrole wordt later hervat.");
     }
     const result = await searchOverpassHedged({
       endpoints,
