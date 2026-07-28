@@ -69,7 +69,7 @@ describe("gerichte Overpass-query", () => {
     const result = await searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch });
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
-    expect(result.tile).toMatchObject({ id: "t0-qualified-first", latitude: base.latitude, longitude: base.longitude, radius: 2_400 });
+    expect(result.tile).toMatchObject({ id: "t0-qualified-first", latitude: base.latitude, longitude: base.longitude, radius: 1_600 });
     expect(result.query).toContain("nwr(around:");
     expect(result.query).toContain("contact:phone");
     expect(result.query).toContain("contact:email");

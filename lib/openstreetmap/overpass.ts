@@ -428,7 +428,9 @@ export async function searchOverpass(params: SearchParams) {
   const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
   const baseTile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
-  const tile = baseTile;
+  const tile = plan.mode === "qualified-first"
+    ? { ...baseTile, radius: Math.min(1_600, baseTile.radius) }
+    : baseTile;
   const queryType = params.queryTypeOverride ?? (plan.mode === "qualified-first"
     ? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:qualified-first`
     : `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`);

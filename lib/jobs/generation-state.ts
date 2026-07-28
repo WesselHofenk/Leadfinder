@@ -71,6 +71,10 @@ export function candidateReservationLimit(maxCandidates: number, alreadyReserved
   return Math.max(0, Math.min(available, maxCandidates - alreadyReserved));
 }
 
+export function locationValidationBatchLimit(configuredBatchSize: number) {
+  return Math.max(1, Math.min(2, configuredBatchSize));
+}
+
 export function generationProgress(input: { stored: number; target: number; candidatesReserved?: number; candidatesChecked?: number; maxCandidates?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
   const maximumCandidates = Math.max(1, input.maxCandidates ?? input.target);
   const reservationProgress = Math.min(15, Math.round(((input.candidatesReserved ?? 0) / maximumCandidates) * 15));

@@ -23,7 +23,7 @@ import { enabledSourceAdapters, SourceCircuitOpenError } from "@/lib/sources/ope
 import { acquireJobLock } from "./lock";
 import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN } from "./generation-config";
 import { exhaustedSearchAreasReason } from "./generation-summary";
-import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses, terminalStatusForStoredLeads } from "./generation-state";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, locationValidationBatchLimit, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses, terminalStatusForStoredLeads } from "./generation-state";
 import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
 import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 import { publishQualifiedDrafts } from "./qualified-draft-publication";
@@ -1656,7 +1656,7 @@ export async function processGenerationBatch(runId: string) {
         await releaseQueueItems(queued.map(({ id }) => id), "De tienminutentermijn is verstreken vóór een nieuwe kandidatencontrole.");
         return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
       }
-      if (stats.checked >= run.maxCandidates || isBatchDeadlineNear(deadline) || locationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + locationWork.length >= run.targetCount) {
+      if (stats.checked >= run.maxCandidates || isBatchDeadlineNear(deadline) || locationWork.length >= locationValidationBatchLimit(env.GENERATION_BATCH_WEBSITE_CHECKS) || capacity(stats) + locationWork.length >= run.targetCount) {
         releaseIds.push(row.id);
         continue;
       }

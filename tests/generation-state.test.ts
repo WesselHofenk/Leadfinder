@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateReservationLimit, candidateRetryStatus, GENERATION_MAX_RUN_MINUTES, generationCompletionStatus, generationDeadline, generationProgress, generationRemainingMs, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalStatusForStoredLeads } from "@/lib/jobs/generation-state";
+import { candidateReservationLimit, candidateRetryStatus, GENERATION_MAX_RUN_MINUTES, generationCompletionStatus, generationDeadline, generationProgress, generationRemainingMs, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, locationValidationBatchLimit, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalStatusForStoredLeads } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -115,5 +115,11 @@ describe("persistente generatiejobstatus", () => {
     expect(candidateReservationLimit(200, 190, 50)).toBe(10);
     expect(candidateReservationLimit(200, 200, 50)).toBe(0);
     expect(candidateReservationLimit(200, 40, 25)).toBe(25);
+  });
+
+  it("houdt locatiecontroles binnen de serverless workerduur", () => {
+    expect(locationValidationBatchLimit(8)).toBe(2);
+    expect(locationValidationBatchLimit(2)).toBe(2);
+    expect(locationValidationBatchLimit(1)).toBe(1);
   });
 });
