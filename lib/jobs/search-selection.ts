@@ -89,12 +89,16 @@ export function selectAdaptiveSearchArea(input: {
     const recency = ageHours(metric?.lastUsedAt ?? area.lastScannedAt, now);
     const useCount = metric?.useCount ?? 0;
     const validLeads = metric?.validLeads ?? 0;
-    const leadYieldRate = validLeads / Math.max(1, metric?.candidatesChecked ?? useCount);
+    const checkedCandidates = metric?.candidatesChecked ?? metric?.candidatesFound ?? useCount;
+    const qualifiedLeadsPerRun = validLeads / Math.max(1, useCount);
+    const qualificationRate = validLeads / Math.max(1, checkedCandidates);
     const candidateYield = (metric?.candidatesFound ?? 0) / Math.max(1, useCount);
     const reliability = useCount / Math.max(1, useCount + (metric?.errorCount ?? 0));
     const latencyPenalty = Math.min(300, (metric?.averageDurationMs ?? 15_000) / 100);
     const recentSuccessBoost = metric?.lastSuccessAt && ageHours(metric.lastSuccessAt, now) <= 24 ? 350 : 0;
-    const zeroYieldPenalty = useCount >= 3 && validLeads === 0 ? Math.min(240, useCount * 20) : 0;
+    const zeroQualifiedPenalty = validLeads === 0 && checkedCandidates >= 20
+      ? 1_500 + Math.min(1_000, checkedCandidates * 5)
+      : 0;
     const reliabilityPenalty = (metric?.errorCount ?? 0) * 6;
     // Values 1-5 are deliberate operator overrides rather than ordinary
     // ranking hints. They must also beat the exploration bonus for an unused
@@ -106,11 +110,12 @@ export function selectAdaptiveSearchArea(input: {
     // have no practical effect. Give it enough weight to steer the search
     // while historical yield and circuit-health signals remain relevant.
     const coveragePriorityPenalty = Math.max(0, area.priority) * 5;
-    const productiveScore = leadYieldRate * 4_000 + Math.min(2_000, candidateYield * 25)
+    const productiveScore = qualifiedLeadsPerRun * 6_000 + qualificationRate * 2_000
+      + Math.min(750, candidateYield * 8)
       + reliability * 500 + recentSuccessBoost + cityOpportunityBoost(area.city) - latencyPenalty;
     if (mode === "exploit") {
       return explicitPriorityBoost + productiveScore + Math.min(168, recency)
-        - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
+        - categoryPriorityPenalty - coveragePriorityPenalty - zeroQualifiedPenalty - reliabilityPenalty;
     }
     return explicitPriorityBoost + productiveScore + (useCount === 0 ? 1_000 : 0)
       + Math.min(720, recency) - useCount * 20

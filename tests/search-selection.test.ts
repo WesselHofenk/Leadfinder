@@ -63,6 +63,19 @@ describe("adaptieve zoekplanning", () => {
     expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 0, now: new Date() })?.id).toBe("high");
   });
 
+  it("laat veel ruwe kandidaten zonder geldige lead een bewezen leadgevende combinatie niet verdringen", () => {
+    const areas = [
+      area({ id: "raw-volume", category: "schilder" }),
+      area({ id: "qualified-yield", category: "kapper" }),
+    ];
+    const combinations = [
+      metric({ category: "schilder", useCount: 1, candidatesFound: 209, candidatesChecked: 100, validLeads: 0 }),
+      metric({ category: "kapper", useCount: 1, candidatesFound: 4, candidatesChecked: 23, validLeads: 1 }),
+    ];
+    expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 0, now: new Date() })?.id)
+      .toBe("qualified-yield");
+  });
+
   it("laat ook in verkenningsmodus een aantoonbaar productieve combinatie voorgaan", () => {
     const areas = [area({ id: "used" }), area({ id: "unseen", city: "Haarlem" })];
     const combinations = [metric({ useCount: 8, candidatesFound: 20, validLeads: 4 })];
