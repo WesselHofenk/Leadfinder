@@ -6,6 +6,30 @@ import type { Candidate } from "@/lib/leads/eligibility";
 import { healthySourceEndpoints, recordSourceProviderEvent } from "./provider-health";
 import type { BusinessSourceAdapter, SourceSearch } from "./types";
 
+function providerFamily(endpoint: string) {
+  const host = new URL(endpoint).host.toLowerCase();
+  if (host === "lz4.overpass-api.de" || host === "z.overpass-api.de" || host === "overpass-api.de") return "overpass-api.de";
+  if (host === "overpass.kumi.systems" || host === "overpass.private.coffee") return "private.coffee";
+  return host;
+}
+
+export function configuredOverpassEndpoints() {
+  const env = serverEnv();
+  const configured = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ...env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean),
+  ];
+  const seenFamilies = new Set<string>();
+  return configured.filter((endpoint) => {
+    const family = providerFamily(endpoint);
+    if (seenFamilies.has(family)) return false;
+    seenFamilies.add(family);
+    return true;
+  });
+}
+
 export class OpenStreetMapAdapter implements BusinessSourceAdapter {
   readonly id = "OPENSTREETMAP";
   readonly enabled: boolean;
@@ -21,25 +45,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     // provider family as overpass-api.de and kumi is the former hostname of
     // private.coffee, so counting those aliases as fallbacks caused correlated
     // failures in production.
-    const configured = [
-      "https://overpass-api.de/api/interpreter",
-      "https://overpass.private.coffee/api/interpreter",
-      "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
-      ...env.OVERPASS_API_URLS.split(",").map((value) => value.trim()).filter(Boolean),
-    ];
-    const providerFamily = (endpoint: string) => {
-      const host = new URL(endpoint).host.toLowerCase();
-      if (host === "lz4.overpass-api.de" || host === "z.overpass-api.de" || host === "overpass-api.de") return "overpass-api.de";
-      if (host === "overpass.kumi.systems" || host === "overpass.private.coffee") return "private.coffee";
-      return host;
-    };
-    const seenFamilies = new Set<string>();
-    this.endpoints = configured.filter((endpoint) => {
-      const family = providerFamily(endpoint);
-      if (seenFamilies.has(family)) return false;
-      seenFamilies.add(family);
-      return true;
-    });
+    this.endpoints = configuredOverpassEndpoints();
     this.timeoutMs = env.OVERPASS_TIMEOUT_MS;
     // A stale production override must never restore the former 28-second request.
     this.totalTimeoutMs = Math.min(18_000, env.OVERPASS_TOTAL_TIMEOUT_MS);
@@ -54,6 +60,9 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     // wins, so one hung host can no longer consume the whole source batch.
     const healthy = await healthySourceEndpoints(rotated);
     const endpoints = healthy.slice(0, Math.min(3, healthy.length));
+    if (!endpoints.length) {
+      throw new Error("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; deze zoekcursor blijft voor een volgende run bewaard.");
+    }
     const result = await searchOverpassHedged({
       endpoints,
       country: input.country,
@@ -67,7 +76,7 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
       totalTimeoutMs: Math.min(16_000, this.totalTimeoutMs),
       maxResponseBytes: this.maxResponseBytes,
       signal: input.signal,
-      retriesPerEndpoint: 2,
+      retriesPerEndpoint: 1,
       hedgeDelayMs: 1_250,
       onEvent: async (event) => {
         await recordSourceProviderEvent(event).catch(() => undefined);
@@ -81,6 +90,9 @@ export class OpenStreetMapAdapter implements BusinessSourceAdapter {
     const start = Math.abs(candidate.externalPlaceId.split("").reduce((sum, character) => sum + character.charCodeAt(0), 0)) % this.endpoints.length;
     const rotated = [...this.endpoints.slice(start), ...this.endpoints.slice(0, start)];
     const endpoints = (await healthySourceEndpoints(rotated)).slice(0, 3);
+    if (!endpoints.length) {
+      throw new Error("Alle OpenStreetMap-hosts hebben tijdelijk een open circuit; de identiteitscontrole wordt later hervat.");
+    }
     const result = await searchOverpassHedged({
       endpoints,
       country: candidate.country,

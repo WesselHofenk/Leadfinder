@@ -106,9 +106,9 @@ describe("persistente generatiejobstatus", () => {
   });
 
   it("laat de retryqueue nooit een hele nieuwe run opslokken", () => {
-    expect(generationRetryImportLimit(8, 0)).toBe(2);
-    expect(generationRetryImportLimit(8, 1)).toBe(1);
-    expect(generationRetryImportLimit(8, 2)).toBe(0);
+    expect(generationRetryImportLimit(8, 0)).toBe(4);
+    expect(generationRetryImportLimit(8, 1)).toBe(3);
+    expect(generationRetryImportLimit(8, 4)).toBe(0);
   });
 
   it("reserveert nooit meer dan 200 unieke kandidaten", () => {

@@ -43,6 +43,10 @@ describe("frontend polling en eindstatus", () => {
     await waitFor(() => expect(progress.textContent).toContain("15%"));
     expect(progress.textContent).toContain("Gesloten verwijderd");
     expect(progress.textContent).toContain("Mislukte zoekbatches");
+    expect(progress.textContent).toContain("Logische zoeksegmenten");
+    expect(progress.textContent).toContain("Endpointpogingen");
+    expect(progress.textContent).toContain("Geldige lege responses");
+    expect(progress.textContent).toContain("Technische bronfouten");
     expect(progress.textContent).toContain("Verstreken tijd");
     expect(progress.textContent).toContain("resterende tijd");
     const result = await screen.findByRole("status", {}, { timeout: 3_500 });

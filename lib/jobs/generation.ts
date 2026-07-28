@@ -25,7 +25,7 @@ import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN } from "./generation-c
 import { exhaustedSearchAreasReason } from "./generation-summary";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses, terminalStatusForStoredLeads } from "./generation-state";
 import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
-import { lowYieldCooldownMs, preferUnusedCities, selectAdaptiveSearchArea } from "./search-selection";
+import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 import { publishQualifiedDrafts } from "./qualified-draft-publication";
 
 type Stats = {
@@ -404,6 +404,8 @@ async function logOverpassEvent(runId: string, city: string, category: string, e
       data: {
         sourceRequests: { increment: event.errorType === "cancelled" ? 0 : 1 },
         sourceSuccesses: { increment: !event.errorType && typeof event.resultCount === "number" ? 1 : 0 },
+        sourceEmptyResponses: { increment: !event.errorType && event.resultCount === 0 ? 1 : 0 },
+        sourceTechnicalErrors: { increment: event.errorType && event.errorType !== "cancelled" ? 1 : 0 },
       },
     }),
   ]);
@@ -1164,8 +1166,8 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
     where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
     select: {
       id: true, tileCursor: true,
-      country: true, city: true, category: true, useCount: true, candidatesFound: true,
-      validLeads: true, errorCount: true, lastUsedAt: true, nextEligibleAt: true,
+      country: true, city: true, category: true, useCount: true, candidatesFound: true, candidatesChecked: true,
+      validLeads: true, errorCount: true, averageDurationMs: true, lastUsedAt: true, lastSuccessAt: true, nextEligibleAt: true,
     },
   });
   const combinationByArea = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item]));
@@ -1184,14 +1186,15 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
     remainingSegments: space.remaining,
   };
   const sequence = combinations.reduce((sum, item) => sum + item.useCount, 0);
-  const unusedCities = preferUnusedCities(availableAreas, usedCityKeys);
   const select = (candidateAreas: typeof areas, ignoreCooldowns = false) => selectAdaptiveSearchArea({
     areas: candidateAreas, categories: activeCategories, combinations, sequence, now, ignoreCooldowns,
   });
-  const area = select(unusedCities)
-    ?? (unusedCities.length === availableAreas.length ? null : select(availableAreas))
-    ?? select(unusedCities, true)
-    ?? (unusedCities.length === availableAreas.length ? null : select(availableAreas, true));
+  const unusedCities = availableAreas.filter((area) => !usedCityKeys.has(`${area.country}:${area.city}`));
+  // Historical yield and provider reliability lead. City spreading is only a
+  // tie-breaking pool after the productive combinations have had a chance.
+  const area = select(availableAreas)
+    ?? select(availableAreas, true)
+    ?? select(unusedCities, true);
   if (!area) throw new Error("Er resteert zoekruimte, maar er kon geen zoeksegment worden geselecteerd.");
   const combination = await prisma.searchCombination.upsert({
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
@@ -1224,8 +1227,12 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
 }
 
 async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string, exhausted = false) {
-  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true, maxCandidates: true, candidatesReserved: true, sourceRequests: true, sourceSuccesses: true, startedAt: true, createdAt: true } });
-  const summary = `Resultaten: bronverzoeken ${current.sourceRequests}; succesvol ${current.sourceSuccesses}; mislukt ${Math.max(0, current.sourceRequests - current.sourceSuccesses)}; ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; verkeerde locatie ${stats.wrongLocationRejected}; onvoldoende gegevens ${stats.insufficientDataRejected}; geldig vóór opslag ${stats.validCandidates}; databasepogingen ${stats.databaseInsertAttempts}; databasefouten ${stats.databaseInsertFailures}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; zonder geldig telefoonnummer ${stats.invalidPhone}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens/franchises ${stats.chainRejected + stats.franchiseRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; definitief opgeslagen ${stats.stored}.`;
+  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: {
+    targetCount: true, maxCandidates: true, candidatesReserved: true, sourceRequests: true, sourceSuccesses: true,
+    sourceEmptyResponses: true, sourceTechnicalErrors: true, processedSegments: true, sourceFailures: true,
+    startedAt: true, createdAt: true,
+  } });
+  const summary = `Resultaten: zoeksegmenten ${current.processedSegments + current.sourceFailures}; geslaagde segmenten ${current.processedSegments}; tijdelijk onbereikbare segmenten ${current.sourceFailures}; endpointpogingen ${current.sourceRequests}; succesvolle responses ${current.sourceSuccesses}; geldige lege responses ${current.sourceEmptyResponses}; technische bronfouten ${current.sourceTechnicalErrors}; ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; verkeerde locatie ${stats.wrongLocationRejected}; onvoldoende gegevens ${stats.insufficientDataRejected}; geldig vóór opslag ${stats.validCandidates}; databasepogingen ${stats.databaseInsertAttempts}; databasefouten ${stats.databaseInsertFailures}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; zonder geldig telefoonnummer ${stats.invalidPhone}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens/franchises ${stats.chainRejected + stats.franchiseRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; definitief opgeslagen ${stats.stored}.`;
   const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
   const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
   const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
@@ -1260,7 +1267,9 @@ async function finishGenerationRun(runId: string, reason: string, exhausted = fa
   stats.validDrafts = result.validDrafts;
   stats.duplicates += result.duplicates;
   await prisma.generationRun.update({ where: { id: runId }, data: { retryQueueCount } });
-  const finalReason = `${reason} ${result.totalStored} volledig gekwalificeerde leads zijn opgeslagen in de pipeline. ${retryQueueCount} onzekere kandidaten blijven bewaard voor een volgende run.`;
+  const leadNoun = result.totalStored === 1 ? "lead is" : "leads zijn";
+  const retryNoun = retryQueueCount === 1 ? "kandidaat blijft" : "kandidaten blijven";
+  const finalReason = `${reason} ${result.totalStored} volledig gekwalificeerde ${leadNoun} opgeslagen in de pipeline. ${retryQueueCount} ${retryNoun} bewaard voor een gerichte hercontrole. ${run.processedSegments} zoeksegmenten slaagden en ${run.sourceFailures} bronsegmenten waren tijdelijk niet bereikbaar.`;
   return terminalRun(
     runId,
     terminalStatusForStoredLeads(result.totalStored) as JobStatus,
@@ -1396,7 +1405,11 @@ export async function processGenerationBatch(runId: string) {
     );
     let queued = await pendingQueueItems(runId, queueTake());
 
-    let retryQuotaRemaining = generationRetryImportLimit(env.GENERATION_BATCH_CANDIDATES, run.retriedCandidates, Math.min(2, Math.max(0, run.maxCandidates - run.candidatesReserved)));
+    let retryQuotaRemaining = generationRetryImportLimit(
+      env.GENERATION_BATCH_CANDIDATES,
+      run.retriedCandidates,
+      Math.min(12, Math.max(0, run.maxCandidates - run.candidatesReserved)),
+    );
 
     if (!queued.length && retryQuotaRemaining > 0) {
       const carriedCandidates = await importInterruptedGenerationCandidates(runId, retryQuotaRemaining);
@@ -1536,9 +1549,9 @@ export async function processGenerationBatch(runId: string) {
             useCount: { increment: 1 }, candidatesFound: { increment: result.candidates.length }, lastUsedAt: new Date(),
             region: area.region, searchTerm: area.category, provider: result.sourceUrl ?? adapter.id,
             totalDurationMs: { increment: BigInt(sourceDurationMs) },
-            averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
-            tileCursor: nextOverpassTileCursor(tileCursor),
-            lastTile: result.tile, lastError: null, nextEligibleAt,
+             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
+             tileCursor: nextOverpassTileCursor(tileCursor),
+             lastTile: result.tile, lastError: null, lastSuccessAt: new Date(), nextEligibleAt,
           } });
           await tx.generationRun.update({ where: { id: runId }, data: {
             processedSegments: { increment: attemptDelta.processedSegments },

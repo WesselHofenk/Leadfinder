@@ -83,8 +83,14 @@ export function confirmedActiveStatus(candidate: Candidate) {
   const currentSource = candidate.source !== "OPENSTREETMAP" || (Number.isFinite(sourceTime) && Date.now() - sourceTime <= 2 * 365.25 * 86_400_000);
   if (sourceStatusConfirmed && currentSource && ["operational", "open", "active", "actief", "geopend"].includes(status) && hasRecentSourceEvidence(candidate)) return { active: true, confidence: 95, status: "active" as const };
   const positiveSignals = new Set(candidate.activitySignals ?? []);
-  const hasCurrentActivity = [...positiveSignals].some((signal) => /opening_hours|check_date|survey|phone|email|facebook|instagram/.test(signal));
-  if (sourceStatusConfirmed && currentSource && hasCurrentActivity && hasRecentSourceEvidence(candidate)) return { active: true, confidence: 80, status: "likely_active" as const };
+  const activityScore = [...positiveSignals].reduce((score, signal) => {
+    if (/opening_hours|check_date|survey/.test(signal)) return score + 2;
+    if (/phone|email|facebook|instagram/.test(signal)) return score + 1;
+    return score;
+  }, Number.isFinite(sourceTime) && currentSource ? 1 : 0);
+  if (sourceStatusConfirmed && currentSource && activityScore >= 2 && hasRecentSourceEvidence(candidate)) {
+    return { active: true, confidence: Math.min(90, 75 + activityScore * 3), status: "likely_active" as const };
+  }
   return { active: false, confidence: 0, status: "insufficient" as const };
 }
 

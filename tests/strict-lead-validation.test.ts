@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candidate } from "@/lib/leads/eligibility";
-import { isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
+import { confirmedActiveStatus, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 const noWebsite: WebsiteVerificationResult = {
@@ -115,5 +115,19 @@ describe("centrale strikte leadvalidatie", () => {
   it("blokkeert Gent en deelgemeenten altijd", () => {
     const gent = { ...base, country: "BE", province: "Oost-Vlaanderen", city: "Gentbrugge", postalCode: "9050", streetAddress: "Brusselsesteenweg 1", formattedAddress: "Brusselsesteenweg 1, 9050 Gentbrugge, België" };
     expect(validateStrictLead(gent, noWebsite).reasons).toContain("BLOCKED_GHENT");
+  });
+
+  it("bevestigt activiteit uit meerdere recente sterke openbare signalen zonder specifiek statusveld", () => {
+    const status = confirmedActiveStatus({
+      ...base,
+      source: "OPENSTREETMAP",
+      externalPlaceId: "osm:way/123",
+      sourceUrl: "https://www.openstreetmap.org/way/123",
+      businessStatus: "UNKNOWN",
+      sourceUpdatedAt: new Date().toISOString(),
+      activitySignals: ["opening_hours", "contact:phone", "contact:email"],
+    });
+    expect(status).toMatchObject({ active: true, status: "likely_active" });
+    expect(status.confidence).toBeGreaterThanOrEqual(80);
   });
 });

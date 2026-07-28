@@ -49,9 +49,10 @@ type SearchParams = {
   tileLabelOverride?: string;
 };
 
-export type OverpassElementStrategy = "node" | "way" | "relation";
+export type OverpassElementStrategy = "node" | "way" | "relation" | "nwr";
 export type OverpassContactStrategy =
   | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone";
+export type OverpassSearchMode = "qualified-first" | "phone-discovery";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
@@ -64,7 +65,8 @@ const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "r
 const contactStrategies: readonly OverpassContactStrategy[] = [
   "phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone",
 ];
-export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length * contactStrategies.length;
+const strategiesPerTile = 1 + elementStrategies.length * contactStrategies.length;
+export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * strategiesPerTile;
 
 export function initialOverpassSearchCursor(country: string, city: string, category: string) {
   void country;
@@ -78,12 +80,31 @@ export function initialOverpassSearchCursor(country: string, city: string, categ
 
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
-  const strategyIndex = normalized % elementStrategies.length;
-  const contactIndex = Math.floor(normalized / elementStrategies.length) % contactStrategies.length;
-  const tileCursor = Math.floor(normalized / (elementStrategies.length * contactStrategies.length));
+  const tileCursor = Math.floor(normalized / strategiesPerTile);
+  const strategyCursor = normalized % strategiesPerTile;
+  if (strategyCursor === 0) {
+    return {
+      cursor: normalized,
+      tileCursor,
+      mode: "qualified-first" as const,
+      strategy: "nwr" as const,
+      contact: "phone+email" as const,
+      id: `t${tileCursor}-qualified-first`,
+    };
+  }
+  const legacyCursor = strategyCursor - 1;
+  const strategyIndex = legacyCursor % elementStrategies.length;
+  const contactIndex = Math.floor(legacyCursor / elementStrategies.length) % contactStrategies.length;
   const strategy = elementStrategies[strategyIndex];
   const contact = contactStrategies[contactIndex];
-  return { cursor: normalized, tileCursor, strategy, contact, id: `t${tileCursor}-${strategy}-${contact.replace(":", "-")}` };
+  return {
+    cursor: normalized,
+    tileCursor,
+    mode: "phone-discovery" as const,
+    strategy,
+    contact,
+    id: `t${tileCursor}-${strategy}-${contact.replace(":", "-")}`,
+  };
 }
 
 export function nextOverpassTileCursor(current: number) {
@@ -280,7 +301,17 @@ export function overpassTile(latitude: number, longitude: number, radius: number
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
-export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy; contact?: OverpassContactStrategy; boundingBox?: boolean }) {
+export function buildOverpassQuery(params: {
+  latitude: number;
+  longitude: number;
+  radius: number;
+  category?: string;
+  timeoutSeconds: number;
+  strategy?: OverpassElementStrategy;
+  contact?: OverpassContactStrategy;
+  mode?: OverpassSearchMode;
+  boundingBox?: boolean;
+}) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
   const contact = params.contact ?? "phone";
@@ -290,9 +321,14 @@ export function buildOverpassQuery(params: { latitude: number; longitude: number
     ? `(${(params.latitude - latitudeDelta).toFixed(7)},${(params.longitude - longitudeDelta).toFixed(7)},${(params.latitude + latitudeDelta).toFixed(7)},${(params.longitude + longitudeDelta).toFixed(7)})`
     : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const around = `${strategy}${spatial}`;
-  const statements = filters
-    .map((filter) => `${around}${filter}[name]["${contact}"];`)
-    .join("");
+  const qualifiedContactFilters = [
+    '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]',
+    '[~"^(email|contact:email)$"~"."]',
+    '[~"^addr:(full|street)$"~"."]',
+  ].join("");
+  const statements = filters.map((filter) => params.mode === "qualified-first"
+    ? `${around}${filter}[name]${qualifiedContactFilters};`
+    : `${around}${filter}[name]["${contact}"];`).join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
@@ -393,12 +429,15 @@ export async function searchOverpass(params: SearchParams) {
   const plan = overpassSearchPlan(params.tileCursor);
   const baseTile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
   const tile = baseTile;
-  const queryType = params.queryTypeOverride ?? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`;
+  const queryType = params.queryTypeOverride ?? (plan.mode === "qualified-first"
+    ? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:qualified-first`
+    : `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`);
   const query = params.queryOverride ?? buildOverpassQuery({
     ...tile,
     category: params.category,
     strategy: plan.strategy,
-    contact: plan.contact,
+    contact: plan.mode === "phone-discovery" ? plan.contact : undefined,
+    mode: plan.mode,
     boundingBox: false,
     timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1),
   });

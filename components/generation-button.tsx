@@ -34,6 +34,9 @@ type Run = {
   sourceFailures: number;
   sourceRequests: number;
   sourceSuccesses: number;
+  sourceEmptyResponses: number;
+  sourceTechnicalErrors: number;
+  processedSegments: number;
   wrongLocationRejected: number;
   insufficientDataRejected: number;
   validCandidates: number;
@@ -275,7 +278,9 @@ export function GenerationButton() {
         <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
         <Metric label="Dubbele vermeldingen samengevoegd" value={run?.duplicateListingsMerged ?? 0}/><Metric label="Bestaand" value={run?.existingLeads ?? 0}/>
         <Metric label="Kandidaten in retryqueue" value={run?.retryQueueCount ?? run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
-        <Metric label="Bronverzoeken" value={run?.sourceRequests ?? 0}/><Metric label="Bronverzoeken geslaagd" value={run?.sourceSuccesses ?? 0}/>
+        <Metric label="Logische zoeksegmenten" value={(run?.processedSegments ?? 0) + (run?.sourceFailures ?? 0)}/><Metric label="Geslaagde zoeksegmenten" value={run?.processedSegments ?? 0}/>
+        <Metric label="Endpointpogingen" value={run?.sourceRequests ?? 0}/><Metric label="Succesvolle responses" value={run?.sourceSuccesses ?? 0}/>
+        <Metric label="Geldige lege responses" value={run?.sourceEmptyResponses ?? 0}/><Metric label="Technische bronfouten" value={run?.sourceTechnicalErrors ?? 0}/>
         <Metric label="Geldig vóór opslag" value={run?.validCandidates ?? 0}/><Metric label="Databasepogingen" value={run?.databaseInsertAttempts ?? 0}/>
         <Metric label="Databasefouten" value={run?.databaseInsertFailures ?? 0}/><Metric label="Mislukte zoekbatches" value={run?.sourceFailures ?? 0}/>
         <Metric label="Geldige concepten" value={run?.validDrafts ?? 0}/><Metric label="Definitief opgeslagen leads" value={run?.stored ?? 0} strong/>

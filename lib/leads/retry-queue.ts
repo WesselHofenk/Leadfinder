@@ -113,7 +113,17 @@ export async function importDueValidationRetries(runId: string, limit: number, n
       nextRetryAt: { lte: now },
       retryCount: { lt: defaultMaxValidationRetries },
     },
-    orderBy: [{ nextRetryAt: "asc" }, { createdAt: "asc" }],
+    // Nullable contact columns sort last in descending order on PostgreSQL.
+    // This brings the candidates closest to qualification (public e-mail,
+    // phone and high accumulated confidence) to the front of the bounded run
+    // quota without weakening any validation requirement.
+    orderBy: [
+      { email: { sort: "desc", nulls: "last" } },
+      { phone: { sort: "desc", nulls: "last" } },
+      { totalConfidence: "desc" },
+      { nextRetryAt: "asc" },
+      { createdAt: "asc" },
+    ],
     take: Math.max(0, limit),
   });
   if (!due.length) return 0;

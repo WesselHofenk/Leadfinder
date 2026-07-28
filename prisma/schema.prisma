@@ -364,6 +364,8 @@ model GenerationRun {
   sourceFailures             Int                   @default(0)
   sourceRequests             Int                   @default(0)
   sourceSuccesses            Int                   @default(0)
+  sourceEmptyResponses       Int                   @default(0)
+  sourceTechnicalErrors      Int                   @default(0)
   consecutiveSourceFailures  Int                   @default(0)
   blockedBrussels            Int                   @default(0)
   blockedGhent               Int                   @default(0)

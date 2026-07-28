@@ -21,9 +21,12 @@ export type SearchCombinationMetric = {
   category: string;
   useCount: number;
   candidatesFound: number;
+  candidatesChecked?: number;
   validLeads: number;
   errorCount: number;
+  averageDurationMs?: number;
   lastUsedAt: Date | null;
+  lastSuccessAt?: Date | null;
   nextEligibleAt: Date;
 };
 
@@ -46,6 +49,16 @@ export function adaptiveSearchMode(sequence: number): AdaptiveSearchMode {
 
 function ageHours(value: Date | null, now: Date) {
   return value ? Math.max(0, now.getTime() - value.getTime()) / 3_600_000 : 10_000;
+}
+
+const highOpportunityCities = new Set([
+  "amsterdam", "rotterdam", "den haag", "utrecht", "eindhoven", "groningen",
+  "tilburg", "almere", "breda", "nijmegen", "arnhem", "enschede", "haarlem",
+  "den bosch", "antwerpen", "brugge", "leuven", "mechelen", "hasselt", "kortrijk",
+]);
+
+function cityOpportunityBoost(city: string) {
+  return highOpportunityCities.has(city.toLowerCase().trim()) ? 600 : 0;
 }
 
 export function selectAdaptiveSearchArea(input: {
@@ -76,7 +89,11 @@ export function selectAdaptiveSearchArea(input: {
     const recency = ageHours(metric?.lastUsedAt ?? area.lastScannedAt, now);
     const useCount = metric?.useCount ?? 0;
     const validLeads = metric?.validLeads ?? 0;
-    const yieldRate = validLeads / Math.max(1, useCount);
+    const leadYieldRate = validLeads / Math.max(1, metric?.candidatesChecked ?? useCount);
+    const candidateYield = (metric?.candidatesFound ?? 0) / Math.max(1, useCount);
+    const reliability = useCount / Math.max(1, useCount + (metric?.errorCount ?? 0));
+    const latencyPenalty = Math.min(300, (metric?.averageDurationMs ?? 15_000) / 100);
+    const recentSuccessBoost = metric?.lastSuccessAt && ageHours(metric.lastSuccessAt, now) <= 24 ? 350 : 0;
     const zeroYieldPenalty = useCount >= 3 && validLeads === 0 ? Math.min(240, useCount * 20) : 0;
     const reliabilityPenalty = (metric?.errorCount ?? 0) * 6;
     // Values 1-5 are deliberate operator overrides rather than ordinary
@@ -89,10 +106,15 @@ export function selectAdaptiveSearchArea(input: {
     // have no practical effect. Give it enough weight to steer the search
     // while historical yield and circuit-health signals remain relevant.
     const coveragePriorityPenalty = Math.max(0, area.priority) * 5;
+    const productiveScore = leadYieldRate * 4_000 + Math.min(2_000, candidateYield * 25)
+      + reliability * 500 + recentSuccessBoost + cityOpportunityBoost(area.city) - latencyPenalty;
     if (mode === "exploit") {
-      return explicitPriorityBoost + yieldRate * 1_000 + Math.min(168, recency) - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
+      return explicitPriorityBoost + productiveScore + Math.min(168, recency)
+        - categoryPriorityPenalty - coveragePriorityPenalty - zeroYieldPenalty - reliabilityPenalty;
     }
-    return explicitPriorityBoost + (useCount === 0 ? 10_000 : 0) + Math.min(720, recency) * 5 - useCount * 40 - categoryPriorityPenalty - coveragePriorityPenalty - reliabilityPenalty;
+    return explicitPriorityBoost + productiveScore + (useCount === 0 ? 1_000 : 0)
+      + Math.min(720, recency) - useCount * 20
+      - categoryPriorityPenalty - coveragePriorityPenalty - reliabilityPenalty;
   };
 
   return eligible.slice().sort((left, right) =>

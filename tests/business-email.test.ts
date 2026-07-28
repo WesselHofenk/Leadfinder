@@ -46,6 +46,39 @@ describe("openbaar zakelijk e-mailadres", () => {
     expect(mxResolver).not.toHaveBeenCalled();
   });
 
+  it("vindt een werkelijk gepubliceerd adres op de officiële contactpagina en bewaart die exacte URL", async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(new Response('<a href="/contact">Contact</a>', {
+        status: 200, headers: { "content-type": "text/html" },
+      }))
+      .mockResolvedValueOnce(new Response('<a href="mailto:team@lokalebakker.nl">Mail ons</a>', {
+        status: 200, headers: { "content-type": "text/html" },
+      }));
+    const result = await validatePublicBusinessEmail(
+      { ...base, email: undefined, emailAddresses: undefined, website: "https://lokalebakker.nl" },
+      { resolver: mxResolver, fetchImpl: fetchImpl as typeof fetch },
+    );
+    expect(result).toMatchObject({
+      status: "VALID",
+      email: "team@lokalebakker.nl",
+      source: "OFFICIAL_WEBSITE",
+      sourceUrl: "https://lokalebakker.nl/contact",
+      mxVerified: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("herhaalt een reeds geslaagde MX-controle niet tijdens een gerichte retry", async () => {
+    const resolver = vi.fn(async () => [{ exchange: "unused.example", priority: 10 }]);
+    const result = await validatePublicBusinessEmail({
+      ...base,
+      emailMxVerified: true,
+      emailVerifiedAt: "2026-07-28T10:00:00.000Z",
+    }, { resolver });
+    expect(result).toMatchObject({ status: "VALID", checkedAt: "2026-07-28T10:00:00.000Z" });
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
   it.each([
     "geen-adres",
     "info@",

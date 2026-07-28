@@ -2,6 +2,7 @@ import type { OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
 
 const failureThreshold = 2;
+const unknownLatencyMs = 30_000;
 
 function cooldownMs(errorType?: string) {
   if (errorType === "http_429") return 5 * 60_000;
@@ -15,20 +16,37 @@ export async function healthySourceEndpoints(endpoints: string[], now = new Date
   if (!process.env.NEON_POSTGRES_PRISMA_URL) return endpoints;
   const rows = await prisma.sourceProviderHealth.findMany({
     where: { provider: { in: endpoints } },
-    select: { provider: true, unhealthyUntil: true, consecutiveFailures: true },
+    select: {
+      provider: true,
+      unhealthyUntil: true,
+      consecutiveFailures: true,
+      totalFailures: true,
+      totalSuccesses: true,
+      averageDurationMs: true,
+      lastSuccessAt: true,
+    },
   }).catch(() => []);
   const byProvider = new Map(rows.map((row) => [row.provider, row]));
   const healthy = endpoints.filter((endpoint) => {
     const row = byProvider.get(endpoint);
     return !row?.unhealthyUntil || row.unhealthyUntil <= now;
   });
-  const coolingDown = endpoints.filter((endpoint) => !healthy.includes(endpoint))
-    .sort((left, right) => (byProvider.get(left)?.unhealthyUntil?.getTime() ?? 0) - (byProvider.get(right)?.unhealthyUntil?.getTime() ?? 0));
-  // Do not keep calling every cooling-down provider on every serverless
-  // invocation. Two healthy providers are enough for a proper hedge. When
-  // fewer are healthy, retain one half-open fallback so recovery is detected.
-  if (healthy.length >= 2) return healthy.slice(0, 3);
-  return [...healthy, ...coolingDown].slice(0, Math.min(2, endpoints.length));
+  const rank = (endpoint: string) => {
+    const row = byProvider.get(endpoint);
+    if (!row) return 0;
+    const attempts = (row.totalSuccesses ?? 0) + (row.totalFailures ?? 0);
+    const successRate = (row.totalSuccesses ?? 0) / Math.max(1, attempts);
+    const recentSuccessHours = row.lastSuccessAt
+      ? Math.max(0, now.getTime() - row.lastSuccessAt.getTime()) / 3_600_000
+      : 10_000;
+    const recentSuccessBoost = recentSuccessHours <= 24 ? 1_000 - recentSuccessHours * 10 : 0;
+    const latencyPenalty = Math.min(500, (row.averageDurationMs || unknownLatencyMs) / 100);
+    return recentSuccessBoost + successRate * 500 - (row.consecutiveFailures ?? 0) * 150 - latencyPenalty;
+  };
+  // An open PostgreSQL circuit is a real skip, not merely a sort hint. A host
+  // is eligible again automatically after unhealthyUntil, at which point a
+  // normal request acts as the half-open recovery probe.
+  return healthy.slice().sort((left, right) => rank(right) - rank(left)).slice(0, 3);
 }
 
 export async function recordSourceProviderEvent(event: OverpassEvent, now = new Date()) {

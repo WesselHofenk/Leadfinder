@@ -14,9 +14,28 @@ describe("duurzame provider-circuitbreaker", () => {
     mocks.upsert.mockResolvedValue({});
   });
 
-  it("probeert de gezonde host eerst maar behoudt een half-open fallback", async () => {
+  it("slaat een host met een open duurzaam circuit volledig over", async () => {
     mocks.findMany.mockResolvedValue([{ provider: "https://a.example", unhealthyUntil: new Date("2026-07-16T10:05:00Z"), consecutiveFailures: 2 }]);
-    await expect(healthySourceEndpoints(["https://a.example", "https://b.example"], new Date("2026-07-16T10:00:00Z"))).resolves.toEqual(["https://b.example", "https://a.example"]);
+    await expect(healthySourceEndpoints(["https://a.example", "https://b.example"], new Date("2026-07-16T10:00:00Z"))).resolves.toEqual(["https://b.example"]);
+  });
+
+  it("rangschikt recente, betrouwbare en snelle successen vóór tragere hosts", async () => {
+    mocks.findMany.mockResolvedValue([
+      {
+        provider: "https://slow.example", unhealthyUntil: null, consecutiveFailures: 0,
+        totalFailures: 1, totalSuccesses: 10, averageDurationMs: 12_000,
+        lastSuccessAt: new Date("2026-07-15T08:00:00Z"),
+      },
+      {
+        provider: "https://fast.example", unhealthyUntil: null, consecutiveFailures: 0,
+        totalFailures: 1, totalSuccesses: 8, averageDurationMs: 900,
+        lastSuccessAt: new Date("2026-07-16T09:55:00Z"),
+      },
+    ]);
+    await expect(healthySourceEndpoints(
+      ["https://slow.example", "https://fast.example"],
+      new Date("2026-07-16T10:00:00Z"),
+    )).resolves.toEqual(["https://fast.example", "https://slow.example"]);
   });
 
   it("slaat afgekoelde providers over wanneer minstens twee gezonde hosts beschikbaar zijn", async () => {

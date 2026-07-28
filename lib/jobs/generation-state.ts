@@ -62,8 +62,8 @@ export function candidateRetryStatus(attemptsAfterClaim: number, maxAttempts = 3
   return attemptsAfterClaim >= maxAttempts ? "FAILED" as const : "PENDING" as const;
 }
 
-export function generationRetryImportLimit(batchCandidates: number, alreadyRetried: number, maxPerRun = 2) {
-  const batchShare = Math.min(maxPerRun, Math.max(1, Math.floor(batchCandidates / 3)));
+export function generationRetryImportLimit(batchCandidates: number, alreadyRetried: number, maxPerRun = 12) {
+  const batchShare = Math.min(maxPerRun, Math.max(2, Math.ceil(batchCandidates / 2)));
   return Math.max(0, batchShare - alreadyRetried);
 }
 

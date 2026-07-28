@@ -63,10 +63,19 @@ describe("adaptieve zoekplanning", () => {
     expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 0, now: new Date() })?.id).toBe("high");
   });
 
-  it("geeft in verkenningsmodus voorrang aan een nog niet gebruikte combinatie", () => {
+  it("laat ook in verkenningsmodus een aantoonbaar productieve combinatie voorgaan", () => {
     const areas = [area({ id: "used" }), area({ id: "unseen", city: "Haarlem" })];
     const combinations = [metric({ useCount: 8, candidatesFound: 20, validLeads: 4 })];
-    expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 7, now: new Date() })?.id).toBe("unseen");
+    expect(selectAdaptiveSearchArea({ areas, categories, combinations, sequence: 7, now: new Date() })?.id).toBe("used");
+  });
+
+  it("start zonder historie in een grote kansrijke stad", () => {
+    const areas = [
+      area({ id: "small", city: "Dokkum" }),
+      area({ id: "large", city: "Rotterdam" }),
+    ];
+    expect(selectAdaptiveSearchArea({ areas, categories, combinations: [], sequence: 0, now: new Date() })?.id)
+      .toBe("large");
   });
 
   it("laat een expliciete beheerprioriteit de gebiedskeuze daadwerkelijk sturen", () => {

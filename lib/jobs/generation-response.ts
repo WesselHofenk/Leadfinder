@@ -18,6 +18,9 @@ type GenerationSummaryRun = {
   sourceFailures?: number;
   sourceRequests?: number;
   sourceSuccesses?: number;
+  sourceEmptyResponses?: number;
+  sourceTechnicalErrors?: number;
+  processedSegments?: number;
   wrongLocationRejected?: number;
   insufficientDataRejected?: number;
   validCandidates?: number;
@@ -65,7 +68,11 @@ export function generationResponse(run: GenerationSummaryRun | null, success = t
     failedQueries: run?.sourceFailures ?? 0,
     sourceRequests: run?.sourceRequests ?? 0,
     sourceSuccesses: run?.sourceSuccesses ?? 0,
-    sourceRequestFailures: Math.max(0, (run?.sourceRequests ?? 0) - (run?.sourceSuccesses ?? 0)),
+    sourceEmptyResponses: run?.sourceEmptyResponses ?? 0,
+    sourceTechnicalErrors: run?.sourceTechnicalErrors ?? 0,
+    logicalSegments: (run?.processedSegments ?? 0) + (run?.sourceFailures ?? 0),
+    successfulSegments: run?.processedSegments ?? 0,
+    sourceRequestFailures: run?.sourceTechnicalErrors ?? Math.max(0, (run?.sourceRequests ?? 0) - (run?.sourceSuccesses ?? 0)),
     rejectedWrongLocation: run?.wrongLocationRejected ?? 0,
     rejectedInsufficientData: run?.insufficientDataRejected ?? 0,
     validCandidates: run?.validCandidates ?? 0,

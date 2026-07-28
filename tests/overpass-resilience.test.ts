@@ -50,7 +50,6 @@ describe("gerichte Overpass-query", () => {
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
     expect(query).toContain('["phone"]');
-    expect(query).not.toContain('["contact:phone"]');
     expect(query).not.toContain('["email"]');
     expect(query).not.toContain('[!"website"][!"contact:website"]');
     expect(query).not.toContain('~"^(opening_hours|check_date');
@@ -70,10 +69,11 @@ describe("gerichte Overpass-query", () => {
     const result = await searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch });
     expect(result.candidates).toHaveLength(1);
     expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
-    expect(result.tile).toMatchObject({ id: "t0-node-phone", latitude: base.latitude, longitude: base.longitude, radius: 2_400 });
-    expect(result.query).toContain("node(around:");
-    expect(result.query).toContain('["phone"]');
-    expect(result.query).not.toContain('["email"]');
+    expect(result.tile).toMatchObject({ id: "t0-qualified-first", latitude: base.latitude, longitude: base.longitude, radius: 2_400 });
+    expect(result.query).toContain("nwr(around:");
+    expect(result.query).toContain("contact:phone");
+    expect(result.query).toContain("contact:email");
+    expect(result.query).toContain("addr:(full|street)");
   });
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
@@ -105,26 +105,27 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3 * 6);
-    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "phone", id: "t0-node-phone" });
-    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "phone", id: "t0-way-phone" });
-    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "phone", id: "t0-relation-phone" });
-    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "contact:phone", id: "t0-node-contact-phone" });
-    expect(overpassSearchPlan(18)).toMatchObject({ tileCursor: 1, strategy: "node", contact: "phone", id: "t1-node-phone" });
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * (1 + 3 * 6));
+    expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "nwr", contact: "phone+email", id: "t0-qualified-first" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "phone", id: "t0-node-phone" });
+    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "way", contact: "phone", id: "t0-way-phone" });
+    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 0, strategy: "relation", contact: "phone", id: "t0-relation-phone" });
+    expect(overpassSearchPlan(4)).toMatchObject({ tileCursor: 0, strategy: "node", contact: "contact:phone", id: "t0-node-contact-phone" });
+    expect(overpassSearchPlan(19)).toMatchObject({ tileCursor: 1, strategy: "nwr", id: "t1-qualified-first" });
     const mobileQuery = buildOverpassQuery({ ...overpassTile(52.3676, 4.9041, 12_000, 0), category: "kapper", contact: "contact:mobile", timeoutSeconds: 10 });
     expect(mobileQuery).toContain('["contact:mobile"]');
     expect(mobileQuery).not.toContain('["email"]');
     expect(mobileQuery.match(/node\(around:/g)).toHaveLength(1);
   });
 
-  it("start iedere nieuwe plaats/branche-combinatie met de snelle telefoon-nodequery", () => {
+  it("start iedere nieuwe plaats/branche-combinatie met de contactrijke nwr-query", () => {
     const cursors = ["Leeuwarden", "Lelystad", "Brugge", "Utrecht", "Breda", "Zwolle", "Haarlem", "Arnhem"]
       .flatMap((city) => ["schilder", "kapper", "loodgieter", "hondentrimmer", "dakdekker", "schoonheidssalon"]
         .map((category) => initialOverpassSearchCursor(city === "Brugge" ? "BE" : "NL", city, category)));
     expect(initialOverpassSearchCursor("NL", "Leeuwarden", "schilder")).toBe(cursors[0]);
     expect(new Set(cursors)).toEqual(new Set([0]));
-    expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "node")).toBe(true);
-    expect(cursors.every((cursor) => overpassSearchPlan(cursor).contact === "phone")).toBe(true);
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).strategy === "nwr")).toBe(true);
+    expect(cursors.every((cursor) => overpassSearchPlan(cursor).mode === "qualified-first")).toBe(true);
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {
