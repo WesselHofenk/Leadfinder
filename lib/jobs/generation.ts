@@ -1171,7 +1171,7 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
     },
   });
   const combinationByArea = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item]));
-  const firstCursorForRun = (area: typeof areas[number]) => {
+  const firstCursorForRun = (area: { country: string; city: string; category: string }) => {
     const prefix = `${area.country}:${area.city}:${area.category}:`;
     return [...attemptedSegments].some((segment) => segment.startsWith(prefix))
       ? combinationByArea.get(`${area.country}:${area.city}:${area.category}`)?.tileCursor
