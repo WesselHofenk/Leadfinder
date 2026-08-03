@@ -2,13 +2,12 @@ import React from "react";
 import Link from "next/link";
 import { ExternalLink } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import { toPipelineOptions } from "@/lib/leads/pipeline";
+import { toManualPipelineOptions } from "@/lib/leads/pipeline";
 import { QuickStatus } from "@/components/lead-actions";
 import { visibleLeadWhere } from "@/lib/leads/blocked-location";
 
 export default async function PipelinePage() {
   const stages = await prisma.pipelineStage.findMany({ where: { isActive: true }, orderBy: { position: "asc" } });
-  const options = toPipelineOptions(stages);
   const groups = await Promise.all(stages.map(async (stage) => {
     const [items, total] = await prisma.$transaction([
       prisma.lead.findMany({ where: visibleLeadWhere({ pipelineStageId: stage.id, isActive: true, isFiltered: false, isSuppressed: false }), orderBy: { updatedAt: "desc" }, take: 50 }),
@@ -23,7 +22,7 @@ export default async function PipelinePage() {
       {stages.map((stage, index) => <section className="pipeline-column" key={stage.id} data-stage-slug={stage.slug} data-stage-position={stage.position}>
         <div className="pipeline-title"><strong>{stage.name}</strong><span className="badge">{groups[index].total}</span></div>
         <div className="pipeline-list">
-          {groups[index].items.map((lead) => <article className="pipeline-card" key={lead.id}><div className="pipeline-card-head"><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_", " ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label={`Open ${lead.companyName}`}><ExternalLink size={15}/></Link></div>{lead.normalizedPhoneNumber||lead.phoneNumber?<a className="small text-link" href={`tel:${lead.normalizedPhoneNumber||lead.phoneNumber}`}>{lead.normalizedPhoneNumber||lead.phoneNumber}</a>:<span className="small muted">Geen telefoonnummer</span>}<span className="small muted">{lead.formattedAddress||lead.streetAddress}</span><QuickStatus leadId={lead.id} stageSlug={stage.slug} stages={options}/></article>)}
+          {groups[index].items.map((lead) => <article className="pipeline-card" key={lead.id}><div className="pipeline-card-head"><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_", " ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label={`Open ${lead.companyName}`}><ExternalLink size={15}/></Link></div>{lead.normalizedPhoneNumber||lead.phoneNumber?<a className="small text-link" href={`tel:${lead.normalizedPhoneNumber||lead.phoneNumber}`}>{lead.normalizedPhoneNumber||lead.phoneNumber}</a>:<span className="small muted">Geen telefoonnummer</span>}<span className="small muted">{lead.formattedAddress||lead.streetAddress}</span><QuickStatus leadId={lead.id} stageSlug={stage.slug} stages={toManualPipelineOptions(stages, stage.slug)}/></article>)}
           {!groups[index].total && <div className="empty small">Geen leads in deze fase.</div>}
         </div>
       </section>)}

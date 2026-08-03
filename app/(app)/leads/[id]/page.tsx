@@ -1,13 +1,15 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ArrowLeft, Mail, MapPin, MessageCircle, Phone } from "lucide-react";
+import { ArrowLeft, MapPin, MessageCircle, Phone } from "lucide-react";
 
 import { LeadEditor, SuppressLeadButton } from "@/components/lead-actions";
+import { ColdEmailComposer } from "@/components/cold-email-composer";
 import { dateFormatter, statusLabels } from "@/lib/format";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
-import { toPipelineOptions } from "@/lib/leads/pipeline";
+import { toManualPipelineOptions } from "@/lib/leads/pipeline";
 import { prisma } from "@/lib/prisma";
 import { isBlockedLocation } from "@/lib/leads/blocked-location";
+import { immediateColdEmailAllowed } from "@/lib/email/schedule";
 
 function readableAddress(streetAddress: string, formattedAddress: string | null) {
   const value = (formattedAddress || streetAddress).trim();
@@ -33,6 +35,7 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
         pipelineStage: true,
         leadNotes: { orderBy: { createdAt: "desc" }, take: 20, include: { user: { select: { name: true } } } },
         activities: { orderBy: { createdAt: "desc" }, take: 40 },
+        coldEmails: { orderBy: { createdAt: "desc" }, take: 10 },
       },
     }),
     prisma.pipelineStage.findMany({ where: { isActive: true }, orderBy: { position: "asc" } }),
@@ -53,7 +56,6 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
           <a className="button button-secondary" href={`tel:${lead.normalizedPhoneNumber}`}><Phone size={15} />Bellen</a>
           <a className="button button-secondary" href={`https://wa.me/${lead.normalizedPhoneNumber.replace(/\D/g, "")}`} target="_blank" rel="noopener noreferrer"><MessageCircle size={15} />WhatsApp</a>
         </>}
-        {lead.email && <a className="button button-secondary" href={`mailto:${lead.email}`}><Mail size={15} />E-mail</a>}
         <a className="button button-secondary" href={mapsUrl} target="_blank" rel="noopener noreferrer"><MapPin size={15} />Google Maps</a>
         <SuppressLeadButton leadId={lead.id} />
       </div>
@@ -96,13 +98,19 @@ export default async function LeadDetailPage({ params }: { params: Promise<{ id:
 
       <section className="card card-pad"><h2>Notities</h2>{lead.leadNotes.length ? <div className="note-list">{lead.leadNotes.map((note) => <div key={note.id}><p>{note.content}</p><span className="small muted">{note.user.name} · {note.createdAt.toLocaleString("nl-NL")}</span></div>)}</div> : <p className="small muted">Nog geen notities toegevoegd.</p>}</section>
       <section className="card card-pad"><h2>Activiteit</h2>{lead.activities.length ? <ol className="timeline">{lead.activities.map((activity) => <li key={activity.id}><strong>{activity.summary}</strong><div className="small muted">{activity.createdAt.toLocaleString("nl-NL")}</div></li>)}</ol> : <p className="small muted">Nog geen activiteiten vastgelegd.</p>}</section>
+      {lead.coldEmails.length > 0 && <section className="card card-pad"><h2>E-mailgeschiedenis</h2><ol className="timeline">{lead.coldEmails.map((email) => <li key={email.id}><strong>{email.subject}</strong><div className="small muted">{coldEmailStatusLabel(email.status)} · {email.status === "SENT" && email.smtpAcceptedAt ? email.smtpAcceptedAt.toLocaleString("nl-NL") : `gepland ${email.scheduledFor.toLocaleString("nl-NL")}`}</div>{email.lastError && <div className="small error-text">{email.lastError}</div>}</li>)}</ol></section>}
     </div>
       <aside className="detail-sidebar">
         <section className="card card-pad"><h2>Pipeline</h2><p><span className="badge badge-blue">{lead.pipelineStage.name}</span></p><p className="small muted">Handmatige status en notities worden niet door hercontroles overschreven.</p></section>
-        <LeadEditor leadId={lead.id} stageSlug={lead.pipelineStage.slug} stages={toPipelineOptions(stages)} notes={lead.notes} filterReason={lead.filterReason} />
+        <LeadEditor leadId={lead.id} stageSlug={lead.pipelineStage.slug} stages={toManualPipelineOptions(stages, lead.pipelineStage.slug)} notes={lead.notes} filterReason={lead.filterReason} />
+        {lead.email && <ColdEmailComposer leadId={lead.id} recipient={lead.email} companyName={lead.companyName} immediateAllowed={immediateColdEmailAllowed(new Date(), process.env.COLD_EMAIL_WARMUP_START || "2026-08-04", process.env.COLD_EMAIL_TIME_ZONE || "Europe/Amsterdam")} />}
       </aside>
     </div>
   </div>;
+}
+
+function coldEmailStatusLabel(status: string) {
+  return ({ PENDING: "Ingepland", SENDING: "Wordt verzonden", SENT_PENDING_ARCHIVE: "Verzonden, archiefkopie volgt", SENT: "Verzonden", FAILED: "Mislukt", CANCELLED: "Geannuleerd" } as Record<string, string>)[status] || status;
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {

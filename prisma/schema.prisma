@@ -121,6 +121,15 @@ enum ContactValidationStatus {
   UNKNOWN
 }
 
+enum ColdEmailStatus {
+  PENDING
+  SENDING
+  SENT_PENDING_ARCHIVE
+  SENT
+  FAILED
+  CANCELLED
+}
+
 model User {
   id           String        @id @default(cuid())
   email        String        @unique
@@ -247,6 +256,7 @@ model Lead {
   evidence                      VerificationEvidence[]
   sourceRecords                 SourceRecord[]
   activities                    LeadActivity[]
+  coldEmails                    ColdEmail[]
 
   @@unique([normalizedCompanyName, normalizedAddress], map: "lead_name_address_unique")
   @@unique([normalizedCompanyName, latitude, longitude], map: "lead_name_coordinates_unique")
@@ -268,6 +278,35 @@ model Lead {
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
   @@index([batchId])
+}
+
+model ColdEmail {
+  id                 String          @id @default(cuid())
+  leadId             String
+  lead               Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  createdById        String?
+  batchKey           String?
+  fromAddress        String          @default("info@sitora.nl")
+  recipient          String
+  subject            String
+  bodyText           String
+  scheduledFor       DateTime
+  allowOutsideWindow Boolean         @default(false)
+  status             ColdEmailStatus @default(PENDING)
+  attempts           Int             @default(0)
+  archiveAttempts    Int             @default(0)
+  messageId          String?
+  rawMessageBase64   String?
+  smtpAcceptedAt     DateTime?
+  archivedAt         DateTime?
+  lastError          String?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  @@unique([batchKey, leadId])
+  @@index([status, scheduledFor])
+  @@index([leadId, createdAt])
+  @@index([smtpAcceptedAt, archivedAt])
 }
 
 model PipelineStage {

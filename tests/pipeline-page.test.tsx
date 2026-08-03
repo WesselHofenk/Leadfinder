@@ -23,12 +23,16 @@ import PipelinePage from "@/app/(app)/pipeline/page";
 describe("pipelineweergave", () => {
   afterEach(() => cleanup());
 
-  it("toont exact zes kolommen en overal dezelfde zes dropdownopties", async () => {
+  it("toont zes kolommen maar biedt Gemaild alleen bij reeds gemailde leads aan", async () => {
     const view = render(await PipelinePage());
     expect([...view.container.querySelectorAll(".pipeline-title strong")].map((node) => node.textContent)).toEqual(pipelineStages.map(({ label }) => label));
     const dropdowns = [...view.container.querySelectorAll<HTMLSelectElement>('select[aria-label="Pipelinefase"]')];
     expect(dropdowns).toHaveLength(6);
-    for (const dropdown of dropdowns) expect([...dropdown.options].map((option) => option.text)).toEqual(pipelineStages.map(({ label }) => label));
+    for (const dropdown of dropdowns) {
+      const labels = [...dropdown.options].map((option) => option.text);
+      if (dropdown.value === "gemaild") expect(labels).toEqual(pipelineStages.map(({ label }) => label));
+      else expect(labels).toEqual(pipelineStages.filter(({ slug }) => slug !== "gemaild").map(({ label }) => label));
+    }
     expect(view.container.querySelectorAll(".pipeline-column")).toHaveLength(6);
     expect([...view.container.querySelectorAll(".pipeline-title .badge")].map((node) => node.textContent)).toEqual(["1","1","1","1","1","1"]);
     expect([...view.container.querySelectorAll(".pipeline-title strong")].at(-1)?.textContent).toBe("Klant");

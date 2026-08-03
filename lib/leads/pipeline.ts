@@ -52,3 +52,10 @@ export function normalizePipelineStatus(value: string): PipelineStatus | null {
 export function toPipelineOptions(stages: Array<{ id: string; slug: string; name: string; position: number }>): PipelineOption[] {
   return stages.map(({ id, slug, name, position }) => ({ id, slug, name, position }));
 }
+
+export function toManualPipelineOptions(
+  stages: Array<{ id: string; slug: string; name: string; position: number }>,
+  currentStage: string,
+) {
+  return toPipelineOptions(stages).filter((stage) => stage.slug !== "gemaild" || currentStage === "gemaild");
+}

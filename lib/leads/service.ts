@@ -74,6 +74,9 @@ export async function updateManualLeadFields(leadId: string, userId: string, inp
   return prisma.$transaction(async (tx) => {
     const current = await tx.lead.findUniqueOrThrow({ where: { id: leadId }, include: { pipelineStage: true } });
     if (isBlockedLocation(current as typeof current & Record<string, unknown>)) throw new Error("Deze lead is geblokkeerd omdat de locatie Brussel of Gent is.");
+    if (input.pipelineStage === "gemaild" && current.pipelineStage.slug !== "gemaild") {
+      throw new Error("De fase Gemaild wordt uitsluitend na een bevestigde e-mailverzending ingesteld.");
+    }
     const nextStage = await tx.pipelineStage.findFirstOrThrow({ where: { slug: input.pipelineStage, isActive: true } });
     const stageChanged = current.pipelineStageId !== nextStage.id;
     const lead = await tx.lead.update({ where: { id: leadId }, data: {

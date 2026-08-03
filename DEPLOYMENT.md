@@ -19,6 +19,21 @@ De Neon-integratie beheert de databasewaarden. Bewaar nooit echte waarden in Git
 
 De overige begrensde generatorinstellingen staan in `.env.example`.
 
+## Mailbox `info@sitora.nl`
+
+Cold e-mail werkt pas nadat de volgende waarden als beveiligde Vercel-variabelen zijn ingesteld. Sla het mailboxwachtwoord nooit op in Git of in een lokaal gedeeld bestand.
+
+- `COLD_EMAIL_FROM_ADDRESS=info@sitora.nl`;
+- `COLD_EMAIL_FROM_NAME=Sitora`;
+- `COLD_EMAIL_WARMUP_START=2026-08-04`;
+- `COLD_EMAIL_TIME_ZONE=Europe/Amsterdam`;
+- `MAIL_SMTP_HOST=mail.sitora.nl`, `MAIL_SMTP_PORT=587`, `MAIL_SMTP_SECURE=false`;
+- `MAIL_IMAP_HOST=mail.sitora.nl`, `MAIL_IMAP_PORT=993`, `MAIL_IMAP_SECURE=true`;
+- `MAIL_USERNAME=info@sitora.nl` en `MAIL_PASSWORD=<mailboxwachtwoord>`;
+- `MAIL_SENT_FOLDER`: alleen invullen wanneer de IMAP-server de map met speciaal gebruik `Sent` niet publiceert.
+
+De cronroute controleert iedere vijf minuten de wachtrij. De applicatie verstuurt vanaf de startdatum uitsluitend binnen 09:00–17:00 Nederlandse tijd. Na SMTP-acceptatie wordt dezelfde RFC822-mail via IMAP in Verzonden items geplaatst. Alleen daarna gaat de lead automatisch naar `Gemaild`. Een mislukte IMAP-poging verstuurt de mail niet opnieuw, maar probeert uitsluitend de archiefkopie opnieuw op te slaan.
+
 ## Veilig migreren
 
 `pnpm vercel-build` voert in deze volgorde uit:

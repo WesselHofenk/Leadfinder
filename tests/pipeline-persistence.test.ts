@@ -44,12 +44,18 @@ describe("persistente pipelinewijzigingen", () => {
     vi.clearAllMocks();
   });
 
-  it("kan een bestaande lead naar iedere fase verplaatsen zonder andere gegevens te verliezen", async () => {
-    for (const pipelineStage of pipelineStatuses) {
+  it("kan een bestaande lead naar iedere handmatige fase verplaatsen zonder andere gegevens te verliezen", async () => {
+    for (const pipelineStage of pipelineStatuses.filter((stage) => stage !== "gemaild")) {
       await updateManualLeadFields("lead-1", "user-1", { pipelineStage });
       expect(leadState.pipelineStage.slug).toBe(pipelineStage);
       expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true });
     }
-    expect(tx.lead.update).toHaveBeenCalledTimes(6);
+    expect(tx.lead.update).toHaveBeenCalledTimes(5);
+  });
+
+  it("weigert de fase Gemaild zonder bevestigde verzending", async () => {
+    await expect(updateManualLeadFields("lead-1", "user-1", { pipelineStage: "gemaild" }))
+      .rejects.toThrow("uitsluitend na een bevestigde e-mailverzending");
+    expect(tx.lead.update).not.toHaveBeenCalled();
   });
 });

@@ -9,6 +9,7 @@ Leadfinder Sitora is een Next.js-app voor het vinden en handmatig verifiëren va
 - Onzekere, geblokkeerde of mislukte controles gaan naar handmatige controle en worden nooit automatisch als “geen website” gepubliceerd.
 - Filters worden in PostgreSQL toegepast vóór paginering en export.
 - Accounts, leads, notities, verificatiebewijs en CRM-statussen blijven persistent over deployments en herstarts.
+- Cold e-mails worden vanuit `info@sitora.nl` begrensd ingepland, in Verzonden items gearchiveerd en alleen na bevestigde verzending als `Gemaild` geregistreerd.
 
 ## Lokaal ontwikkelen
 

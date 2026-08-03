@@ -22,7 +22,18 @@
     },
     "app/api/cron/sync/route.ts": { "maxDuration": 300 },
     "app/api/cron/reverify/route.ts": { "maxDuration": 300 },
-    "app/api/cron/analyze/route.ts": { "maxDuration": 300 }
+    "app/api/cron/analyze/route.ts": { "maxDuration": 300 },
+    "app/api/queues/cold-email/route.ts": {
+      "maxDuration": 60,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "cold-email-delivery",
+          "retryAfterSeconds": 30,
+          "initialDelaySeconds": 0
+        }
+      ]
+    }
   },
   "crons": [
     { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
