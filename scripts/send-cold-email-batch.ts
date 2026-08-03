@@ -1,11 +1,18 @@
 import { prisma } from "@/lib/prisma";
 import { deliverColdEmail, queueColdEmail } from "@/lib/email/service";
+import { immediateColdEmailAllowed } from "@/lib/email/schedule";
 
 const send = process.argv.includes("--send");
 const countArgument = process.argv.find((argument) => argument.startsWith("--count="));
 const count = Math.min(5, Math.max(1, Number(countArgument?.split("=")[1] || 5)));
 const batchKeyArgument = process.argv.find((argument) => argument.startsWith("--batch-key="));
 const batchKey = batchKeyArgument?.split("=")[1] || "manual-2026-08-03-five";
+const now = new Date();
+const sendImmediately = immediateColdEmailAllowed(
+  now,
+  process.env.COLD_EMAIL_WARMUP_START || "2026-08-04",
+  process.env.COLD_EMAIL_TIME_ZONE || process.env.OUTREACH_TIME_ZONE || "Europe/Amsterdam",
+);
 
 function safeInline(value: string) {
   return value.replace(/[\r\n]+/g, " ").trim();
@@ -70,13 +77,17 @@ async function main() {
       userId: admin.id,
       subject: subject(lead.companyName),
       bodyText: body(lead.companyName, lead.city),
-      sendImmediately: true,
+      sendImmediately,
       batchKey,
     });
   }
   batch = await prisma.coldEmail.findMany({ where: { batchKey }, include: { lead: { select: { companyName: true, city: true } } }, orderBy: { createdAt: "asc" } });
   const results: Array<{ companyName: string; status: string }> = [];
   for (const email of batch) {
+    if (!sendImmediately && ["PENDING", "FAILED"].includes(email.status)) {
+      results.push({ companyName: email.lead.companyName, status: email.status });
+      continue;
+    }
     if (email.status === "SENT") {
       results.push({ companyName: email.lead.companyName, status: email.status });
       continue;
@@ -86,6 +97,11 @@ async function main() {
     }
     const delivered = await deliverColdEmail(email.id);
     results.push({ companyName: email.lead.companyName, status: delivered.status });
+  }
+  if (!sendImmediately) {
+    console.log(`Inplanning afgerond: ${results.length}/${count} mails verdeeld over de toegestane tijdslots.`);
+    for (const result of results) console.log(`- ${result.companyName}: ${result.status}`);
+    return;
   }
   const completed = results.filter((result) => result.status === "SENT").length;
   console.log(`Verzending afgerond: ${completed}/${count} mails bevestigd en gearchiveerd.`);
