@@ -11,13 +11,12 @@ import { pipelineStages, toManualPipelineOptions } from "@/lib/leads/pipeline";
 const timeZone = "Europe/Amsterdam";
 
 describe("cold-emailopbouw en tijdslots", () => {
-  it("verhoogt iedere week met 10 en blijft vanaf week 10 op 100 per dag", () => {
+  it("houdt de dagelijkse limiet vanaf de startdatum vast op tien", () => {
     expect(coldEmailDailyLimit("2026-08-03", "2026-08-04")).toBe(0);
     expect(coldEmailDailyLimit("2026-08-04", "2026-08-04")).toBe(10);
     expect(coldEmailDailyLimit("2026-08-10", "2026-08-04")).toBe(10);
-    expect(coldEmailDailyLimit("2026-08-11", "2026-08-04")).toBe(20);
-    expect(coldEmailDailyLimit("2026-10-06", "2026-08-04")).toBe(100);
-    expect(coldEmailDailyLimit("2027-08-04", "2026-08-04")).toBe(100);
+    expect(coldEmailDailyLimit("2026-08-11", "2026-08-04")).toBe(10);
+    expect(coldEmailDailyLimit("2027-08-04", "2026-08-04")).toBe(10);
   });
 
   it("verdeelt tien mails gelijkmatig binnen 09:00 en 17:00 Nederlandse tijd", () => {

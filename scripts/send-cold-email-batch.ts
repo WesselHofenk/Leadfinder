@@ -4,9 +4,9 @@ import { immediateColdEmailAllowed } from "@/lib/email/schedule";
 
 const send = process.argv.includes("--send");
 const countArgument = process.argv.find((argument) => argument.startsWith("--count="));
-const count = Math.min(5, Math.max(1, Number(countArgument?.split("=")[1] || 5)));
+const count = Math.min(10, Math.max(1, Number(countArgument?.split("=")[1] || 10)));
 const batchKeyArgument = process.argv.find((argument) => argument.startsWith("--batch-key="));
-const batchKey = batchKeyArgument?.split("=")[1] || "manual-2026-08-03-five";
+const batchKey = batchKeyArgument?.split("=")[1] || `manual-${new Date().toISOString().slice(0, 10)}`;
 const now = new Date();
 const sendImmediately = immediateColdEmailAllowed(
   now,

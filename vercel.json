@@ -9,6 +9,7 @@
   "functions": {
     "app/api/generation/route.ts": { "maxDuration": 60 },
     "app/api/cron/generation/route.ts": { "maxDuration": 300 },
+    "app/api/cron/cold-email/route.ts": { "maxDuration": 60 },
     "app/api/queues/generation/route.ts": {
       "maxDuration": 60,
       "experimentalTriggers": [
@@ -36,6 +37,7 @@
     }
   },
   "crons": [
+    { "path": "/api/cron/cold-email", "schedule": "0 7 * * *" },
     { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
     { "path": "/api/cron/reverify", "schedule": "43 2 * * *" },
     { "path": "/api/cron/analyze", "schedule": "7 3 * * *" }
