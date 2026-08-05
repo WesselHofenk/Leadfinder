@@ -9,7 +9,7 @@ describe("productieconfiguratie voor tienminutenruns", () => {
     };
     expect(config.env?.GENERATION_MAX_RUN_MINUTES).toBe("10");
     expect(config.crons).not.toContainEqual({ path: "/api/cron/generation", schedule: "* * * * *" });
-    expect(config.crons).toContainEqual({ path: "/api/cron/cold-email", schedule: "0 7 * * *" });
+    expect(config.crons).toContainEqual({ path: "/api/cron/cold-email", schedule: "0 8 * * *" });
   });
 
   it("houdt de databasemigratie additief", () => {
