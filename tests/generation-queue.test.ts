@@ -1,13 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const runId = "cmrlz4csu0000l6046xanxs8s";
-const { processGenerationBatch, triggerGenerationWorker, generationContinuationDelaySeconds } = vi.hoisted(() => ({
+const { processGenerationBatch, triggerGenerationWorker, generationContinuationDelaySeconds, ensureDailyColdEmailBatch } = vi.hoisted(() => ({
   processGenerationBatch: vi.fn(),
   triggerGenerationWorker: vi.fn(),
   generationContinuationDelaySeconds: vi.fn((lastError?: string) => lastError?.startsWith("SOURCE_CIRCUIT_OPEN:") ? 30 : 0),
+  ensureDailyColdEmailBatch: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/email/campaign", () => ({ ensureDailyColdEmailBatch }));
 vi.mock("@/lib/jobs/generation", () => ({ processGenerationBatch }));
 vi.mock("@/lib/jobs/generation-worker", () => ({ triggerGenerationWorker, generationContinuationDelaySeconds }));
 
@@ -22,6 +24,7 @@ describe("duurzame generatie-wachtrij", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     triggerGenerationWorker.mockResolvedValue(true);
+    ensureDailyColdEmailBatch.mockResolvedValue({ scheduled: 0 });
   });
 
   it("verwerkt één batch en plant de volgende met het nieuwe batchnummer", async () => {
@@ -30,6 +33,7 @@ describe("duurzame generatie-wachtrij", () => {
     await queueHandler({ runId }, { messageId: "message-1" });
 
     expect(processGenerationBatch).toHaveBeenCalledWith(runId);
+    expect(ensureDailyColdEmailBatch).toHaveBeenCalledOnce();
     expect(triggerGenerationWorker).toHaveBeenCalledWith(runId, 5, 0);
   });
 
@@ -55,6 +59,19 @@ describe("duurzame generatie-wachtrij", () => {
     await queueHandler({ runId: "ongeldig" }, { messageId: "message-3" });
 
     expect(processGenerationBatch).not.toHaveBeenCalled();
+    expect(ensureDailyColdEmailBatch).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("laat de leadzoeker doorgaan als het aanvullen van de mailbatch tijdelijk faalt", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    processGenerationBatch.mockResolvedValue({ id: runId, status: "RUNNING", batchNumber: 8 });
+    ensureDailyColdEmailBatch.mockRejectedValue(new Error("tijdelijke mailfout"));
+
+    await queueHandler({ runId }, { messageId: "message-mail-refill" });
+
+    expect(triggerGenerationWorker).toHaveBeenCalledWith(runId, 8, 0);
+    expect(errorSpy).toHaveBeenCalled();
     errorSpy.mockRestore();
   });
 });
