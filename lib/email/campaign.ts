@@ -68,6 +68,19 @@ export function remainingColdEmailSlots(dayKey: string, count: number, now: Date
   ));
 }
 
+export function availableColdEmailSlots(
+  dayKey: string,
+  count: number,
+  now: Date,
+  timeZone: string,
+  occupied: Date[],
+) {
+  const occupiedTimes = new Set(occupied.map((slot) => slot.getTime()));
+  return remainingColdEmailSlots(dayKey, COLD_EMAIL_MAX_DAILY, now, timeZone)
+    .filter((slot) => !occupiedTimes.has(slot.getTime()))
+    .slice(0, count);
+}
+
 export function coldEmailBatchDayKey(now: Date, timeZone: string) {
   const today = localDayKey(now, timeZone);
   return remainingColdEmailSlots(today, COLD_EMAIL_MAX_DAILY, now, timeZone).length > 0
@@ -87,11 +100,19 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
   try {
     const bounds = zonedDayBounds(dayKey, config.COLD_EMAIL_TIME_ZONE);
     const result = await prisma.$transaction(async (tx) => {
-      const existing = await tx.coldEmail.count({
+      const existingEmails = await tx.coldEmail.findMany({
         where: { scheduledFor: { gte: bounds.start, lt: bounds.end }, status: { in: [...activeEmailStatuses] } },
+        select: { scheduledFor: true },
       });
+      const existing = existingEmails.length;
       const missing = Math.max(0, COLD_EMAIL_MAX_DAILY - existing);
-      const slots = remainingColdEmailSlots(dayKey, missing, now, config.COLD_EMAIL_TIME_ZONE);
+      const slots = availableColdEmailSlots(
+        dayKey,
+        missing,
+        now,
+        config.COLD_EMAIL_TIME_ZONE,
+        existingEmails.map((email) => email.scheduledFor),
+      );
       if (missing === 0 || slots.length === 0) {
         return { created: [], totalForDay: existing, shortage: missing };
       }
