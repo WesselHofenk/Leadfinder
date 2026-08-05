@@ -192,7 +192,10 @@ export async function processColdEmailQueue(now = new Date()) {
     let sent = 0;
     let failed = 0;
     for (const email of archiveQueue) {
-      try { await archiveAndFinalize(email); sent += 1; } catch { failed += 1; }
+      try { await archiveAndFinalize(email); sent += 1; } catch (error) {
+        failed += 1;
+        console.error(JSON.stringify({ step: "cold_email_archive_failed", emailId: email.id, message: errorMessage(error) }));
+      }
     }
     const config = coldEmailConfig();
     if (withinColdEmailWindow(now, config.COLD_EMAIL_TIME_ZONE)) {
@@ -202,7 +205,10 @@ export async function processColdEmailQueue(now = new Date()) {
         take: Math.max(0, 10 - archiveQueue.length),
       });
       for (const email of sendQueue) {
-        try { await deliverColdEmail(email.id, now); sent += 1; } catch { failed += 1; }
+        try { await deliverColdEmail(email.id, now); sent += 1; } catch (error) {
+          failed += 1;
+          console.error(JSON.stringify({ step: "cold_email_delivery_failed", emailId: email.id, message: errorMessage(error) }));
+        }
       }
       return { processed: archiveQueue.length + sendQueue.length, sent, failed, skipped: false };
     }

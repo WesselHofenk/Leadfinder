@@ -16,7 +16,9 @@ export async function GET(request: NextRequest) {
     const recovery = await rescheduleStaleColdEmails(now);
     const campaign = await ensureDailyColdEmailBatch(now);
     const delivery = await processColdEmailQueue(now);
-    return NextResponse.json({ recovery, campaign, delivery });
+    const result = { recovery, campaign, delivery };
+    console.log(JSON.stringify({ step: "cold_email_cron", ...result }));
+    return NextResponse.json(result);
   } catch (error) {
     return NextResponse.json({
       error: error instanceof Error ? error.message : "Dagelijkse e-mailbatch mislukt",
