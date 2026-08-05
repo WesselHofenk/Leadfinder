@@ -20,6 +20,11 @@ describe("automatische dagelijkse cold-emailbatch", () => {
     expect(new Set(slots.map((slot) => slot.getTime())).size).toBe(10);
   });
 
+  it("propt geen volledige dagbatch in de laatste minuten van het venster", () => {
+    const now = fromZonedTime("2026-08-05T16:39:00", timeZone);
+    expect(remainingColdEmailSlots("2026-08-05", 10, now, timeZone)).toEqual([]);
+  });
+
   it("houdt de tekst persoonlijk zonder een websitegebrek te verzinnen", () => {
     expect(automaticColdEmailSubject("Voorbeeld BV")).toContain("Voorbeeld BV");
     expect(automaticColdEmailBody("Voorbeeld BV", "Utrecht", "NO_WEBSITE_CONFIRMED"))

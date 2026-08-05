@@ -211,3 +211,42 @@ export async function processColdEmailQueue(now = new Date()) {
     await lock.release();
   }
 }
+
+export async function rescheduleStaleColdEmails(now = new Date()) {
+  const lock = await acquireJobLock("cold-email-schedule-recovery", 4 * 60_000);
+  if (!lock) return { found: 0, rescheduled: 0, skipped: true };
+  try {
+    const config = coldEmailConfig();
+    const stale = await prisma.coldEmail.findMany({
+      where: {
+        status: { in: ["PENDING", "FAILED"] },
+        scheduledFor: { lt: now },
+        smtpAcceptedAt: null,
+        attempts: { lt: smtpRetryLimit },
+      },
+      orderBy: { scheduledFor: "asc" },
+      take: 10,
+    });
+    let rescheduled = 0;
+    for (const email of stale) {
+      const scheduledFor = await prisma.$transaction(
+        (tx) => nextScheduledSlot(tx, now, config.COLD_EMAIL_WARMUP_START, config.COLD_EMAIL_TIME_ZONE),
+        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+      );
+      const updated = await prisma.coldEmail.updateMany({
+        where: {
+          id: email.id,
+          status: { in: ["PENDING", "FAILED"] },
+          smtpAcceptedAt: null,
+        },
+        data: { status: "PENDING", scheduledFor, lastError: null },
+      });
+      if (updated.count !== 1) continue;
+      rescheduled += 1;
+      await triggerColdEmailWorker(email.id, scheduledFor).catch(() => false);
+    }
+    return { found: stale.length, rescheduled, skipped: false };
+  } finally {
+    await lock.release();
+  }
+}

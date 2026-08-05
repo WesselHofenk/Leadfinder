@@ -14,6 +14,7 @@ import {
 
 const activeEmailStatuses = ["PENDING", "SENDING", "SENT_PENDING_ARCHIVE", "SENT", "FAILED"] as const;
 const minimumLeadTimeMs = 2 * 60_000;
+const minimumCatchUpSpacingMs = 20 * 60_000;
 
 function safeInline(value: string) {
   return value.replace(/[\r\n]+/g, " ").trim();
@@ -60,6 +61,7 @@ export function remainingColdEmailSlots(dayKey: string, count: number, now: Date
   if (normal.length >= count) return normal.slice(0, count);
 
   const availableMs = end.getTime() - earliest.getTime();
+  if (availableMs < count * minimumCatchUpSpacingMs) return [];
   return Array.from({ length: count }, (_, index) => new Date(
     earliest.getTime() + Math.floor(((index + 0.5) * availableMs) / count),
   ));
