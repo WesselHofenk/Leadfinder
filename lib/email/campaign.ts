@@ -9,6 +9,7 @@ import {
   COLD_EMAIL_MAX_DAILY,
   coldEmailSlot,
   localDayKey,
+  nextDayKey,
   zonedDayBounds,
 } from "./schedule";
 
@@ -67,9 +68,16 @@ export function remainingColdEmailSlots(dayKey: string, count: number, now: Date
   ));
 }
 
+export function coldEmailBatchDayKey(now: Date, timeZone: string) {
+  const today = localDayKey(now, timeZone);
+  return remainingColdEmailSlots(today, COLD_EMAIL_MAX_DAILY, now, timeZone).length > 0
+    ? today
+    : nextDayKey(today);
+}
+
 export async function ensureDailyColdEmailBatch(now = new Date()) {
   const config = coldEmailConfig();
-  const dayKey = localDayKey(now, config.COLD_EMAIL_TIME_ZONE);
+  const dayKey = coldEmailBatchDayKey(now, config.COLD_EMAIL_TIME_ZONE);
   if (dayKey < config.COLD_EMAIL_WARMUP_START) {
     return { dayKey, scheduled: 0, totalForDay: 0, shortage: 0, skipped: true, reason: "warmup-not-started" };
   }

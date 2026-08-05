@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 import {
   automaticColdEmailBody,
   automaticColdEmailSubject,
+  coldEmailBatchDayKey,
   remainingColdEmailSlots,
 } from "@/lib/email/campaign";
 
@@ -23,6 +24,12 @@ describe("automatische dagelijkse cold-emailbatch", () => {
   it("propt geen volledige dagbatch in de laatste minuten van het venster", () => {
     const now = fromZonedTime("2026-08-05T16:39:00", timeZone);
     expect(remainingColdEmailSlots("2026-08-05", 10, now, timeZone)).toEqual([]);
+    expect(coldEmailBatchDayKey(now, timeZone)).toBe("2026-08-06");
+  });
+
+  it("blijft tijdens een normale ochtendrun dezelfde dag inplannen", () => {
+    const now = fromZonedTime("2026-08-05T10:00:00", timeZone);
+    expect(coldEmailBatchDayKey(now, timeZone)).toBe("2026-08-05");
   });
 
   it("houdt de tekst persoonlijk zonder een websitegebrek te verzinnen", () => {
