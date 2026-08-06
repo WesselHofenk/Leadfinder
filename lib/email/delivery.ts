@@ -34,7 +34,7 @@ export async function sendCompiledColdEmail(config: ColdEmailConfig, recipient: 
     auth: { user: config.MAIL_USERNAME, pass: config.MAIL_PASSWORD },
   });
   const result = await transport.sendMail({
-    envelope: { from: config.COLD_EMAIL_FROM_ADDRESS, to: [recipient] },
+    envelope: { from: config.MAIL_BOUNCE_ADDRESS ?? config.COLD_EMAIL_FROM_ADDRESS, to: [recipient] },
     raw,
   });
   const accepted = result.accepted.map(String).map((value) => value.toLowerCase());

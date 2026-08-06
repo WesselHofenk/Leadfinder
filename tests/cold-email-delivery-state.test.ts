@@ -3,7 +3,7 @@ import { fromZonedTime } from "date-fns-tz";
 
 vi.mock("server-only", () => ({}));
 
-const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, leadUpdate, prismaMock } = vi.hoisted(() => {
+const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, prismaMock } = vi.hoisted(() => {
   const state = {
     id: "mail-1",
     leadId: "lead-1",
@@ -28,6 +28,7 @@ const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, leadU
   const appendToSentItems = vi.fn();
   const compileColdEmail = vi.fn(async () => ({ raw: Buffer.from("raw-message"), messageId: "<mail-1@sitora.nl>" }));
   const sendCompiledColdEmail = vi.fn(async () => ({ accepted: ["info@bedrijf.nl"] }));
+  const assertRecipientDomainCanReceiveMail = vi.fn(async () => undefined);
   const leadUpdate = vi.fn(async () => ({}));
   const applyUpdate = (data: Record<string, unknown>) => {
     for (const [key, value] of Object.entries(data)) {
@@ -60,7 +61,7 @@ const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, leadU
     },
     $transaction: vi.fn(async (callback: (value: typeof tx) => unknown) => callback(tx)),
   };
-  return { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, leadUpdate, coldEmailUpdate, prismaMock };
+  return { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, coldEmailUpdate, prismaMock };
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
@@ -78,11 +79,22 @@ vi.mock("@/lib/email/config", () => ({ coldEmailConfig: () => ({
   MAIL_IMAP_SECURE: true,
   MAIL_USERNAME: "info@sitora.nl",
   MAIL_PASSWORD: "secret",
+  MAIL_BOUNCE_ADDRESS: undefined,
   MAIL_SENT_FOLDER: undefined,
 }) }));
 vi.mock("@/lib/email/delivery", () => ({ appendToSentItems, compileColdEmail, sendCompiledColdEmail }));
+vi.mock("@/lib/email/recipient-validation", () => ({
+  assertRecipientDomainCanReceiveMail,
+  UndeliverableRecipientDomainError: class UndeliverableRecipientDomainError extends Error {
+    constructor(public readonly domain: string) {
+      super(`Het e-maildomein ${domain} heeft geen geldige mailserver.`);
+      this.name = "UndeliverableRecipientDomainError";
+    }
+  },
+}));
 
 import { deliverColdEmail } from "@/lib/email/service";
+import { UndeliverableRecipientDomainError } from "@/lib/email/recipient-validation";
 
 describe("cold-email verzendstatus", () => {
   beforeEach(() => {
@@ -91,6 +103,7 @@ describe("cold-email verzendstatus", () => {
       rawMessageBase64: null, smtpAcceptedAt: null, archivedAt: null, lastError: null,
     });
     vi.clearAllMocks();
+    assertRecipientDomainCanReceiveMail.mockResolvedValue(undefined);
   });
 
   it("wijzigt de pipeline pas na opslag in Verzonden items en verstuurt bij een archiefretry niet dubbel", async () => {
@@ -108,6 +121,20 @@ describe("cold-email verzendstatus", () => {
     expect(leadUpdate).toHaveBeenCalledWith(expect.objectContaining({
       where: { id: "lead-1" },
       data: expect.objectContaining({ pipelineStageId: "pipeline-gemaild", legacyStatus: "QUOTE_SENT" }),
+    }));
+  });
+
+  it("verstuurt niet naar een domein zonder mailserver en onderdrukt die lead", async () => {
+    assertRecipientDomainCanReceiveMail.mockRejectedValueOnce(new UndeliverableRecipientDomainError("bestaat-niet.invalid"));
+    const now = fromZonedTime("2026-08-04T10:00:00", "Europe/Amsterdam");
+
+    await expect(deliverColdEmail("mail-1", now)).resolves.toMatchObject({ status: "CANCELLED" });
+
+    expect(sendCompiledColdEmail).not.toHaveBeenCalled();
+    expect(state.status).toBe("CANCELLED");
+    expect(leadUpdate).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: "lead-1" },
+      data: expect.objectContaining({ isSuppressed: true, isActive: false, emailMxVerified: false }),
     }));
   });
 });

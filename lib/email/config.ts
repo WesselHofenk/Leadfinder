@@ -16,6 +16,7 @@ const schema = z.object({
   MAIL_IMAP_SECURE: booleanString.default("true"),
   MAIL_USERNAME: z.string().trim().email().default("info@sitora.nl"),
   MAIL_PASSWORD: z.string().min(1),
+  MAIL_BOUNCE_ADDRESS: z.string().trim().email().optional(),
   MAIL_SENT_FOLDER: z.string().trim().optional(),
 }).superRefine((value, context) => {
   if (value.COLD_EMAIL_FROM_ADDRESS.toLowerCase() !== "info@sitora.nl") {
@@ -23,6 +24,9 @@ const schema = z.object({
   }
   if (value.MAIL_USERNAME.toLowerCase() !== "info@sitora.nl") {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["MAIL_USERNAME"], message: "Het mailboxaccount moet info@sitora.nl zijn." });
+  }
+  if (value.MAIL_BOUNCE_ADDRESS && value.MAIL_BOUNCE_ADDRESS.toLowerCase() !== "bounces@sitora.nl") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["MAIL_BOUNCE_ADDRESS"], message: "Retourmeldingen moeten naar bounces@sitora.nl." });
   }
 });
 
@@ -39,6 +43,7 @@ export function coldEmailConfig() {
     MAIL_SMTP_SECURE: process.env.MAIL_SMTP_SECURE ?? process.env.SMTP_SECURE,
     MAIL_USERNAME: process.env.MAIL_USERNAME ?? process.env.SMTP_USER,
     MAIL_PASSWORD: process.env.MAIL_PASSWORD ?? process.env.SMTP_PASSWORD,
+    MAIL_BOUNCE_ADDRESS: process.env.MAIL_BOUNCE_ADDRESS,
   });
   if (!result.success) {
     throw new Error("De mailbox info@sitora.nl is nog niet volledig geconfigureerd.");

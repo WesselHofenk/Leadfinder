@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { acquireJobLock } from "@/lib/jobs/lock";
 import { coldEmailConfig } from "./config";
 import { appendToSentItems, compileColdEmail, sendCompiledColdEmail } from "./delivery";
+import { assertRecipientDomainCanReceiveMail, UndeliverableRecipientDomainError } from "./recipient-validation";
 import { triggerColdEmailWorker } from "./worker";
 import {
   coldEmailDailyLimit,
@@ -20,6 +21,37 @@ const smtpRetryLimit = 3;
 
 function errorMessage(error: unknown) {
   return (error instanceof Error ? error.message : "Onbekende e-mailfout").slice(0, 1000);
+}
+
+async function suppressUndeliverableRecipient(email: ColdEmail, error: UndeliverableRecipientDomainError) {
+  const checkedAt = new Date();
+  return prisma.$transaction(async (tx) => {
+    await tx.lead.update({ where: { id: email.leadId }, data: {
+      emailMxVerified: false,
+      emailVerifiedAt: checkedAt,
+      isSuppressed: true,
+      isActive: false,
+      isFiltered: true,
+      filterReason: "EMAIL_DOMAIN_INVALID",
+    } });
+    await tx.leadActivity.create({ data: {
+      leadId: email.leadId,
+      actorId: email.createdById,
+      type: "COLD_EMAIL_BLOCKED",
+      summary: `E-mail niet verzonden: ${error.message}`,
+      details: { coldEmailId: email.id, recipient: email.recipient, domain: error.domain },
+    } });
+    await tx.leadHistory.create({ data: {
+      leadId: email.leadId,
+      actorId: email.createdById,
+      event: "COLD_EMAIL_BLOCKED",
+      details: { coldEmailId: email.id, recipient: email.recipient, domain: error.domain },
+    } });
+    return tx.coldEmail.update({ where: { id: email.id }, data: {
+      status: "CANCELLED",
+      lastError: error.message,
+    } });
+  });
 }
 
 async function nextScheduledSlot(tx: Prisma.TransactionClient, now: Date, warmupStart: string, timeZone: string) {
@@ -143,6 +175,7 @@ export async function deliverColdEmail(id: string, now = new Date()) {
   email = await prisma.coldEmail.findUniqueOrThrow({ where: { id } });
   let smtpAccepted = false;
   try {
+    await assertRecipientDomainCanReceiveMail(email.recipient);
     const sentAt = new Date();
     const compiled = await compileColdEmail(config, {
       recipient: email.recipient,
@@ -163,6 +196,9 @@ export async function deliverColdEmail(id: string, now = new Date()) {
       lastError: null,
     } });
   } catch (error) {
+    if (error instanceof UndeliverableRecipientDomainError) {
+      return suppressUndeliverableRecipient(email, error);
+    }
     if (smtpAccepted) {
       await prisma.coldEmail.update({ where: { id }, data: {
         status: "SENT_PENDING_ARCHIVE", smtpAcceptedAt: new Date(), lastError: `SMTP geaccepteerd; archivering wordt hervat. ${errorMessage(error)}`,
@@ -205,7 +241,11 @@ export async function processColdEmailQueue(now = new Date()) {
         take: Math.max(0, 10 - archiveQueue.length),
       });
       for (const email of sendQueue) {
-        try { await deliverColdEmail(email.id, now); sent += 1; } catch (error) {
+        try {
+          const result = await deliverColdEmail(email.id, now);
+          if (result.status === "SENT") sent += 1;
+          else failed += 1;
+        } catch (error) {
           failed += 1;
           console.error(JSON.stringify({ step: "cold_email_delivery_failed", emailId: email.id, message: errorMessage(error) }));
         }
