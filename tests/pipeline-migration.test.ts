@@ -9,6 +9,7 @@ const emailedStageMigration = readFileSync(resolve("prisma/migrations/2026071623
 const callbackRequestStageMigration = readFileSync(resolve("prisma/migrations/20260716235900_add_callback_request_pipeline_stage/migration.sql"), "utf8");
 const dutchLeadRecoveryMigration = readFileSync(resolve("prisma/migrations/20260717001000_restore_dutch_leads/migration.sql"), "utf8");
 const sixStageMigration = readFileSync(resolve("prisma/migrations/20260723210000_six_stage_pipeline/migration.sql"), "utf8");
+const legacyStatusRepairMigration = readFileSync(resolve("prisma/migrations/20260809212000_repair_legacy_lead_status_drift/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -111,5 +112,16 @@ describe("veilige pipeline-datamigratie", () => {
       expect(sixStageMigration).toContain(`'${oldStage}'`);
       expect(sixStageMigration).toContain(`'${target}'`);
     }
+  });
+
+  it("herstelt EMAILED transactioneel naar de canonieke fase zonder leads te verwijderen", () => {
+    expect(legacyStatusRepairMigration).toMatch(/^BEGIN;/);
+    expect(legacyStatusRepairMigration.trim()).toMatch(/COMMIT;$/);
+    expect(legacyStatusRepairMigration).toContain("WHEN \"status\"::TEXT = 'EMAILED' THEN 'pipeline-gemaild'");
+    expect(legacyStatusRepairMigration).toContain("WHEN \"status\"::TEXT = 'EMAILED' THEN 'QUOTE_SENT'::\"LeadStatus\"");
+    expect(legacyStatusRepairMigration).toContain("total_before <> total_after");
+    expect(legacyStatusRepairMigration).toContain("invalid_after <> 0");
+    expect(legacyStatusRepairMigration).toContain('CONSTRAINT "Lead_status_canonical_check"');
+    expect(legacyStatusRepairMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
   });
 });
