@@ -17,7 +17,13 @@ const runInput = z.object({ runId: z.string().cuid() });
 
 async function authorized() { return Boolean(await currentUser()); }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
+  if (!rateLimit(`generation-status:${requestIp(request)}`, 30, 60_000)) {
+    return NextResponse.json(
+      { error: "De voortgang wordt te vaak opgevraagd. Probeer het zo opnieuw." },
+      { status: 429, headers: { "Retry-After": "5", "Cache-Control": "private, no-store" } },
+    );
+  }
   if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
   const run = await latestGenerationRun();
   if (
@@ -34,7 +40,7 @@ export async function GET() {
       }));
     }));
   }
-  return NextResponse.json(generationResponse(run));
+  return NextResponse.json(generationResponse(run), { headers: { "Cache-Control": "private, no-store" } });
 }
 
 export async function POST(request: NextRequest) {

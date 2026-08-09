@@ -119,7 +119,7 @@ describe("serverless generation API", () => {
   });
 
   it("leest jobstatus uit PostgreSQL en activeert daarmee de watchdog", async () => {
-    const response = await GET();
+    const response = await GET(request("GET"));
     expect(response.status).toBe(200);
     expect(generation.latestGenerationRun).toHaveBeenCalledOnce();
   });

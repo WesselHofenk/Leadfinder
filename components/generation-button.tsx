@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
 import { GENERATION_MAX_RUN_MINUTES, isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
 import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
+import { generationPollingDelay, generationPollingExpired } from "@/lib/jobs/generation-polling";
 import { completedRunMessage, consistentTerminalReason, preservedCandidateCount } from "@/lib/jobs/generation-summary";
 
 type Run = {
@@ -153,6 +154,7 @@ export function GenerationButton() {
     if (polling.current) return;
     polling.current = true;
     let networkFailures = 0;
+    const pollingStartedAt = Date.now();
     try {
       while (alive.current && !stopped.current) {
         const response = await fetch("/api/generation", { cache: "no-store" }).catch(() => null);
@@ -165,10 +167,17 @@ export function GenerationButton() {
           const latest = data.run as Run | null;
           if (!latest || !alive.current || stopped.current) return;
           if (isTerminalGenerationStatus(latest.status)) { finish(latest); return; }
+          if (generationPollingExpired(latest.startedAt, pollingStartedAt)) {
+            stopped.current = true;
+            setPending(false);
+            setMessage("De automatische voortgangscontrole is gestopt om onnodig databaseverkeer te voorkomen. Vernieuw de pagina om de actuele status op te halen.");
+            return;
+          }
           setRun((current) => stopped.current ? current : latest);
           if (!data.backgroundWorker) advance(latest.id || runId);
         }
-        await new Promise((resolve) => setTimeout(resolve, 1_000));
+        const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
+        await new Promise((resolve) => setTimeout(resolve, generationPollingDelay(hidden, networkFailures)));
       }
     } finally { polling.current = false; }
   }, [advance, finish]);
