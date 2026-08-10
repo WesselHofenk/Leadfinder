@@ -1,3 +1,4 @@
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
@@ -78,6 +79,7 @@ describe("gerichte Overpass-query", () => {
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
     const way = { ...element, type: "way" as const, id: 43, lat: undefined, lon: undefined, center: { lat: 52.38, lon: 4.91 }, tags: {
+
       ...element.tags, phone: "ongeldig; +31 20 765 43 21", mobile: "+31 6 12345678", email: "info@voorbeeld.nl; sales@voorbeeld.nl", website: "no",
     } };
     const relation = { ...way, type: "relation" as const, id: 44, center: { lat: 52.39, lon: 4.92 } };
@@ -158,6 +160,7 @@ describe("gerichte Overpass-query", () => {
 
   it("weigert een ongeldige locatie voordat een netwerkrequest start", async () => {
     const fetchImpl = vi.fn();
+
     await expect(searchOverpass({ ...base, latitude: Number.NaN, fetchImpl: fetchImpl as typeof fetch })).rejects.toThrow("locatie");
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -238,6 +241,7 @@ describe("timeouts, retries en fallback", () => {
       .mockResolvedValueOnce(jsonResponse());
     const result = await searchOverpass({ ...base, fetchImpl });
     expect(result.endpoint).toBe("https://two.example/api");
+
   });
 
   it("geeft een concrete fout wanneer alle endpoints falen", async () => {

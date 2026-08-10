@@ -18,9 +18,10 @@ export async function ensureColdEmailCampaignState(
     || localDayKey(now, config.COLD_EMAIL_TIME_ZONE);
   return client.coldEmailCampaign.upsert({
     where: { id: COLD_EMAIL_CAMPAIGN_ID },
-    update: {},
+    update: { name: "Cold emails automatisch versturen" },
     create: {
       id: COLD_EMAIL_CAMPAIGN_ID,
+      name: "Cold emails automatisch versturen",
       startDayKey: initialStart,
       templateSequence: 0,
     },

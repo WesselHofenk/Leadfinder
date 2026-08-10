@@ -1,126 +1,53 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const runId = "cmrlz4csu0000l6046xanxs8s";
-const pendingRun = { id: runId, status: "PENDING", progress: 2, batchNumber: 0, startedAt: new Date(), createdAt: new Date(), updatedAt: new Date() };
+const run = { id: "cmrlz4csu0000l6046xanxs8s", status: "RUNNING", progress: 45 };
+const task = { id: "leadfinder-continuous", name: "Leadfinder doorlopend zoeken", enabled: true, status: "ACTIVE" };
 
-const { generation, findFirst, acquireJobLock, releaseStartLock, worker } = vi.hoisted(() => ({
-  generation: {
-    cancelGenerationRun: vi.fn(),
-    createGenerationRun: vi.fn(),
-    latestGenerationRun: vi.fn(),
-    markStaleGenerationRuns: vi.fn(),
-    processGenerationBatch: vi.fn(),
-  },
-  findFirst: vi.fn(),
-  acquireJobLock: vi.fn(),
-  releaseStartLock: vi.fn(),
-  worker: {
-    generationWorkerAvailable: vi.fn(() => false),
-    scheduleGenerationWatchdog: vi.fn(),
-    triggerGenerationWorker: vi.fn(),
-  },
+const automation = vi.hoisted(() => ({
+  getLeadfinderTaskSnapshot: vi.fn(),
+  setLeadfinderTaskEnabled: vi.fn(),
+  stopLeadfinderTask: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/session", () => ({ currentUser: vi.fn(async () => ({ id: "user-1" })) }));
-vi.mock("@/lib/jobs/generation", () => generation);
-vi.mock("@/lib/jobs/generation-worker", () => worker);
-vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock }));
-vi.mock("@/lib/prisma", () => ({ prisma: { generationRun: { findFirst } } }));
+vi.mock("@/lib/jobs/automation-tasks", () => automation);
 vi.mock("@/lib/security/request", () => ({ hasValidOrigin: vi.fn(() => true), rateLimit: vi.fn(() => true), requestIp: vi.fn(() => "127.0.0.1") }));
 
-import { DELETE, GET, PATCH, POST } from "@/app/api/generation/route";
+import { DELETE, GET, POST } from "@/app/api/generation/route";
 
-function request(method: string, body?: unknown) {
+function request(method: string) {
   return new NextRequest("https://leadfindersitora.nl/api/generation", {
     method,
     headers: { origin: "https://leadfindersitora.nl", "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
   });
 }
 
-describe("serverless generation API", () => {
+describe("permanente Leadfinder-taak API", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    findFirst.mockResolvedValue(null);
-    acquireJobLock.mockResolvedValue({ release: releaseStartLock });
-    generation.createGenerationRun.mockResolvedValue(pendingRun);
-    generation.latestGenerationRun.mockResolvedValue(pendingRun);
-    generation.processGenerationBatch.mockResolvedValue({ ...pendingRun, status: "RUNNING", progress: 45 });
-    generation.cancelGenerationRun.mockResolvedValue({ ...pendingRun, status: "CANCELLED", progress: 100 });
-    worker.generationWorkerAvailable.mockReturnValue(false);
-    worker.scheduleGenerationWatchdog.mockResolvedValue(true);
-    worker.triggerGenerationWorker.mockResolvedValue(true);
+    automation.getLeadfinderTaskSnapshot.mockResolvedValue({ task, run });
+    automation.setLeadfinderTaskEnabled.mockResolvedValue(task);
+    automation.stopLeadfinderTask.mockResolvedValue({ task: { ...task, enabled: false, status: "PAUSED" }, run, cancelled: 1 });
   });
 
-  it("maakt een queued job zonder een lang open startrequest", async () => {
-    const response = await POST(request("POST"));
-    expect(response.status).toBe(202);
-    expect(await response.json()).toEqual(expect.objectContaining({
-      success: true,
-      jobId: runId,
-      status: "PENDING",
-      requestedCount: 10,
-      savedCount: 0,
-      run: expect.objectContaining({ id: runId, status: "PENDING", batchNumber: 0 }),
-    }));
-    expect(generation.processGenerationBatch).not.toHaveBeenCalled();
-    expect(releaseStartLock).toHaveBeenCalledOnce();
-  });
-
-  it("voorkomt twee gelijktijdige zoekruns", async () => {
-    findFirst.mockResolvedValue(pendingRun);
-    const response = await POST(request("POST"));
-    expect(response.status).toBe(409);
-    expect(generation.createGenerationRun).not.toHaveBeenCalled();
-  });
-
-  it("sluit ook het racevenster tussen actieve-runcontrole en jobaanmaak", async () => {
-    acquireJobLock.mockResolvedValue(null);
-    const response = await POST(request("POST"));
-    expect(response.status).toBe(409);
-    expect(generation.createGenerationRun).not.toHaveBeenCalled();
-    expect((await response.json()).success).toBe(false);
-  });
-
-  it("staat een nieuwe run toe nadat de vorige een eindstatus kreeg", async () => {
-    findFirst.mockResolvedValue(null);
-    expect((await POST(request("POST"))).status).toBe(202);
-  });
-
-  it("geeft iedere opeenvolgende hergeneratie na afronding een eigen run-ID", async () => {
-    const secondRun = { ...pendingRun, id: "cmrlz4csu0001l604q7w3f6vn" };
-    generation.createGenerationRun
-      .mockResolvedValueOnce(pendingRun)
-      .mockResolvedValueOnce(secondRun);
-    const firstResponse = await POST(request("POST"));
-    const secondResponse = await POST(request("POST"));
-    expect((await firstResponse.json()).jobId).toBe(runId);
-    expect((await secondResponse.json()).jobId).toBe(secondRun.id);
-    expect(generation.createGenerationRun).toHaveBeenCalledTimes(2);
-  });
-
-  it("verwerkt via PATCH precies de gevraagde persistente batch", async () => {
-    const response = await PATCH(request("PATCH", { runId }));
+  it("leest één singleton-taak met de actuele backendrun", async () => {
+    const response = await GET();
     expect(response.status).toBe(200);
-    expect(generation.processGenerationBatch).toHaveBeenCalledWith(runId);
-    expect(await response.json()).toEqual(expect.objectContaining({
-      success: true, jobId: runId, status: "RUNNING", progress: 45,
-      requestedCount: 10, savedCount: 0, candidatesChecked: 0,
-      rejectedWithWebsite: 0, rejectedClosed: 0, rejectedDuplicate: 0, rejectedInvalid: 0, failedQueries: 0,
-    }));
+    expect(await response.json()).toEqual({ task, run });
+    expect(automation.getLeadfinderTaskSnapshot).toHaveBeenCalledOnce();
   });
 
-  it("annuleert de job direct en geeft de terminale status terug", async () => {
-    const response = await DELETE(request("DELETE", { runId }));
+  it("werkt de bestaande taak bij zonder een browserbatch te starten", async () => {
+    const response = await POST(request("POST"));
     expect(response.status).toBe(200);
-    expect(generation.cancelGenerationRun).toHaveBeenCalledWith(runId);
-    expect((await response.json()).run.status).toBe("CANCELLED");
+    expect(automation.setLeadfinderTaskEnabled).toHaveBeenCalledWith(true);
   });
 
-  it("leest jobstatus uit PostgreSQL en activeert daarmee de watchdog", async () => {
-    const response = await GET(request("GET"));
+  it("pauzeert dezelfde taak en ruimt actieve dubbele runs op", async () => {
+    const response = await DELETE(request("DELETE"));
     expect(response.status).toBe(200);
-    expect(generation.latestGenerationRun).toHaveBeenCalledOnce();
+    expect(automation.stopLeadfinderTask).toHaveBeenCalledOnce();
+    expect((await response.json()).cancelled).toBe(1);
   });
 });

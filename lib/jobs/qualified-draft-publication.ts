@@ -41,4 +41,3 @@ export async function publishQualifiedDrafts<T>(options: PublicationOptions<T>) 
   if (storedDraftIds.length) await options.removeStored(storedDraftIds);
   return { inserted: storedDraftIds.length, storedDraftIds, invalid, duplicates };
 }
-

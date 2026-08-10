@@ -35,4 +35,3 @@ export function CoveragePriorityManager() {
     {message && <p className="small muted" role="status" style={{ marginTop: 10 }}>{message}</p>}
   </section>;
 }
-

@@ -28,6 +28,7 @@
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
     "db:backup:sqlite": "tsx scripts/backup-local.ts",
     "db:restore:sqlite": "tsx scripts/restore-local.ts",
+    "db:reset-leads": "tsx scripts/reset-leads.ts",
     "postinstall": "prisma generate"
   },
   "dependencies": {

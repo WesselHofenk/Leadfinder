@@ -1,3 +1,4 @@
+
 import type { Candidate } from "./eligibility";
 import type { WebsiteAnalysisResult } from "@/lib/website/analyze";
 import { verifyWebsiteCandidate, type Evidence, type WebsiteVerificationResult } from "./website-verification";

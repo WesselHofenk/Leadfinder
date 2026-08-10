@@ -213,4 +213,3 @@ export async function validatePublicBusinessEmail(
     checkedAt,
   };
 }
-

@@ -1,3 +1,4 @@
+
 import { confidenceLevel, excludedBusinessValues } from "./config";
 import { isPermanentlyClosed, isTemporarilyClosed } from "./company-status";
 import { evaluateNewLeadGate } from "./intake-gate";
@@ -78,6 +79,7 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
   if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
+
   const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0] ?? null;
   if (!normalizedPhoneNumber) return { ok: false, reason: "invalid_phone" };
   const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];

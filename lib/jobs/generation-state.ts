@@ -1,3 +1,4 @@
+
 export const terminalGenerationStatuses = ["COMPLETE", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"] as const;
 export const GENERATION_MAX_RUN_MINUTES = 10;
 export const GENERATION_MAX_RUN_MS = GENERATION_MAX_RUN_MINUTES * 60_000;
@@ -78,6 +79,7 @@ export function locationValidationBatchLimit(configuredBatchSize: number) {
 export function generationProgress(input: { stored: number; target: number; candidatesReserved?: number; candidatesChecked?: number; maxCandidates?: number; processedSegments: number; sourceFailures: number; maxSegments: number }) {
   const maximumCandidates = Math.max(1, input.maxCandidates ?? input.target);
   const reservationProgress = Math.min(15, Math.round(((input.candidatesReserved ?? 0) / maximumCandidates) * 15));
+
   const validationProgress = Math.min(55, Math.round(((input.candidatesChecked ?? 0) / maximumCandidates) * 55));
   const resultProgress = Math.min(15, Math.round((input.stored / Math.max(1, input.target)) * 15));
   const attemptedSegments = input.processedSegments + input.sourceFailures;

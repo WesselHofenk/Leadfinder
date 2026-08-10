@@ -1,3 +1,4 @@
+
 import { describe, expect, it, vi } from "vitest";
 
 import { publishQualifiedDrafts, type PublicationDraft } from "@/lib/jobs/qualified-draft-publication";
@@ -78,6 +79,7 @@ describe("gedeeltelijke, atomaire publicatie van gekwalificeerde concepten", () 
       drafts: drafts(3),
       isValid: () => true,
       duplicateExists: () => false,
+
       insert: () => { throw new Error("database unavailable"); },
       removeStored: removed,
     })).rejects.toThrow("database unavailable");

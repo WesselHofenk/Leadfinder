@@ -1,3 +1,4 @@
+
 import { CandidateQueueStatus, JobStatus, Prisma, ValidationCandidateStatus, type GenerationCandidate, type GenerationRun } from "@prisma/client";
 
 import { serverEnv } from "@/lib/env";
@@ -27,6 +28,7 @@ import { candidateReservationLimit, candidateRetryStatus, generationCompletionSt
 import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
 import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 import { publishQualifiedDrafts } from "./qualified-draft-publication";
+import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
 
 type Stats = {
   found: number;
@@ -78,6 +80,7 @@ const stringArray = (value: Prisma.JsonValue): string[] => Array.isArray(value) 
 
 export class DuplicateIdentityError extends Error {
   constructor(readonly fingerprint: string, readonly existingLeadId: string) {
+
     super(`Identiteitsvingerafdruk ${fingerprint} hoort al bij lead ${existingLeadId}.`);
     this.name = "DuplicateIdentityError";
   }
@@ -158,6 +161,7 @@ function statsFromRun(run: GenerationRun): Stats {
     cheapRejected: run.cheapRejected,
     externallyValidated: run.externallyValidated,
     cacheHits: run.cacheHits,
+
     withoutWebsite: run.withoutWebsite,
     duplicates: run.duplicates,
     existing: run.existingLeads,
@@ -238,6 +242,7 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     chainRejected: stats.chainRejected,
     franchiseRejected: stats.franchiseRejected,
     sameNameMultipleAddresses: stats.sameNameMultipleAddresses,
+
     samePhoneMultipleAddresses: stats.samePhoneMultipleAddresses,
     locationCountUncertain: stats.locationCountUncertain,
     duplicateListingsMerged: stats.duplicateListingsMerged,
@@ -269,7 +274,7 @@ function candidateBudgetReason(stats: Stats, pendingCandidates: number, maxCandi
   return `De kandidaatslimiet van ${maxCandidates} is bereikt na controle van ${stats.checked} unieke kandidaten${preserved ? `; ${preserved} kandidaten vereisen een latere hercontrole` : ""}.`;
 }
 
-export async function createGenerationRun() {
+export async function createGenerationRun(options: { continuousRequested?: boolean } = {}) {
   const env = serverEnv();
   const target = env.LEAD_GENERATION_TARGET;
   const run = await prisma.$transaction(async (tx) => {
@@ -285,6 +290,7 @@ export async function createGenerationRun() {
         stored: 0,
         validDrafts: 0,
         maxCandidates: MAX_CANDIDATES_PER_RUN,
+        continuousRequested: options.continuousRequested ?? false,
         startedAt,
         currentPhase: "Zoekopdracht klaarzetten",
         progress: phaseProgress("queued"),
@@ -318,6 +324,7 @@ export async function markStaleGenerationRuns(now = new Date()) {
     where: {
       status: { in: [JobStatus.PENDING, JobStatus.RUNNING] },
       startedAt: { not: null, lte: expiredBefore },
+
     },
     select: { id: true },
   });
@@ -398,6 +405,7 @@ export async function latestGenerationRun() {
       processedSegments: true,
       wrongLocationRejected: true,
       insufficientDataRejected: true,
+
       validCandidates: true,
       databaseInsertAttempts: true,
       databaseInsertFailures: true,
@@ -478,6 +486,7 @@ async function logOverpassEvent(runId: string, city: string, category: string, e
       where: { id: runId },
       data: {
         sourceRequests: { increment: event.errorType === "cancelled" ? 0 : 1 },
+
         sourceSuccesses: { increment: !event.errorType && typeof event.resultCount === "number" ? 1 : 0 },
         sourceEmptyResponses: { increment: !event.errorType && event.resultCount === 0 ? 1 : 0 },
         sourceTechnicalErrors: { increment: event.errorType && event.errorType !== "cancelled" ? 1 : 0 },
@@ -558,6 +567,7 @@ async function markDecision(candidate: Candidate, decision: string, reasonCode: 
     where: {
       country: candidate.country.toUpperCase(),
       city: candidate.city,
+
       category: candidate.category,
       source: candidate.source ?? "OPENSTREETMAP",
     },
@@ -638,6 +648,7 @@ async function knownCandidateReasons(candidates: Candidate[]) {
       "REGION_NOT_ALLOWED",
       "OWN_WEBSITE_FOUND",
       "EXCLUDED_CATEGORY",
+
       "BLOCKED_BRUSSELS",
       "BLOCKED_GHENT",
       "meerdere_vestigingen",
@@ -718,6 +729,7 @@ async function databaseLocationEvidence(candidate: Candidate) {
       where: { OR: [
         { rawName: { equals: candidate.companyName, mode: "insensitive" } },
         ...(phones.length ? [{ rawPhone: { in: phones } }] : []),
+
       ] },
       select: { sourceRecordId: true, payload: true },
       take: 100,
@@ -798,6 +810,7 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
 type LeadWriteClient = Prisma.TransactionClient;
 
 async function insertValidatedLead(
+
   tx: LeadWriteClient,
   candidate: Candidate,
   verification: WebsiteVerificationResult,
@@ -878,6 +891,7 @@ async function insertValidatedLead(
         : verification.status === "IMPROVABLE_WEBSITE" ? "IMPROVABLE_WEBSITE" : "OUTDATED_WEBSITE",
       opportunityScore: verification.status === "NO_WEBSITE_CONFIRMED" ? 90 : verification.status === "WEBSITE_BROKEN" ? 95 : 80,
       conversionQualityScore: 0,
+
       qualificationReason: verification.reason,
       batchId,
       dedupeFingerprint,
@@ -958,6 +972,7 @@ async function insertValidatedLead(
         country: candidate.country.toUpperCase(), city: candidate.city,
         category: candidate.category, source: candidate.source ?? "OPENSTREETMAP",
       },
+
       data: { validLeads: { increment: 1 } },
     });
     const candidateFingerprints = fingerprintValues(candidateDedupeKeys(candidate));
@@ -1038,6 +1053,7 @@ export async function stageQualifiedLead(runId: string, candidate: Candidate, ve
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
       return { staged: false, reviewOnly: false, reason: "DUPLICATE_QUALIFIED_DRAFT" };
+
     }
     throw error;
   }
@@ -1118,6 +1134,7 @@ export async function finalizeQualifiedBatch(runId: string) {
 
   for (const draft of drafts) {
     let payload: QualifiedDraftPayload;
+
     try {
       payload = draftPayload(draft.payload);
     } catch {
@@ -1198,6 +1215,7 @@ function strictReasonMessage(reason: StrictLeadReason) {
     EMAIL_REQUIRED: "Geen geldig openbaar zakelijk e-mailadres",
     NO_PUBLIC_BUSINESS_PROFILE: "Geen aantoonbare openbare bedrijfsvermelding",
     REGION_NOT_ALLOWED: "Buiten Nederland en België",
+
     LANGUAGE_NOT_DUTCH: "Niet aantoonbaar Nederlandstalig",
     BUSINESS_NOT_CONFIRMED_ACTIVE: "Status onbekend of niet positief actief bevestigd",
     BUSINESS_CLOSED: "Bedrijf is gesloten",
@@ -1278,6 +1296,7 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
     ?? select(unusedCities, true);
   if (!area) throw new Error("Er resteert zoekruimte, maar er kon geen zoeksegment worden geselecteerd.");
   const combination = await prisma.searchCombination.upsert({
+
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
     create: {
       country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP",
@@ -1358,6 +1377,7 @@ async function finishGenerationRun(runId: string, reason: string, exhausted = fa
     stringArray(run.placesUsed),
     stringArray(run.apiErrors),
     stringArray(run.warnings),
+
     finalReason,
     exhausted,
   );
@@ -1438,6 +1458,7 @@ export async function processGenerationBatch(runId: string) {
   const places = stringArray(run.placesUsed);
   const dedupe = new RunDeduplicator();
   let retriedThisBatch = 0;
+
   let validationDurationMs = 0;
   let databaseDurationMs = 0;
   let batchMessage: string | null = null;
@@ -1518,6 +1539,7 @@ export async function processGenerationBatch(runId: string) {
 
     if (!queued.length) {
       const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
+
       if (stats.checked >= run.maxCandidates) {
         return finishGenerationRun(runId, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
       }
@@ -1598,6 +1620,7 @@ export async function processGenerationBatch(runId: string) {
         stats.blockedBrussels += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "BRUSSELS").length;
         stats.blockedGhent += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "GHENT").length;
         stats.rejected += blockedCandidates.length;
+
         await recordBlockedCandidates(runId, blockedCandidates);
         const bufferedCandidates = allowedCandidates
           .sort((left, right) => candidateQualityScore(right) - candidateQualityScore(left))
@@ -1678,6 +1701,7 @@ export async function processGenerationBatch(runId: string) {
           prisma.coverageArea.update({ where: { id: area.id }, data: {
             nextScanAt: new Date(Date.now() + 5 * 60_000), errorMessage: `Tijdelijke bronfout: ${message}`,
           } }),
+
           prisma.searchCombination.update({ where: { id: combination.id }, data: {
             errorCount: { increment: 1 }, lastUsedAt: new Date(),
             region: area.region, searchTerm: area.category, provider: adapter.id,
@@ -1758,6 +1782,7 @@ export async function processGenerationBatch(runId: string) {
       }
       if (!hasReadableAddress(candidate)) {
         candidate = await enrichCandidateAddress(candidate);
+
         await sourceRecord(candidate);
       }
       // Reject deterministic failures and known identities before spending a
@@ -1838,6 +1863,7 @@ export async function processGenerationBatch(runId: string) {
         else stats.emailRetries += 1;
         if (row.attempts === 0) stats.manualReview += 1;
         retriedThisBatch += 1;
+
         const retryReason = emailValidation.status === "MISSING" ? "BUSINESS_EMAIL_REQUIRED" : emailValidation.reason;
         await markDecision(candidate, "retry", retryReason, undefined, {
           contactRequirement: "Een traceerbaar openbaar zakelijk e-mailadres met een geldig MX-record is verplicht.",
@@ -1918,6 +1944,7 @@ export async function processGenerationBatch(runId: string) {
     }
 
     // Location-count lookups are the slowest pre-website step. Run only the
+
     // bounded high-score work set concurrently; endpoint-level locks and
     // circuit breakers still protect every public provider independently.
     if (locationWork.length && Date.now() >= runDeadline) {
@@ -1998,6 +2025,7 @@ export async function processGenerationBatch(runId: string) {
         const verification = result.value;
         const gate = evaluateNewLeadGate(candidate, verification);
         if (!gate.allowed) {
+
           if (gate.reason === "SKIPPED_HAS_WEBSITE") {
             stats.websitesFound += 1; stats.rejected += 1;
             await excludeCandidate(candidate, verification);
@@ -2078,6 +2106,7 @@ export async function processGenerationBatch(runId: string) {
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
     const [pendingCandidates, retryQueueCount] = await Promise.all([
       prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } }),
+
       retryQueueCountForRun(runId),
     ]);
     if (Date.now() >= runDeadline) {
@@ -2148,21 +2177,71 @@ export async function runLeadGeneration(runId: string) {
 }
 
 export async function runGenerationWatchdog(now = new Date()) {
-  await markStaleGenerationRuns(now);
-  const active = await prisma.generationRun.findFirst({
-    where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } },
-    orderBy: { createdAt: "asc" },
-  });
-  if (!active) return { active: false, processed: false };
-  if (isGenerationRunExpired(active.startedAt, serverEnv().GENERATION_MAX_RUN_MINUTES, now)) {
-    const run = await finishGenerationRun(active.id, `De zoekrun van ${serverEnv().GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
-    return { active: false, processed: true, runId: run.id, status: run.status };
+  const watchdogLock = await acquireJobLock("generation-watchdog", 4 * 60_000);
+  if (!watchdogLock) return { active: true, processed: false, reason: "watchdog_locked" };
+  try {
+    const task = await ensureLeadfinderTask();
+    if (!task.enabled) return { active: false, processed: false, reason: "paused" };
+
+    await markStaleGenerationRuns(now);
+    const activeRuns = await prisma.generationRun.findMany({
+      where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+    });
+    let active = activeRuns[0];
+    if (activeRuns.length > 1) {
+      const duplicateIds = activeRuns.slice(1).map(({ id }) => id);
+      await prisma.generationRun.updateMany({
+        where: { id: { in: duplicateIds } },
+        data: {
+          status: JobStatus.CANCELLED,
+          cancelRequested: true,
+          continuousRequested: false,
+          currentPhase: "Dubbele achtergrondrun opgeruimd",
+          message: "Veilig beëindigd; de kandidaten blijven bewaard voor de permanente taak.",
+          stopReason: "Overlappende achtergrondrun veilig beëindigd.",
+          finishedAt: now,
+        },
+      });
+    }
+    if (!active) active = await createGenerationRun({ continuousRequested: true });
+    else if (!active.continuousRequested || active.cancelRequested) {
+      active = await prisma.generationRun.update({
+        where: { id: active.id },
+        data: { continuousRequested: true, cancelRequested: false },
+      });
+    }
+
+    await prisma.leadfinderTask.update({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "RUNNING", currentRunId: active.id, lastRunId: active.id, lastHeartbeatAt: now, lastError: null },
+    });
+
+    const run = isGenerationRunExpired(active.startedAt, serverEnv().GENERATION_MAX_RUN_MINUTES, now)
+      ? await finishGenerationRun(active.id, `De zoekrun van ${serverEnv().GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`)
+      : await processGenerationBatch(active.id);
+
+    if (terminalStatuses.has(run.status)) {
+      const next = await createGenerationRun({ continuousRequested: true });
+      await prisma.leadfinderTask.update({
+        where: { id: LEADFINDER_TASK_ID },
+        data: { status: "ACTIVE", currentRunId: next.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
+      });
+      return { active: true, processed: true, runId: run.id, status: run.status, nextRunId: next.id };
+    }
+
+    await prisma.leadfinderTask.update({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "RUNNING", currentRunId: run.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
+    });
+    return { active: true, processed: true, runId: run.id, status: run.status };
+  } catch (error) {
+    await prisma.leadfinderTask.update({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "ERROR", lastHeartbeatAt: new Date(), lastError: errorMessage(error) },
+    }).catch(() => undefined);
+    throw error;
+  } finally {
+    await watchdogLock.release();
   }
-  const run = await processGenerationBatch(active.id);
-  return {
-    active: !terminalStatuses.has(run.status),
-    processed: true,
-    runId: run.id,
-    status: run.status,
-  };
 }

@@ -1,3 +1,4 @@
+
 import Link from "next/link";
 import { Download, ExternalLink, Filter, MapPin, Search } from "lucide-react";
 import { parseLeadFilters } from "@/lib/leads/filters";
@@ -7,7 +8,6 @@ import { prisma } from "@/lib/prisma";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
 import { numberFormatter, statusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
-import { GenerationButton } from "@/components/generation-button";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 export default async function LeadsPage({
   searchParams,
@@ -50,7 +50,6 @@ export default async function LeadsPage({
           </p>
         </div>
         <div className="actions">
-          <GenerationButton />
           <Link className="button button-secondary" href="/leads?googleReview=pending">Google-controle nodig</Link>
           <a
             className="button button-secondary"
@@ -78,6 +77,7 @@ export default async function LeadsPage({
             value={filters.country}
             options={[
               ["NL", "Nederland"],
+
               ["BE", "België"],
             ]}
           />
@@ -158,6 +158,7 @@ export default async function LeadsPage({
             <label htmlFor="pageSize">Per pagina</label>
             <select
               className="select"
+
               id="pageSize"
               name="pageSize"
               defaultValue={filters.pageSize}
@@ -238,6 +239,7 @@ export default async function LeadsPage({
                           <a
                             className="button button-secondary"
                             href={getGoogleBusinessUrl(lead)}
+
                             target="_blank"
                             rel="noopener noreferrer"
                             aria-label={`Open Google-bedrijfspagina van ${lead.companyName}`}
@@ -318,6 +320,7 @@ function TextFilter({
               top: 12,
               color: "var(--muted)",
             }}
+
           />
         )}
         <input

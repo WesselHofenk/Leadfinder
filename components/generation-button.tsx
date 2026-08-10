@@ -1,310 +1,111 @@
+
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { Pause, Play, Radar } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, LoaderCircle, Plus, RotateCcw, Square } from "lucide-react";
-import { GENERATION_MAX_RUN_MINUTES, isTerminalGenerationStatus } from "@/lib/jobs/generation-state";
-import { MAX_CANDIDATES_PER_RUN } from "@/lib/jobs/generation-config";
-import { generationPollingDelay, generationPollingExpired } from "@/lib/jobs/generation-polling";
-import { completedRunMessage, consistentTerminalReason, preservedCandidateCount } from "@/lib/jobs/generation-summary";
+
+type LeadfinderTask = {
+  name: string;
+  enabled: boolean;
+  status: string;
+  lastHeartbeatAt?: string | null;
+  lastError?: string | null;
+};
 
 type Run = {
   id: string;
   status: string;
-  targetCount: number;
-  maxCandidates: number;
-  candidatesReserved: number;
   progress: number;
-  message?: string;
+  message?: string | null;
   candidatesFound: number;
   candidatesChecked: number;
-  cheapRejected: number;
-  externallyValidated: number;
-  cacheHits: number;
   stored: number;
-  validDrafts: number;
-  withoutWebsite: number;
-  manualReview: number;
   duplicates: number;
-  existingLeads: number;
-  rejected: number;
-  websitesChecked: number;
-  websitesFound: number;
-  permanentlyClosed: number;
-  temporarilyClosed: number;
   sourceFailures: number;
-  sourceRequests: number;
-  sourceSuccesses: number;
-  sourceEmptyResponses: number;
-  sourceTechnicalErrors: number;
-  processedSegments: number;
-  wrongLocationRejected: number;
-  insufficientDataRejected: number;
-  validCandidates: number;
-  databaseInsertAttempts: number;
-  databaseInsertFailures: number;
-  totalDurationMs?: number;
-  consecutiveSourceFailures?: number;
-  blockedBrussels: number;
-  blockedGhent: number;
-  invalidPhone: number;
-  emailsFound: number;
-  emailsMissing: number;
-  emailsInvalid: number;
-  emailRetries: number;
-  emailsExternallyVerified: number;
-  languageRejected: number;
-  multipleLocationsRejected: number;
-  chainRejected: number;
-  franchiseRejected: number;
-  sameNameMultipleAddresses: number;
-  samePhoneMultipleAddresses: number;
-  locationCountUncertain: number;
-  duplicateListingsMerged: number;
   pendingCandidates: number;
-  retryQueueCount: number;
-  retriedCandidates: number;
-  batchNumber: number;
-  exhausted: boolean;
-  apiErrors: string[];
-  warnings: string[];
   currentPhase: string;
-  currentSource?: string;
-  currentRegion?: string;
-  currentCategory?: string;
-  currentTile?: string;
-  remainingSegments?: number;
-  stopReason?: string;
-  startedAt?: string;
-  updatedAt: string;
+  currentSource?: string | null;
+  currentRegion?: string | null;
+  currentCategory?: string | null;
+  batchNumber: number;
 };
 
-export function resultMessage(run: Run) {
-  const conciseReason = consistentTerminalReason(run).split(" Resultaten:")[0]?.trim();
-  if (run.status === "COMPLETE" || run.status === "PARTIALLY_COMPLETED") {
-    return conciseReason || `De zoekrun van 10 minuten is afgerond. ${run.stored} volledig gekwalificeerde leads zijn opgeslagen in de pipeline. ${run.retryQueueCount ?? run.manualReview} onzekere kandidaten blijven bewaard voor een volgende run.`;
-  }
-  if (run.status === "CANCELLED") return run.stopReason || "Zoekrun geannuleerd.";
-  if (run.status === "TIMED_OUT") {
-    const preserved = preservedCandidateCount(run);
-    if (run.stored > 0) return `De maximale verwerkingstijd is bereikt. ${run.stored} gekwalificeerde concepten blijven veilig bewaard voor een vervolgrun.`;
-    if ((run.consecutiveSourceFailures ?? 0) > 0 && run.candidatesChecked === 0) return `De gratis bedrijfsbron was tijdelijk niet bereikbaar. Er zijn geen kandidaten gecontroleerd of leads opgeslagen. Probeer de run later opnieuw; bestaande gegevens zijn behouden.`;
-    return `De maximale verwerkingstijd is bereikt. ${completedRunMessage(run)}${preserved ? "" : " Een volgende klik probeert andere zoeksegmenten."}`;
-  }
-  return conciseReason || "Leadgeneratie is gestopt. Bekijk beheerlogs voor technische details.";
-}
-
-function resultClass(status?: string) {
-  if (status === "COMPLETE" || status === "PARTIALLY_COMPLETED") return "success-message";
-  if (status === "TIMED_OUT") return "warning-message";
-  return "alert";
-}
+type Snapshot = { task: LeadfinderTask; run: Run | null };
 
 export function GenerationButton() {
   const router = useRouter();
-  const alive = useRef(true);
-  const polling = useRef(false);
-  const advancing = useRef(false);
-  const stopped = useRef(false);
-  const actionVersion = useRef(0);
-  const batchController = useRef<AbortController | null>(null);
-  const [pending, setPending] = useState(false);
-  const [run, setRun] = useState<Run | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
-  const [now, setNow] = useState(() => Date.now());
+  const stored = useRef(0);
 
-  const finish = useCallback((latest: Run) => {
-    stopped.current = true;
-    setRun(latest);
-    setPending(false);
-    setMessage(resultMessage(latest));
-    router.refresh();
+  const refresh = useCallback(async () => {
+    const response = await fetch("/api/generation", { cache: "no-store" }).catch(() => null);
+    if (!response?.ok) {
+      setMessage("De backendstatus kon tijdelijk niet worden opgehaald.");
+      return;
+    }
+    const next = await response.json() as Snapshot;
+    if ((next.run?.stored ?? 0) > stored.current) router.refresh();
+    stored.current = next.run?.stored ?? 0;
+    setSnapshot(next);
+    setMessage("");
   }, [router]);
 
-  const advance = useCallback((runId: string) => {
-    if (advancing.current || !alive.current || stopped.current) return;
-    advancing.current = true;
-    const controller = new AbortController();
-    batchController.current = controller;
-    void fetch("/api/generation", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runId }),
-      signal: controller.signal,
-    }).then(async (response) => {
-      const data = await response.json().catch(() => ({}));
-      if (!alive.current || stopped.current || controller.signal.aborted) return;
-      if (!response.ok) {
-        setMessage(data.error || "De zoekbatch kon niet worden verwerkt; er wordt opnieuw geprobeerd.");
-        return;
-      }
-      const latest = data.run as Run;
-      if (isTerminalGenerationStatus(latest.status)) finish(latest);
-      else setRun((current) => stopped.current ? current : latest);
-    }).catch((error) => {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      if (alive.current) setMessage("De serververbinding werd onderbroken; de opgeslagen jobstatus blijft behouden.");
-    }).finally(() => {
-      if (batchController.current === controller) batchController.current = null;
-      advancing.current = false;
-    });
-  }, [finish]);
-
-  const pollUntilFinished = useCallback(async (runId: string) => {
-    if (polling.current) return;
-    polling.current = true;
-    let networkFailures = 0;
-    const pollingStartedAt = Date.now();
-    try {
-      while (alive.current && !stopped.current) {
-        const response = await fetch("/api/generation", { cache: "no-store" }).catch(() => null);
-        if (!response?.ok) {
-          networkFailures += 1;
-          if (networkFailures >= 5) setMessage("De voortgang kon tijdelijk niet worden opgehaald. De job blijft veilig in de database staan.");
-        } else {
-          networkFailures = 0;
-          const data = await response.json();
-          const latest = data.run as Run | null;
-          if (!latest || !alive.current || stopped.current) return;
-          if (isTerminalGenerationStatus(latest.status)) { finish(latest); return; }
-          if (generationPollingExpired(latest.startedAt, pollingStartedAt)) {
-            stopped.current = true;
-            setPending(false);
-            setMessage("De automatische voortgangscontrole is gestopt om onnodig databaseverkeer te voorkomen. Vernieuw de pagina om de actuele status op te halen.");
-            return;
-          }
-          setRun((current) => stopped.current ? current : latest);
-          if (!data.backgroundWorker) advance(latest.id || runId);
-        }
-        const hidden = typeof document !== "undefined" && document.visibilityState === "hidden";
-        await new Promise((resolve) => setTimeout(resolve, generationPollingDelay(hidden, networkFailures)));
-      }
-    } finally { polling.current = false; }
-  }, [advance, finish]);
-
   useEffect(() => {
-    alive.current = true;
-    const initialVersion = actionVersion.current;
-    void (async () => {
-      const response = await fetch("/api/generation", { cache: "no-store" });
-      if (!response.ok || !alive.current || actionVersion.current !== initialVersion) return;
-      const data = await response.json();
-      if (!alive.current || actionVersion.current !== initialVersion) return;
-      const latest = data.run as Run | null;
-      if (latest && isTerminalGenerationStatus(latest.status)) {
-        finish(latest);
-        return;
-      }
-      if (latest) {
-        setRun((current) => stopped.current ? current : latest);
-        setPending((current) => stopped.current ? current : true);
-        if (!data.backgroundWorker) advance(latest.id);
-        void pollUntilFinished(latest.id);
-      }
-    })();
-    return () => {
-      alive.current = false;
-      batchController.current?.abort();
-    };
-  }, [advance, finish, pollUntilFinished]);
-
-  useEffect(() => {
-    if (!pending) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    void refresh();
+    const timer = window.setInterval(() => void refresh(), 5_000);
     return () => window.clearInterval(timer);
-  }, [pending]);
+  }, [refresh]);
 
-  async function generate() {
-    actionVersion.current += 1;
-    stopped.current = false;
-    setPending(true);
-    setMessage("");
-    setRun(null);
-    try {
-      const response = await fetch("/api/generation", { method: "POST" });
-      const data = await response.json().catch(() => ({}));
-      if (data.run) setRun(data.run);
-      if (!response.ok && response.status !== 409) {
-        setPending(false);
-        setMessage(data.error || "Leadgeneratie mislukt");
-        return;
-      }
-      const runId = (data.run as Run | undefined)?.id;
-      if (!runId) throw new Error("Geen job-ID ontvangen");
-      if (!data.backgroundWorker) advance(runId);
-      void pollUntilFinished(runId);
-    } catch {
-      setPending(false);
-      setMessage("De serververbinding is verbroken. Probeer het opnieuw.");
+  async function toggle() {
+    setBusy(true);
+    const enabled = snapshot?.task.enabled ?? true;
+    const response = await fetch("/api/generation", { method: enabled ? "DELETE" : "POST" }).catch(() => null);
+    if (!response?.ok) setMessage("De taakstatus kon niet worden bijgewerkt.");
+    else {
+      const data = await response.json() as Snapshot & { message?: string };
+      setSnapshot({ task: data.task, run: data.run });
+      setMessage(data.message ?? (enabled ? "De Leadfinder is gepauzeerd." : "De Leadfinder wordt door de backend hervat."));
     }
+    setBusy(false);
   }
 
-  async function cancel() {
-    actionVersion.current += 1;
-    stopped.current = true;
-    batchController.current?.abort();
-    setPending(false);
-    const response = await fetch("/api/generation", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ runId: run?.id }),
-    });
-    const data = await response.json().catch(() => ({}));
-    if (data.run) finish(data.run as Run);
-    else { setPending(false); setMessage(data.message || "Zoekrun geannuleerd."); }
-  }
+  const task = snapshot?.task;
+  const run = snapshot?.run;
+  const enabled = task?.enabled ?? true;
+  const progress = Math.max(0, Math.min(100, run?.progress ?? 0));
 
-  const progress = pending ? Math.max(2, Math.min(100, run?.progress ?? 2)) : Math.min(100, run?.progress ?? 0);
-  const activity = pending && (run?.candidatesFound ?? 0) === 0;
-  const elapsedSeconds = run?.startedAt ? Math.max(0, Math.floor((now - new Date(run.startedAt).getTime()) / 1_000)) : 0;
-  const remainingSeconds = Math.max(0, GENERATION_MAX_RUN_MINUTES * 60 - elapsedSeconds);
-  const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
-  const remaining = `${Math.floor(remainingSeconds / 60)}:${String(remainingSeconds % 60).padStart(2, "0")}`;
-  return <div className="generation-control">
-    <button className="button button-primary" onClick={generate} disabled={pending} aria-busy={pending}>
-      {pending ? <LoaderCircle className="animate-spin" size={15}/> : message ? <RotateCcw size={15}/> : <Plus size={15}/>} {pending ? "Leads controleren…" : message ? "Opnieuw genereren" : "Nieuwe leads genereren"}
-    </button>
-    {pending && <section className="generation-progress" aria-live="polite" aria-label="Voortgang leadgeneratie">
-      <div className="generation-progress-head"><span>{run?.currentPhase || "Zoekopdracht valideren"}</span><strong>{Math.round(progress)}%</strong></div>
-      <div className={`progress${activity ? " progress-active" : ""}`}><span style={{ width: `${progress}%` }}/></div>
-      <p className="generation-source-note">{[run?.currentSource, run?.currentRegion, run?.currentCategory, run?.currentTile].filter(Boolean).join(" · ") || "Persistente zoekjob wordt voorbereid"} · batch {run?.batchNumber ?? 0}</p>
-      <p className="generation-source-note">Verstreken tijd {elapsed} · resterende tijd {remaining} van 10:00</p>
-      <p className="generation-source-note">{run?.message || "De eerste kleine zoekbatch start binnen enkele seconden."}</p>
-      <div className="generation-metrics">
-        <Metric label="Ruw gevonden" value={run?.candidatesFound ?? 0}/><Metric label="Uniek gereserveerd" value={`${run?.candidatesReserved ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/>
-        <Metric label="Gecontroleerde kandidaten" value={`${run?.candidatesChecked ?? 0}/${run?.maxCandidates ?? MAX_CANDIDATES_PER_RUN}`}/><Metric label="Goedkoop afgewezen" value={run?.cheapRejected ?? 0}/>
-        <Metric label="Extern gevalideerd" value={run?.externallyValidated ?? 0}/><Metric label="Cachehits" value={run?.cacheHits ?? 0}/>
-        <Metric label="Websites" value={run?.websitesChecked ?? 0}/><Metric label="Duplicaten" value={run?.duplicates ?? 0}/>
-        <Metric label="Zonder website" value={run?.withoutWebsite ?? 0}/><Metric label="Website gevonden" value={run?.websitesFound ?? 0}/>
-        <Metric label="Gesloten verwijderd" value={(run?.permanentlyClosed ?? 0) + (run?.temporarilyClosed ?? 0)}/><Metric label="Later opnieuw" value={run?.retriedCandidates ?? 0}/>
-        <Metric label="Verkeerde locatie" value={run?.wrongLocationRejected ?? 0}/><Metric label="Onvoldoende gegevens" value={run?.insufficientDataRejected ?? 0}/>
-        <Metric label="Zonder geldig telefoonnummer" value={run?.invalidPhone ?? 0}/><Metric label="Niet Nederlandstalig" value={run?.languageRejected ?? 0}/>
-        <Metric label="E-mailadres gevonden" value={run?.emailsFound ?? 0}/><Metric label="Zonder e-mailadres" value={run?.emailsMissing ?? 0}/>
-        <Metric label="Ongeldig e-mailadres" value={run?.emailsInvalid ?? 0}/><Metric label="Tijdelijke e-mailcontrolefout" value={run?.emailRetries ?? 0}/>
-        <Metric label="E-mailadres extern bevestigd" value={run?.emailsExternallyVerified ?? 0}/><Metric label="Resterende zoeksegmenten" value={run?.remainingSegments ?? "—"}/>
-        <Metric label="Meerdere vestigingen" value={run?.multipleLocationsRejected ?? 0}/><Metric label="Ketens" value={run?.chainRejected ?? 0}/>
-        <Metric label="Franchises" value={run?.franchiseRejected ?? 0}/><Metric label="Zelfde naam, ander adres" value={run?.sameNameMultipleAddresses ?? 0}/>
-        <Metric label="Zelfde telefoon, ander adres" value={run?.samePhoneMultipleAddresses ?? 0}/><Metric label="Vestigingsaantal onzeker" value={run?.locationCountUncertain ?? 0}/>
-        <Metric label="Dubbele vermeldingen samengevoegd" value={run?.duplicateListingsMerged ?? 0}/><Metric label="Bestaand" value={run?.existingLeads ?? 0}/>
-        <Metric label="Kandidaten in retryqueue" value={run?.retryQueueCount ?? run?.manualReview ?? 0}/><Metric label="Afgewezen" value={run?.rejected ?? 0}/>
-        <Metric label="Logische zoeksegmenten" value={(run?.processedSegments ?? 0) + (run?.sourceFailures ?? 0)}/><Metric label="Geslaagde zoeksegmenten" value={run?.processedSegments ?? 0}/>
-        <Metric label="Endpointpogingen" value={run?.sourceRequests ?? 0}/><Metric label="Succesvolle responses" value={run?.sourceSuccesses ?? 0}/>
-        <Metric label="Geldige lege responses" value={run?.sourceEmptyResponses ?? 0}/><Metric label="Technische bronfouten" value={run?.sourceTechnicalErrors ?? 0}/>
-        <Metric label="Geldig vóór opslag" value={run?.validCandidates ?? 0}/><Metric label="Databasepogingen" value={run?.databaseInsertAttempts ?? 0}/>
-        <Metric label="Databasefouten" value={run?.databaseInsertFailures ?? 0}/><Metric label="Mislukte zoekbatches" value={run?.sourceFailures ?? 0}/>
-        <Metric label="Geldige concepten" value={run?.validDrafts ?? 0}/><Metric label="Definitief opgeslagen leads" value={run?.stored ?? 0} strong/>
+  return <section className="generation-control generation-task-card" aria-label="Leadfinder-taakstatus">
+    <div className="generation-task-head">
+
+      <span className={`status-dot ${enabled ? "status-dot-active" : ""}`} aria-hidden="true"/>
+      <div>
+        <strong>{task?.name ?? "Leadfinder doorlopend zoeken"}</strong>
+        <span>{enabled ? "Actief · backend draait zelfstandig" : "Gepauzeerd"}</span>
       </div>
-      <p className="generation-source-note">{run?.pendingCandidates ?? 0} kandidaten wachten in deze run · {run?.manualReview ?? 0} onzekere kandidaten staan duurzaam in de PostgreSQL-retryqueue · {run?.sourceFailures ?? 0} bronfouten totaal · {run?.consecutiveSourceFailures ?? 0} achter elkaar</p>
-      <button className="button button-secondary generation-cancel" onClick={cancel}><Square size={13}/>Zoekrun annuleren</button>
-    </section>}
-    {message && <p className={resultClass(run?.status)} role="status">
-      {["COMPLETE", "PARTIALLY_COMPLETED"].includes(run?.status ?? "") && <CheckCircle2 size={15}/>}
-      {run?.status === "TIMED_OUT" && <AlertTriangle size={15}/>}
-      {message}
-    </p>}
-  </div>;
+      <Radar size={18}/>
+    </div>
+    <button className="button button-secondary generation-task-toggle" onClick={toggle} disabled={busy || !snapshot}>
+      {enabled ? <Pause size={14}/> : <Play size={14}/>} {enabled ? "Pauzeren" : "Hervatten"}
+    </button>
+    {run && <div className="generation-task-details" aria-live="polite">
+      <div className="generation-progress-head"><span>{run.currentPhase || "Wachten op backendbatch"}</span><strong>{Math.round(progress)}%</strong></div>
+      <div className="progress"><span style={{ width: `${progress}%` }}/></div>
+      <p className="generation-source-note">{[run.currentSource, run.currentRegion, run.currentCategory].filter(Boolean).join(" · ") || "Backendwatchdog actief"} · batch {run.batchNumber}</p>
+      <p className="generation-source-note">{run.message || "De volgende zoekbatch wordt automatisch door de server gestart."}</p>
+      <div className="generation-metrics">
+        <Metric label="Kandidaten" value={run.candidatesFound}/><Metric label="Gecontroleerd" value={run.candidatesChecked}/>
+        <Metric label="Nieuw" value={run.stored} strong/><Metric label="Duplicaten" value={run.duplicates}/>
+        <Metric label="Wachtrij" value={run.pendingCandidates}/><Metric label="Bronfouten" value={run.sourceFailures}/>
+      </div>
+    </div>}
+    {task?.lastError && <p className="alert" role="alert">{task.lastError}</p>}
+    {message && <p className="small muted" role="status">{message}</p>}
+  </section>;
 }
 
-function Metric({ label, value, strong = false }: { label: string; value: number | string; strong?: boolean }) {
+function Metric({ label, value, strong = false }: { label: string; value: number; strong?: boolean }) {
   return <div><span>{label}</span><strong className={strong ? "generation-total" : undefined}>{value}</strong></div>;
 }

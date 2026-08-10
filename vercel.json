@@ -3,27 +3,10 @@
   "framework": "nextjs",
   "buildCommand": "pnpm vercel-build",
   "installCommand": "pnpm install --frozen-lockfile",
-  "env": {
-    "GENERATION_MAX_RUN_MINUTES": "10"
-  },
   "functions": {
     "app/api/generation/route.ts": { "maxDuration": 60 },
-    "app/api/cron/generation/route.ts": { "maxDuration": 300 },
-    "app/api/cron/cold-email/route.ts": { "maxDuration": 60 },
-    "app/api/queues/generation/route.ts": {
-      "maxDuration": 60,
-      "experimentalTriggers": [
-        {
-          "type": "queue/v2beta",
-          "topic": "lead-generation",
-          "retryAfterSeconds": 15,
-          "initialDelaySeconds": 0
-        }
-      ]
-    },
-    "app/api/cron/sync/route.ts": { "maxDuration": 300 },
-    "app/api/cron/reverify/route.ts": { "maxDuration": 300 },
-    "app/api/cron/analyze/route.ts": { "maxDuration": 300 },
+    "app/api/cron/generation/route.ts": { "maxDuration": 60 },
+    "app/api/cron/outreach/route.ts": { "maxDuration": 60 },
     "app/api/queues/cold-email/route.ts": {
       "maxDuration": 60,
       "experimentalTriggers": [
@@ -34,12 +17,8 @@
           "initialDelaySeconds": 0
         }
       ]
-    }
-  },
-  "crons": [
-    { "path": "/api/cron/cold-email", "schedule": "0 8 * * *" },
-    { "path": "/api/cron/sync", "schedule": "17 1 * * *" },
-    { "path": "/api/cron/reverify", "schedule": "43 2 * * *" },
-    { "path": "/api/cron/analyze", "schedule": "7 3 * * *" }
-  ]
+    },
+    "app/api/cron/reverify/route.ts": { "maxDuration": 300 },
+    "app/api/cron/analyze/route.ts": { "maxDuration": 300 }
+  }
 }

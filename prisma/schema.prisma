@@ -328,10 +328,15 @@ model ColdEmail {
 
 model ColdEmailCampaign {
   id                String         @id
+  name              String         @unique @default("Cold emails automatisch versturen")
+  enabled           Boolean        @default(true)
+  status            String         @default("ACTIVE")
   startDayKey       String
   templateSequence  Int            @default(0)
   pausedUntil       DateTime?
   lastProviderError String?
+  lastHeartbeatAt   DateTime?
+  lastSuccessfulSentAt DateTime?
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
   emails            ColdEmail[]
@@ -486,6 +491,7 @@ model GenerationRun {
   apiErrors                  Json                  @default("[]")
   exhausted                  Boolean               @default(false)
   cancelRequested            Boolean               @default(false)
+  continuousRequested        Boolean               @default(false)
   progress                   Int                   @default(0)
   message                    String?
   heartbeatAt                DateTime?
@@ -516,6 +522,20 @@ model GenerationRun {
 
   @@index([status, createdAt])
   @@index([status, updatedAt])
+}
+
+model LeadfinderTask {
+  id              String   @id
+  name            String   @unique
+  enabled         Boolean  @default(true)
+  status          String   @default("ACTIVE")
+  currentRunId    String?
+  lastRunId       String?
+  lastHeartbeatAt DateTime?
+  lastError       String?
+  settings        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model QualifiedLeadDraft {

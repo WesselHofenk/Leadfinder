@@ -1,3 +1,4 @@
+
 import { describe, expect, it } from "vitest";
 import { candidateReservationLimit, candidateRetryStatus, GENERATION_MAX_RUN_MINUTES, generationCompletionStatus, generationDeadline, generationProgress, generationRemainingMs, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, locationValidationBatchLimit, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalStatusForStoredLeads } from "@/lib/jobs/generation-state";
 
@@ -78,6 +79,7 @@ describe("persistente generatiejobstatus", () => {
     expect(generationDeadline(startedAt)).toEqual(new Date("2026-07-15T12:10:00Z"));
     expect(isGenerationRunExpired(startedAt, 10, new Date("2026-07-15T12:09:59.999Z"))).toBe(false);
     expect(isGenerationRunExpired(startedAt, 10, new Date("2026-07-15T12:10:00Z"))).toBe(true);
+
   });
 
   it("hervat met dezelfde startedAt en start de timer niet opnieuw", () => {

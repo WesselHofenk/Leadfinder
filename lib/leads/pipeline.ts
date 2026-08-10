@@ -1,3 +1,4 @@
+
 export const pipelineStages = [
   { id: "pipeline-nieuw", slug: "nieuw", label: "Nieuw", position: 1, legacyStatus: "NEW" },
   { id: "pipeline-belletje-1", slug: "belletje-1", label: "Belletje 1", position: 2, legacyStatus: "VOICEMAIL" },

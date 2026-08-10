@@ -10,7 +10,7 @@ const batchKey = batchKeyArgument?.split("=")[1] || `manual-${new Date().toISOSt
 const now = new Date();
 const sendImmediately = immediateColdEmailAllowed(
   now,
-  process.env.COLD_EMAIL_WARMUP_START || "2026-08-04",
+  process.env.COLD_EMAIL_WARMUP_START || "2026-08-10",
   process.env.COLD_EMAIL_TIME_ZONE || process.env.OUTREACH_TIME_ZONE || "Europe/Amsterdam",
 );
 

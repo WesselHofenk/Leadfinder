@@ -1,3 +1,4 @@
+
 import { isPermanentlyClosed } from "./company-status";
 import { extractCompanyWebsite } from "./website";
 import type { WebsiteVerificationResult } from "./website-verification";

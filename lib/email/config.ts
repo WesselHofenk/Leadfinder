@@ -6,7 +6,7 @@ const booleanString = z.enum(["true", "false"]).transform((value) => value === "
 const schema = z.object({
   COLD_EMAIL_FROM_ADDRESS: z.string().email().default("info@sitora.nl"),
   COLD_EMAIL_FROM_NAME: z.string().trim().min(1).max(100).default("Sitora"),
-  COLD_EMAIL_WARMUP_START: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default("2026-08-04"),
+  COLD_EMAIL_WARMUP_START: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).default("2026-08-10"),
   COLD_EMAIL_TIME_ZONE: z.string().trim().min(1).default("Europe/Amsterdam"),
   MAIL_SMTP_HOST: z.string().trim().min(1).default("mail.sitora.nl"),
   MAIL_SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(587),
@@ -41,9 +41,13 @@ export function coldEmailConfig() {
     MAIL_SMTP_HOST: process.env.MAIL_SMTP_HOST ?? process.env.SMTP_HOST,
     MAIL_SMTP_PORT: process.env.MAIL_SMTP_PORT ?? process.env.SMTP_PORT,
     MAIL_SMTP_SECURE: process.env.MAIL_SMTP_SECURE ?? process.env.SMTP_SECURE,
+    MAIL_IMAP_HOST: process.env.MAIL_IMAP_HOST ?? process.env.IMAP_HOST,
+    MAIL_IMAP_PORT: process.env.MAIL_IMAP_PORT ?? process.env.IMAP_PORT,
+    MAIL_IMAP_SECURE: process.env.MAIL_IMAP_SECURE ?? process.env.IMAP_SECURE,
     MAIL_USERNAME: process.env.MAIL_USERNAME ?? process.env.SMTP_USER,
     MAIL_PASSWORD: process.env.MAIL_PASSWORD ?? process.env.SMTP_PASSWORD,
     MAIL_BOUNCE_ADDRESS: process.env.MAIL_BOUNCE_ADDRESS,
+    MAIL_SENT_FOLDER: process.env.MAIL_SENT_FOLDER ?? process.env.IMAP_SENT_MAILBOX,
   });
   if (!result.success) {
     throw new Error("De mailbox info@sitora.nl is nog niet volledig geconfigureerd.");

@@ -22,6 +22,9 @@ export type WebsiteVerificationResult = {
   website: string | null;
   reason: string;
   evidence: Evidence[];
+  chatbotStatus?: "PRESENT" | "NOT_PRESENT" | "UNKNOWN";
+  chatbotReason?: string;
+  objectiveIssues?: string[];
 };
 
 const legalForms = /\b(bv|b\.v\.?|vof|v\.o\.f\.?|nv|n\.v\.?|eenmanszaak|cv|maatschap)\b/gi;
@@ -173,7 +176,7 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
   const found = checks.find((check) => check.probe.result === "found");
   if (found) return {
     status: "WEBSITE_FOUND", confidence: 92, website: found.probe.website ?? `https://${found.domain}`,
-    reason: "Een plausibel merk- of bedrijfsdomein reageert; dit bedrijf hoort niet in de geen-website-lijst.",
+    reason: "Een plausibel merk- of bedrijfsdomein reageert; digitale tekortkomingen worden afzonderlijk gecontroleerd.",
     evidence: checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: check.probe.result.toUpperCase(), confidence: 92, evidenceUrl: check.probe.website ?? `https://${check.domain}`, shortExplanation: `DNS/HTTP-controle van ${check.domain}.` })),
   };
   if (checks.some((check) => check.probe.result === "unknown")) return {

@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import type { Candidate } from "@/lib/leads/eligibility";
@@ -77,6 +78,7 @@ export function initialOverpassSearchCursor(country: string, city: string, categ
   // other public-phone keys.
   return 0;
 }
+
 
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
@@ -158,6 +160,7 @@ function closedSignals(tags: Record<string, string>) {
   if (tags.end_date && /^\d{4}/.test(tags.end_date) && Number(tags.end_date.slice(0, 4)) <= new Date().getFullYear()) signals.push("end_date");
   if (["closed", "permanently_closed"].includes(tags.opening_hours?.toLowerCase())) signals.push("opening_hours");
   return signals;
+
 }
 
 function explicitGoogleProfile(tags: Record<string, string>) {
@@ -238,6 +241,7 @@ function candidatesFrom(elements: OsmElement[], country: string, searchCity?: st
       operator: tags.operator,
       province: tags["addr:province"] || tags["addr:state"],
       municipality: tags["addr:municipality"],
+
       locality: tags["addr:locality"],
       town: tags["addr:town"],
       village: tags["addr:village"],
@@ -318,6 +322,7 @@ export function buildOverpassQuery(params: {
   const latitudeDelta = params.radius / 111_320;
   const longitudeDelta = params.radius / (111_320 * Math.max(0.2, Math.cos(params.latitude * Math.PI / 180)));
   const spatial = params.boundingBox
+
     ? `(${(params.latitude - latitudeDelta).toFixed(7)},${(params.longitude - longitudeDelta).toFixed(7)},${(params.latitude + latitudeDelta).toFixed(7)},${(params.longitude + longitudeDelta).toFixed(7)})`
     : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
   const around = `${strategy}${spatial}`;
@@ -398,6 +403,7 @@ async function readBoundedText(response: Response, maxBytes: number) {
   const chunks: Uint8Array[] = [];
   let received = 0;
   try {
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -478,6 +484,7 @@ export async function searchOverpass(params: SearchParams) {
           const candidates = candidatesFrom(data.elements, params.country, params.city);
           recordEndpointSuccess(endpoint);
           await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
+
           return { candidates, endpoint, query, tile: { ...tile, id: tileLabel }, queryType };
         }
       } catch (error) {

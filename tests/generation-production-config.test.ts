@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("productieconfiguratie voor tienminutenruns", () => {
-  it("zet de Vercel-omgeving op tien minuten zonder een betaald croninterval te vereisen", () => {
+  it("gebruikt geen betaalde Vercel-cron en houdt alleen de cold-emailqueue als ondersteunende worker", () => {
     const config = JSON.parse(readFileSync("vercel.json", "utf8")) as {
       env?: Record<string, string>;
       crons?: Array<{ path: string; schedule: string }>;
     };
-    expect(config.env?.GENERATION_MAX_RUN_MINUTES).toBe("10");
-    expect(config.crons).not.toContainEqual({ path: "/api/cron/generation", schedule: "* * * * *" });
-    expect(config.crons).toContainEqual({ path: "/api/cron/cold-email", schedule: "0 8 * * *" });
+    expect(config.env).toBeUndefined();
+    expect(config.crons).toBeUndefined();
+    expect(readFileSync(".github/workflows/backend-automations.yml", "utf8")).toContain("/api/cron/outreach");
   });
 
   it("houdt de databasemigratie additief", () => {

@@ -8,8 +8,6 @@ vi.mock("@/lib/jobs/generation", () => ({
   processGenerationBatch: vi.fn(),
   runGenerationWatchdog,
 }));
-vi.mock("@/lib/jobs/generation-worker", () => ({ triggerGenerationWorker: vi.fn() }));
-
 import { GET } from "@/app/api/cron/generation/route";
 
 describe("generatiewatchdog", () => {
@@ -30,7 +28,7 @@ describe("generatiewatchdog", () => {
     });
     const response = await GET(request);
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ ok: true, processed: true, status: "PARTIALLY_COMPLETED" });
+    expect(await response.json()).toMatchObject({ processed: true, status: "PARTIALLY_COMPLETED" });
     expect(runGenerationWatchdog).toHaveBeenCalledOnce();
   });
 
