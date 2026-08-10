@@ -36,7 +36,9 @@ describe("Leadfinder-backendstatus", () => {
       : json({ task, run }));
     vi.stubGlobal("fetch", fetchMock);
     render(<GenerationButton/>);
-    fireEvent.click(await screen.findByRole("button", { name: "Pauzeren" }));
+    const pauseButton = await screen.findByRole("button", { name: "Pauzeren" });
+    await waitFor(() => expect((pauseButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(pauseButton);
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "DELETE")).toBe(true));
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
@@ -48,7 +50,9 @@ describe("Leadfinder-backendstatus", () => {
       : json({ task: paused, run }));
     vi.stubGlobal("fetch", fetchMock);
     render(<GenerationButton/>);
-    fireEvent.click(await screen.findByRole("button", { name: "Hervatten" }));
+    const resumeButton = await screen.findByRole("button", { name: "Hervatten" });
+    await waitFor(() => expect((resumeButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(resumeButton);
     await waitFor(() => expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
   });
 });
