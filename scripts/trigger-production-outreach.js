@@ -45,7 +45,8 @@ async function main() {
   console.log(`HTTP ${response.status}`);
   console.log(body || '{"status":"empty_response"}');
   if (resultFile) {
-    require("node:fs").writeFileSync(resultFile, JSON.stringify({ status: response.status, body }, null, 2));
+    const { writeFileSync } = await import("node:fs");
+    writeFileSync(resultFile, JSON.stringify({ status: response.status, body }, null, 2));
   }
 }
 
