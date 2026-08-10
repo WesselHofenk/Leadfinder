@@ -13,6 +13,7 @@ export type Candidate = {
   latitude: number; longitude: number; googleMapsUrl: string; subCategory?: string;
   source?: "GOOGLE_PLACES" | "OPENSTREETMAP"; houseNumber?: string;
   brand?: string; brandWikidata?: string; operator?: string;
+  branchCount?: number; isFranchise?: boolean; isCorporate?: boolean;
   phoneNumbers?: Array<string | null | undefined>; emailAddresses?: Array<string | null | undefined>; activitySignals?: string[];
   websiteFields?: Array<string | null | undefined>;
   links?: unknown; contact?: unknown; contactInfo?: unknown; details?: unknown; attributes?: unknown; externalLinks?: unknown; socialLinks?: unknown;
@@ -49,15 +50,14 @@ export function validateCandidateBasics(candidate: Candidate): { ok: true; lead:
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
   if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
-  if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
+  if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || candidate.isFranchise || candidate.isCorporate || (candidate.branchCount ?? 1) > 5 || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
   if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
   const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
   if (!normalizedPhoneNumber) return { ok: false, reason: "ongeldig_nummer" };
   const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
-  if (status === "UNKNOWN" && (!candidate.postalCode || candidate.streetAddress.length < 6)) return { ok: false, reason: "onbetrouwbare_status" };
+  if (status === "UNKNOWN") return { ok: false, reason: "onbetrouwbare_status" };
   let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
-  if (status === "UNKNOWN") confidenceScore -= 10;
   const normalizedPostalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, candidate.country) ?? undefined;
   const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
   if (normalizedPostalCode && (candidate.houseNumber || /\d/.test(candidate.streetAddress))) confidenceScore += 5;

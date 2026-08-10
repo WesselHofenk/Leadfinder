@@ -5,7 +5,6 @@ import { listLeads } from "@/lib/leads/service";
 import { getGoogleBusinessUrl } from "@/lib/leads/google-business-url";
 import { dateFormatter, numberFormatter, statusLabels, websiteStatusLabels } from "@/lib/format";
 import { QuickStatus } from "@/components/lead-actions";
-import { GenerationButton } from "@/components/generation-button";
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 export default async function LeadsPage({
   searchParams,
@@ -44,7 +43,6 @@ export default async function LeadsPage({
           </p>
         </div>
         <div className="actions">
-          <GenerationButton />
           <Link className="button button-secondary" href="/leads?filtered=yes">Google-controle nodig</Link>
           <a
             className="button button-secondary"
@@ -120,7 +118,7 @@ export default async function LeadsPage({
             <label htmlFor="minConfidence">Min. confidence</label>
             <input className="input" type="number" min="0" max="100" id="minConfidence" name="minConfidence" defaultValue={filters.minConfidence}/>
           </div>
-          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_WEBSITE_CONFIRMED","Geen website bevestigd"],["NO_WEBSITE_LIKELY","Waarschijnlijk geen website"],["SOCIAL_ONLY","Alleen extern profiel"],["WEBSITE_FOUND","Website gevonden"],["WEBSITE_OUTDATED","Website verouderd"],["WEBSITE_BROKEN","Website kapot"],["MANUAL_REVIEW_REQUIRED","Handmatige controle"],["UNKNOWN","Onbekend"]]}/>
+          <Select label="Website-status" name="websiteStatus" value={filters.websiteStatus} options={[["NO_WEBSITE_CONFIRMED","Geen website bevestigd"],["NO_WEBSITE_LIKELY","Waarschijnlijk geen website"],["SOCIAL_ONLY","Alleen extern profiel"],["WEBSITE_FOUND","Website gevonden"],["WEBSITE_OUTDATED","Website verouderd"],["WEBSITE_BROKEN","Website kapot"],["MANUAL_REVIEW_REQUIRED","Handmatige controle"],["IMPROVABLE_WEBSITE","Website verbeterbaar (oud)"],["UNKNOWN","Onbekend"]]}/>
           <Select label="Databron" name="source" value={filters.source} options={[["OPENSTREETMAP","OpenStreetMap"],["OPEN_DATA","Open data"],["PUBLIC_WEBSITE","Openbare website"],["MANUAL","Handmatig"]]}/>
           <Select label="Bedrijfsstatus" name="businessStatus" value={filters.businessStatus} options={[["OPERATIONAL","Operationeel"],["CLOSED_TEMPORARILY","Tijdelijk gesloten"],["CLOSED_PERMANENTLY","Permanent gesloten"],["FUTURE_OPENING","Toekomstige opening"],["UNKNOWN","Onbekend"]]}/>
           <Select label="Telefoon" name="hasPhone" value={filters.hasPhone} options={[["yes","Aanwezig"],["no","Ontbreekt"]]}/>

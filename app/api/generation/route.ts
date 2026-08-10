@@ -1,51 +1,30 @@
-import { JobStatus } from "@prisma/client";
 import { NextRequest, NextResponse } from "next/server";
-import { z } from "zod";
 
 import { currentUser } from "@/lib/auth/session";
-import { cancelGenerationRun, createGenerationRun, latestGenerationRun, markStaleGenerationRuns, processGenerationBatch } from "@/lib/jobs/generation";
-import { prisma } from "@/lib/prisma";
+import { getLeadfinderTaskSnapshot, setLeadfinderTaskEnabled, stopLeadfinderTask } from "@/lib/jobs/automation-tasks";
 import { hasValidOrigin, rateLimit, requestIp } from "@/lib/security/request";
 
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-const runInput = z.object({ runId: z.string().cuid() });
-
 async function authorized() { return Boolean(await currentUser()); }
 
 export async function GET() {
   if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
-  return NextResponse.json({ run: await latestGenerationRun() });
+  return NextResponse.json(await getLeadfinderTaskSnapshot());
 }
 
 export async function POST(request: NextRequest) {
   if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
   if (!hasValidOrigin(request)) return NextResponse.json({ error: "Ongeldige herkomst" }, { status: 403 });
   if (!rateLimit(`generation:${requestIp(request)}`, 3, 60_000)) return NextResponse.json({ error: "Wacht even voordat je opnieuw genereert" }, { status: 429 });
-  await markStaleGenerationRuns();
-  const active = await prisma.generationRun.findFirst({ where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } }, orderBy: { createdAt: "desc" } });
-  if (active) return NextResponse.json({ error: "Er draait al een leadgeneratie", run: active }, { status: 409 });
-  return NextResponse.json({ run: await createGenerationRun() }, { status: 202 });
-}
-
-export async function PATCH(request: NextRequest) {
-  if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
-  if (!hasValidOrigin(request)) return NextResponse.json({ error: "Ongeldige herkomst" }, { status: 403 });
-  const parsed = runInput.safeParse(await request.json().catch(() => null));
-  if (!parsed.success) return NextResponse.json({ error: "Ongeldige zoekrun" }, { status: 400 });
-  try {
-    return NextResponse.json({ run: await processGenerationBatch(parsed.data.runId) });
-  } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Zoekbatch mislukt" }, { status: 500 });
-  }
+  await setLeadfinderTaskEnabled(true);
+  return NextResponse.json(await getLeadfinderTaskSnapshot(), { status: 200 });
 }
 
 export async function DELETE(request: NextRequest) {
   if (!await authorized()) return NextResponse.json({ error: "Niet toegestaan" }, { status: 401 });
   if (!hasValidOrigin(request)) return NextResponse.json({ error: "Ongeldige herkomst" }, { status: 403 });
-  const body = await request.json().catch(() => null);
-  const parsed = runInput.safeParse(body);
-  const run = await cancelGenerationRun(parsed.success ? parsed.data.runId : undefined);
-  return NextResponse.json({ ok: true, run, message: run ? "Zoekrun geannuleerd." : "Er draait geen zoekrun." });
+  const result = await stopLeadfinderTask();
+  return NextResponse.json({ ok: true, ...result, message: "De Leadfinder is gepauzeerd." });
 }

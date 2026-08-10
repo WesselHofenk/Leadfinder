@@ -7,7 +7,7 @@ export const websiteStatusLabels: Record<string, string> = {
   NO_WEBSITE_CONFIRMED:"Geen website bevestigd", NO_WEBSITE_LIKELY:"Waarschijnlijk geen website", SOCIAL_ONLY:"Alleen extern profiel",
   WEBSITE_FOUND:"Eigen website gevonden", WEBSITE_OUTDATED:"Website verouderd", WEBSITE_BROKEN:"Website kapot",
   MANUAL_REVIEW_REQUIRED:"Handmatige controle", UNKNOWN:"Onbekend", NO_OWN_WEBSITE:"Geen website (oud)", OWN_WEBSITE:"Eigen website (oud)",
-  OUTDATED:"Verouderd (oud)", IMPROVABLE:"Verbeterbaar (oud)",
+  OUTDATED:"Verouderd (oud)", IMPROVABLE:"Verbeterbaar (oud)", IMPROVABLE_WEBSITE:"Website verbeterbaar (oud)",
 };
 export const statusLabels: Record<string, string> = {
   ...pipelineStatusLabels, PENDING:"Gepland", RUNNING:"Bezig", COMPLETE:"Voltooid", PARTIALLY_COMPLETED:"Gedeeltelijk afgerond", FAILED:"Mislukt",

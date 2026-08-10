@@ -123,6 +123,17 @@ tbody tr:last-child td { border-bottom:0; }
 .progress-active span { min-width:12%; animation:generation-pulse 1.25s ease-in-out infinite alternate; }
 @keyframes generation-pulse { from { opacity:.45; transform:translateX(0); } to { opacity:1; transform:translateX(10px); } }
 .generation-control { position:relative; display:grid; gap:8px; min-width:210px; }
+.automation-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin-bottom:22px; align-items:start; }
+.generation-task-card { padding:16px; border:1px solid var(--line); border-radius:13px; background:var(--surface-raised); min-width:0; }
+.generation-task-head { display:grid; grid-template-columns:auto minmax(0,1fr) auto; align-items:center; gap:10px; }
+.generation-task-head div { display:grid; gap:2px; }
+.generation-task-head span { color:var(--muted); font-size:12px; }
+.status-dot { width:9px; height:9px; border-radius:50%; background:#a4aaa7; box-shadow:0 0 0 4px color-mix(in srgb,#a4aaa7 16%,transparent); }
+.status-dot-active { background:#1cab78; box-shadow:0 0 0 4px color-mix(in srgb,#1cab78 16%,transparent); }
+.generation-task-toggle { justify-self:start; margin-top:4px; }
+.generation-task-details { display:grid; gap:8px; margin-top:4px; }
+.automation-metrics { margin-top:6px; }
+.generation-source-note svg { vertical-align:-2px; margin-right:4px; }
 .generation-progress { position:absolute; right:0; top:48px; z-index:20; width:min(380px,calc(100vw - 32px)); padding:14px; display:grid; gap:10px; background:var(--surface-raised); border:1px solid var(--line); border-radius:10px; box-shadow:0 12px 32px var(--shadow); }
 .generation-progress > div:not(.progress) { display:flex; justify-content:space-between; gap:18px; font-size:12px; }
 .generation-progress-head { align-items:center; }
@@ -143,6 +154,21 @@ tbody tr:last-child td { border-bottom:0; }
 .pipeline-list { display:grid; align-content:start; gap:9px; min-height:0; overflow-y:auto; overscroll-behavior:contain; padding-right:2px; }
 .pipeline-card { background:var(--surface-raised); border:1px solid var(--line); border-radius:10px; padding:13px; box-shadow:0 1px 2px var(--shadow); }
 .pipeline-card-head { display:flex; justify-content:space-between; gap:8px; }
+.pipeline-profile-trigger { width:34px; height:34px; flex:0 0 auto; display:inline-grid; place-items:center; border:1px solid var(--control-border); border-radius:8px; background:var(--control); color:var(--ink); cursor:pointer; }
+.pipeline-profile-trigger:hover { background:var(--control-hover); border-color:var(--control-hover-border); }
+.pipeline-profile-trigger:focus-visible { outline:3px solid var(--focus); outline-offset:2px; }
+.lead-profile-backdrop { position:fixed; inset:0; z-index:70; display:flex; justify-content:flex-end; background:rgba(4,15,11,.42); }
+.lead-profile-panel { width:min(430px,100vw); height:100%; overflow-y:auto; padding:24px; background:var(--surface-raised); border-left:1px solid var(--line); box-shadow:-16px 0 42px var(--shadow); }
+.lead-profile-panel > header { display:flex; align-items:flex-start; justify-content:space-between; gap:20px; margin-bottom:18px; }
+.lead-profile-panel h2 { margin-top:3px; }
+.lead-profile-badges { display:flex; flex-wrap:wrap; gap:7px; margin-bottom:16px; }
+.lead-profile-reason { padding:14px; border-radius:10px; background:var(--surface-subtle); line-height:1.55; }
+.lead-profile-details { display:grid; margin-top:12px; }
+.lead-profile-details > div { display:grid; gap:5px; padding:14px 0; border-bottom:1px solid var(--divider); }
+.lead-profile-details dt { color:var(--muted); font-size:12px; font-weight:700; }
+.lead-profile-details dd { margin:0; overflow-wrap:anywhere; }
+.lead-profile-details a { display:inline-flex; align-items:center; gap:6px; color:var(--brand); font-weight:700; text-decoration:underline; text-underline-offset:2px; }
+.lead-profile-details dd > span { display:block; margin-top:4px; color:var(--muted); font-size:12px; }
 .pipeline-card .select { min-height:34px!important; padding:5px 8px; font-size:12px; }
 .bar-row { display:grid; grid-template-columns:130px 1fr 44px; gap:10px; align-items:center; font-size:12px; }
 .actions,.detail-actions { display:flex; gap:8px; align-items:flex-start; flex-wrap:wrap; }
@@ -193,5 +219,6 @@ tbody tr:last-child td { border-bottom:0; }
 .skeleton { background:linear-gradient(90deg,var(--skeleton-a),var(--skeleton-b),var(--skeleton-a)); background-size:200% 100%; animation:pulse 1.4s infinite; border-radius:8px; }
 @keyframes pulse { to { background-position:-200% 0; } }
 @media (max-width:1100px) { .stats{grid-template-columns:repeat(2,1fr)} .filter-grid{grid-template-columns:repeat(3,1fr)} .grid-two,.detail-grid{grid-template-columns:1fr} }
+@media (max-width:900px) { .automation-grid{grid-template-columns:1fr} }
 @media (max-width:760px) { .app-grid{display:block}.sidebar{display:none}.topbar{height:60px;padding:0 16px}.mobile-menu{display:inline-flex}.content{padding:22px 16px 40px}.pipeline-page{padding-inline:16px}.pipeline-grid{grid-auto-columns:calc(100vw - 48px)}.pipeline-column{height:calc(100dvh - 210px);min-height:440px}.page-head{display:block}.page-head .actions{margin-top:14px}.actions .generation-control{width:100%}.actions .generation-control .button{width:100%}.stats{grid-template-columns:1fr 1fr;gap:10px}.stat{padding:14px}.stat-value{font-size:23px}.filter-grid{grid-template-columns:1fr}.filter-grid .field:first-child{grid-column:auto}.filter-actions{justify-content:stretch}.filter-actions .button{flex:1}.definition{grid-template-columns:1fr;gap:4px}.login-shell{grid-template-columns:1fr}.login-visual{display:none}.login-panel{padding:28px 20px}.hide-mobile{display:none}.pagination{align-items:flex-start;flex-direction:column}.bar-row{grid-template-columns:90px 1fr 36px}.generation-progress{position:fixed;left:16px;right:16px;top:auto;bottom:16px;width:auto}.run-summary{display:block}.run-summary-metrics{margin-top:14px} }
 @media (prefers-reduced-motion:reduce) { *,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important} }

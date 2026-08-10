@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("server-only", () => ({}));
-import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { buildOverpassQuery, categoryFilters, clearOverpassCircuitState, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, OSM_TILE_COUNT, overpassSearchPlan, overpassTile, prioritizeOverpassEndpoints, searchOverpass, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 
 const element = {
   type: "node" as const,
@@ -38,6 +38,20 @@ const base = {
   random: () => 0,
 };
 
+it("probeert de onafhankelijke Overpass-server voordat het totale tijdsbudget op is", () => {
+  expect(prioritizeOverpassEndpoints([
+    "https://overpass-api.de/api/interpreter",
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+  ])).toEqual([
+    "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    "https://overpass.private.coffee/api/interpreter",
+    "https://overpass-api.de/api/interpreter",
+    "https://lz4.overpass-api.de/api/interpreter",
+  ]);
+});
+
 beforeEach(() => clearOverpassCircuitState());
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); clearOverpassCircuitState(); });
 
@@ -48,9 +62,9 @@ describe("gerichte Overpass-query", () => {
     expect(tile.radius).toBe(2_400);
     expect(categoryFilters("kapper")).toEqual(['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]']);
     expect(query).toContain("hairdresser");
-    expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]');
-    expect(query).toContain("node(around:");
-    expect(query.match(/node\(around:/g)).toHaveLength(1);
+    expect(query).toContain('[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone|email|contact:email)$"~"."]');
+    expect(query).toContain("node(52.");
+    expect(query).not.toContain("around:");
     expect(query).not.toContain("nwr(around:");
     expect(query).toContain("out meta qt;");
     expect(query).not.toMatch(/out\s+meta\s+center\s+qt\s+\d+/);
@@ -62,7 +76,12 @@ describe("gerichte Overpass-query", () => {
     const fetchImpl = vi.fn(async () => jsonResponse());
     const result = await searchOverpass({ ...base, fetchImpl: fetchImpl as typeof fetch });
     expect(result.candidates).toHaveLength(1);
-    expect(result.candidates[0]).toMatchObject({ externalPlaceId: "osm:node/42", companyName: "Testbedrijf" });
+    expect(result.candidates[0]).toMatchObject({
+      externalPlaceId: "osm:node/42",
+      companyName: "Testbedrijf",
+      businessStatus: "OPERATIONAL",
+      activitySignals: ["phone"],
+    });
   });
 
   it("verwerkt ook ways en relations en behoudt alle bruikbare contactvelden", async () => {
@@ -93,11 +112,10 @@ describe("gerichte Overpass-query", () => {
   });
 
   it("verdeelt iedere tegel over losse node-, way- en relation-strategieën", () => {
-    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT * 3);
+    expect(OSM_SEARCH_CURSOR_COUNT).toBe(OSM_TILE_COUNT);
     expect(overpassSearchPlan(0)).toMatchObject({ tileCursor: 0, strategy: "node", id: "t0-node" });
-    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 0, strategy: "way", id: "t0-way" });
-    expect(overpassSearchPlan(2)).toMatchObject({ tileCursor: 0, strategy: "relation", id: "t0-relation" });
-    expect(overpassSearchPlan(3)).toMatchObject({ tileCursor: 1, strategy: "node", id: "t1-node" });
+    expect(overpassSearchPlan(1)).toMatchObject({ tileCursor: 1, strategy: "node", id: "t1-node" });
+    expect(overpassSearchPlan(OSM_TILE_COUNT)).toMatchObject({ tileCursor: 0, strategy: "node", id: "t0-node" });
   });
 
   it("bewaart ruwe velden en markeert meertalige sluiting plus websites vóór ingestie", async () => {

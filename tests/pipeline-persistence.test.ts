@@ -27,6 +27,6 @@ describe("persistente pipelinewijzigingen", () => {
       expect(leadState.status).toBe(status);
       expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true });
     }
-    expect(tx.lead.update).toHaveBeenCalledTimes(8);
+    expect(tx.lead.update).toHaveBeenCalledTimes(9);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta } from "@/lib/jobs/generation-state";
+import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isReviewRetryReason, isStaleGenerationRun, isTerminalGenerationStatus, phaseProgress, shouldFetchFreshSource, shouldStopForSourceFailures, sourceAttemptDelta, terminalStatusForStoredLeads, unwrapGenerationCandidatePayload } from "@/lib/jobs/generation-state";
 
 describe("persistente generatiejobstatus", () => {
   it("toont al tijdens voorbereiding zichtbare voortgang", () => {
@@ -39,10 +39,26 @@ describe("persistente generatiejobstatus", () => {
     expect(sourceAttemptDelta(false)).toEqual({ processedSegments: 0, sourceFailures: 1 });
   });
 
-  it("stopt een run op de echte totale looptijd", () => {
-    const now = new Date("2026-07-15T12:15:00Z");
-    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:00Z"), 15, now)).toBe(true);
-    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:01Z"), 15, now)).toBe(false);
+  it("laat oude retrykandidaten nooit verse zoekgebieden blokkeren", () => {
+    expect(shouldFetchFreshSource({ queuedCount: 0, queuedOnlyRetries: false, batchNumber: 1 })).toBe(true);
+    expect(shouldFetchFreshSource({ queuedCount: 8, queuedOnlyRetries: true, batchNumber: 3 })).toBe(true);
+    expect(shouldFetchFreshSource({ queuedCount: 8, queuedOnlyRetries: true, batchNumber: 4 })).toBe(false);
+    expect(shouldFetchFreshSource({ queuedCount: 8, queuedOnlyRetries: false, batchNumber: 3 })).toBe(false);
+  });
+
+  it("heeft geen totale looptijdlimiet", () => {
+    const now = new Date("2026-07-15T12:10:00Z");
+    const startedAt = new Date("2026-07-15T12:00:00Z");
+    expect(isGenerationRunExpired(startedAt, 10, now)).toBe(false);
+    expect(isGenerationRunExpired(new Date("2026-07-15T12:00:00.001Z"), 10, now)).toBe(false);
+  });
+
+  it.each([1, 3, 7, 10])("geeft bij %i opgeslagen leads een gedeeltelijk-voltooide eindstatus", (stored) => {
+    expect(terminalStatusForStoredLeads(stored)).toBe("PARTIALLY_COMPLETED");
+  });
+
+  it("eindigt zonder geldige resultaten correct als COMPLETE", () => {
+    expect(terminalStatusForStoredLeads(0)).toBe("COMPLETE");
   });
 
   it("meldt langdurige bronuitval apart en nooit als uitgeputte zoekruimte", () => {
@@ -54,5 +70,20 @@ describe("persistente generatiejobstatus", () => {
     expect(candidateRetryStatus(1)).toBe("PENDING");
     expect(candidateRetryStatus(2)).toBe("PENDING");
     expect(candidateRetryStatus(3)).toBe("FAILED");
+  });
+
+  it("scheidt onzekere controles van definitieve afwijzingen", () => {
+    expect(isReviewRetryReason("SKIPPED_WEBSITE_UNKNOWN")).toBe(true);
+    expect(isReviewRetryReason("website_check_failed")).toBe(true);
+    expect(isReviewRetryReason("email_validation_unavailable")).toBe(true);
+    expect(isReviewRetryReason("email_domain_unreachable")).toBe(false);
+    expect(isReviewRetryReason("SKIPPED_HAS_WEBSITE")).toBe(false);
+  });
+
+  it("leest zowel nieuwe als oudere geneste kandidaatpayloads", () => {
+    const candidate = { externalPlaceId: "osm-1", companyName: "Voorbeeld" };
+    expect(unwrapGenerationCandidatePayload(candidate, "osm-1")).toBe(candidate);
+    expect(unwrapGenerationCandidatePayload({ candidate, verification: {} }, "osm-1")).toBe(candidate);
+    expect(() => unwrapGenerationCandidatePayload({ candidate }, "osm-2")).toThrow("Ongeldige kandidaatpayload");
   });
 });

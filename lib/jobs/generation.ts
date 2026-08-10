@@ -1,18 +1,21 @@
 import { CandidateQueueStatus, JobStatus, Prisma, type GenerationCandidate, type GenerationRun } from "@prisma/client";
 
 import { serverEnv } from "@/lib/env";
-import { candidateDedupeKeys, fingerprintValues, RunDeduplicator } from "@/lib/leads/deduplication";
+import { candidateDedupeKeys, dedupeFingerprintValues, fingerprintValues, RunDeduplicator } from "@/lib/leads/deduplication";
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
+import { validatePublicContacts } from "@/lib/leads/contact-validation";
+import { inspectOwnedWebsite } from "@/lib/leads/digital-qualification";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
 import { normalizeText } from "@/lib/leads/normalization";
-import { extractCompanyWebsite } from "@/lib/leads/website";
+import { precheckQualifiedLocation, recheckQualifiedDraft, type DeliverableContacts, type QualifiedDraftPayload } from "@/lib/leads/qualified-draft";
 import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
 import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
 import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
+import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, phaseProgress, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses } from "./generation-state";
+import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isReviewRetryReason, phaseProgress, shouldFetchFreshSource, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses, terminalStatusForStoredLeads, unwrapGenerationCandidatePayload } from "./generation-state";
 
 type Stats = {
   found: number;
@@ -22,6 +25,7 @@ type Stats = {
   existing: number;
   rejected: number;
   stored: number;
+  validDrafts: number;
   manualReview: number;
   websitesChecked: number;
   websitesFound: number;
@@ -46,6 +50,7 @@ function statsFromRun(run: GenerationRun): Stats {
     existing: run.existingLeads,
     rejected: run.rejected,
     stored: run.stored,
+    validDrafts: run.validDrafts,
     manualReview: run.manualReview,
     websitesChecked: run.websitesChecked,
     websitesFound: run.websitesFound,
@@ -68,6 +73,7 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     existingLeads: stats.existing,
     rejected: stats.rejected,
     stored: stats.stored,
+    validDrafts: stats.validDrafts,
     manualReview: stats.manualReview,
     websitesChecked: stats.websitesChecked,
     websitesFound: stats.websitesFound,
@@ -86,18 +92,77 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   };
 }
 
-function capacity(stats: Stats) { return stats.stored; }
+function capacity(stats: Stats) { return stats.stored + stats.validDrafts; }
 
-export async function createGenerationRun() {
-  const target = Number(process.env.LEAD_GENERATION_TARGET || 50);
-  return prisma.generationRun.create({
-    data: {
-      targetCount: Math.min(50, Math.max(1, target)),
-      currentPhase: "Zoekopdracht klaarzetten",
-      progress: phaseProgress("queued"),
-      message: "De zoekopdracht is gevalideerd en staat klaar.",
-      heartbeatAt: new Date(),
-    },
+export async function createGenerationRun(options: { continuousRequested?: boolean } = {}) {
+  return prisma.$transaction(async (tx) => {
+    const startedAt = new Date();
+    const reusableDrafts = await tx.qualifiedLeadDraft.findMany({
+      orderBy: { createdAt: "asc" },
+      take: 10,
+      select: { id: true, payload: true },
+    });
+    const retryCandidates = await tx.generationCandidate.findMany({
+      where: {
+        status: CandidateQueueStatus.PENDING,
+        run: { status: { in: [JobStatus.COMPLETE, JobStatus.PARTIALLY_COMPLETED, JobStatus.FAILED, JobStatus.TIMED_OUT, JobStatus.CANCELLED] } },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: 16,
+      select: { source: true, sourceRecordId: true, segment: true, payload: true, attempts: true, lastError: true },
+    });
+    const run = await tx.generationRun.create({
+      data: {
+        targetCount: 10,
+        startedAt,
+        continuousRequested: options.continuousRequested ?? false,
+        stored: 0,
+        validDrafts: 0,
+        retryQueueCount: retryCandidates.length,
+        currentPhase: "Zoekopdracht klaarzetten",
+        progress: phaseProgress("queued"),
+        message: reusableDrafts.length
+          ? `${reusableDrafts.length} eerder gekwalificeerde concepten worden opnieuw gecontroleerd voordat de zoekopdracht verdergaat.`
+          : "De zoekopdracht is gevalideerd en staat klaar.",
+        heartbeatAt: startedAt,
+      },
+    });
+    if (reusableDrafts.length) {
+      await tx.qualifiedLeadDraft.updateMany({
+        where: { id: { in: reusableDrafts.map(({ id }) => id) } },
+        data: { runId: run.id, validatedAt: null },
+      });
+    }
+    const reusableCandidates = reusableDrafts.flatMap(({ payload }) => {
+      const draft = payload as unknown as QualifiedDraftPayload;
+      return draft.candidate?.externalPlaceId ? [{
+        runId: run.id,
+        source: draft.candidate.source ?? "OPENSTREETMAP",
+        sourceRecordId: draft.candidate.externalPlaceId,
+        segment: "reusable-qualified-draft",
+        payload: JSON.parse(JSON.stringify(draft.candidate)) as Prisma.InputJsonValue,
+      }] : [];
+    });
+    const reusableRetryCandidates = retryCandidates.flatMap((candidate) => {
+      try {
+        const normalized = unwrapGenerationCandidatePayload(candidate.payload, candidate.sourceRecordId);
+        return [{
+          ...candidate,
+          runId: run.id,
+          payload: JSON.parse(JSON.stringify(normalized)) as Prisma.InputJsonValue,
+        }];
+      } catch {
+        return [];
+      }
+    });
+    await tx.generationCandidate.createMany({
+      data: [
+        ...reusableRetryCandidates,
+        ...reusableCandidates,
+      ],
+      skipDuplicates: true,
+    });
+    return run;
   });
 }
 
@@ -105,11 +170,17 @@ export async function markStaleGenerationRuns(now = new Date()) {
   const env = serverEnv();
   const staleBefore = new Date(now.getTime() - env.GENERATION_WATCHDOG_SECONDS * 1000);
   await prisma.generationCandidate.updateMany({
-    where: { status: "PROCESSING", claimedAt: { lt: staleBefore } },
+    where: {
+      status: "PROCESSING",
+      claimedAt: { lt: staleBefore },
+    },
     data: { status: "PENDING", claimedAt: null, lastError: "Onderbroken batch automatisch vrijgegeven." },
   });
   return prisma.generationRun.updateMany({
-    where: { status: JobStatus.RUNNING, updatedAt: { lt: staleBefore } },
+    where: {
+      status: JobStatus.RUNNING,
+      updatedAt: { lt: staleBefore },
+    },
     data: {
       status: JobStatus.PENDING,
       currentPhase: "Batch wordt hervat",
@@ -129,11 +200,21 @@ export async function cancelGenerationRun(runId?: string) {
   const active = runId
     ? await prisma.generationRun.findFirst({ where: { id: runId, status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } } })
     : await prisma.generationRun.findFirst({ where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } }, orderBy: { createdAt: "desc" } });
-  if (!active) return null;
+  if (!active) {
+    const latest = runId
+      ? await prisma.generationRun.findUnique({ where: { id: runId } })
+      : await prisma.generationRun.findFirst({ where: { continuousRequested: true }, orderBy: { createdAt: "desc" } });
+    if (!latest) return null;
+    return prisma.generationRun.update({
+      where: { id: latest.id },
+      data: { continuousRequested: false, cancelRequested: true },
+    });
+  }
   return prisma.generationRun.update({
     where: { id: active.id },
     data: {
       cancelRequested: true,
+      continuousRequested: false,
       status: JobStatus.CANCELLED,
       progress: 100,
       currentPhase: "Geannuleerd",
@@ -196,7 +277,7 @@ async function markDecision(candidate: Candidate, decision: string, reasonCode: 
 
 async function knownCandidateReasons(candidates: Candidate[]) {
   const entries = candidates.map((candidate) => ({ candidate, keys: candidateDedupeKeys(candidate) }));
-  const fingerprints = [...new Set(entries.flatMap(({ keys }) => fingerprintValues(keys).map(({ fingerprint }) => fingerprint)))];
+  const fingerprints = [...new Set(entries.flatMap(({ keys }) => dedupeFingerprintValues(keys).map(({ fingerprint }) => fingerprint)))];
   const [sourceRecords, leads, suppressed, exclusions] = await Promise.all([
     prisma.sourceRecord.findMany({
       where: { OR: entries.map(({ candidate }) => ({ source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId })) },
@@ -206,30 +287,34 @@ async function knownCandidateReasons(candidates: Candidate[]) {
       where: { OR: [
         { externalPlaceId: { in: entries.map(({ candidate }) => candidate.externalPlaceId) } },
         { normalizedPhoneNumber: { in: entries.flatMap(({ keys }) => keys.phone ? [keys.phone] : []) } },
+        { email: { in: entries.flatMap(({ keys }) => keys.email ? [keys.email] : []) } },
         { normalizedDomain: { in: entries.flatMap(({ keys }) => keys.domain ? [keys.domain] : []) } },
         ...entries.map(({ candidate }) => ({ normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) })),
       ] },
-      select: { externalPlaceId: true, normalizedPhoneNumber: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
+      select: { externalPlaceId: true, normalizedPhoneNumber: true, email: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
     }),
     prisma.suppressedLead.findMany({ where: { fingerprint: { in: fingerprints } }, select: { fingerprint: true } }),
     prisma.leadExclusion.findMany({ where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, select: { identityKey: true } }),
   ]);
-  const priorSources = new Set(sourceRecords.filter(({ decision }) => decision && decision !== "retry").map(({ source, sourceRecordId }) => `${source}:${sourceRecordId}`));
+  const priorSources = new Set(sourceRecords
+    .filter(({ decision }) => decision && !["retry", "qualified_draft"].includes(decision))
+    .map(({ source, sourceRecordId }) => `${source}:${sourceRecordId}`));
   const blocked = new Set([...suppressed.map(({ fingerprint }) => fingerprint), ...exclusions.map(({ identityKey }) => identityKey)]);
   return new Map(entries.map(({ candidate, keys }) => {
     let reason: string | null = null;
     if (priorSources.has(`${candidate.source ?? "OPENSTREETMAP"}:${candidate.externalPlaceId}`) || leads.some((lead) => lead.externalPlaceId === candidate.externalPlaceId)) reason = "duplicate_source_id";
     else if (keys.domain && leads.some((lead) => lead.normalizedDomain === keys.domain)) reason = "duplicate_domain";
+    else if (keys.email && leads.some((lead) => lead.email === keys.email)) reason = "duplicate_email";
     else if (keys.phone && leads.some((lead) => lead.normalizedPhoneNumber === keys.phone)) reason = "duplicate_phone";
     else if (leads.some((lead) => lead.normalizedCompanyName === normalizeText(candidate.companyName) && lead.normalizedAddress === normalizeText(candidate.streetAddress))) reason = "duplicate_name_address";
-    else if (fingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) reason = "previously_rejected";
+    else if (dedupeFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) reason = "previously_rejected";
     return [candidate.externalPlaceId, reason] as const;
   }));
 }
 
 async function excludeCandidate(candidate: Candidate, verification: WebsiteVerificationResult) {
   const keys = candidateDedupeKeys(candidate);
-  await Promise.all(fingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
+  await Promise.all(dedupeFingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
     where: { identityKey },
     create: {
       identityKey,
@@ -245,21 +330,31 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
   })));
 }
 
-export async function storeNewLead(candidate: Candidate, verification: WebsiteVerificationResult) {
-  // Existing leads must remain untouched.
-  // Validation applies only to newly generated candidates.
-  const gate = evaluateNewLeadGate(candidate, verification);
-  if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
+type LeadWriteClient = typeof prisma | Prisma.TransactionClient;
+async function insertQualifiedLead(
+  db: LeadWriteClient,
+  candidate: Candidate,
+  verification: WebsiteVerificationResult,
+  contacts: DeliverableContacts,
+  batchId?: string,
+) {
   const basic = validateCandidateBasics(candidate);
-  if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
-  const lead = await prisma.lead.create({ data: {
+  if (!basic.ok) throw new Error(`Kandidaat verloor kwalificatie tijdens definitieve opslag: ${basic.reason}`);
+  const dedupeFingerprint = fingerprintValues(candidateDedupeKeys(candidate))[0]?.fingerprint;
+  const lead = await db.lead.create({ data: {
     externalPlaceId: basic.lead.externalPlaceId,
     companyName: basic.lead.companyName,
     normalizedCompanyName: basic.lead.normalizedCompanyName,
-    phoneNumber: basic.lead.phoneNumber || basic.lead.normalizedPhoneNumber,
-    normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
-    internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber,
-    email: basic.lead.email,
+    phoneNumber: basic.lead.phoneNumber || contacts.phone,
+    normalizedPhoneNumber: contacts.phone,
+    internationalPhoneNumber: basic.lead.internationalPhoneNumber || contacts.phone,
+    phoneValidationStatus: contacts.phoneStatus,
+    phoneValidationSource: contacts.phoneSource,
+    phoneValidatedAt: contacts.phoneValidatedAt,
+    email: contacts.email,
+    emailValidationStatus: contacts.emailStatus,
+    emailValidationSource: contacts.emailSource,
+    emailValidatedAt: contacts.emailValidatedAt,
     category: basic.lead.category,
     subCategory: basic.lead.subCategory,
     country: basic.lead.country,
@@ -280,13 +375,21 @@ export async function storeNewLead(candidate: Candidate, verification: WebsiteVe
     websiteStatusReason: verification.reason,
     websiteConfidence: verification.confidence,
     websiteSource: "local_verification",
+    chatbotStatus: verification.chatbotStatus ?? (verification.website ? "UNKNOWN" : "NOT_PRESENT"),
+    chatbotStatusReason: verification.chatbotReason ?? (verification.website ? "Chatbotcontrole niet beschikbaar." : "Er is geen zelfstandige website waarop een chatwidget kan draaien."),
+    chainStatus: "INDEPENDENT",
+    qualificationReason: verification.reason,
+    batchId,
+    dedupeFingerprint,
     sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
     sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
-    leadType: "NO_WEBSITE",
-    opportunityScore: 90,
+    leadType: verification.website
+      ? ["WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status) ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE"
+      : "NO_WEBSITE",
+    opportunityScore: verification.website ? 80 : 90,
     conversionQualityScore: 0,
     businessStatus: basic.lead.businessStatus,
-    source: "OPENSTREETMAP",
+    source: candidate.source ?? "OPENSTREETMAP",
     confidenceScore: basic.lead.confidenceScore,
     confidenceLevel: basic.lead.confidenceLevel,
     status: "NEW",
@@ -294,19 +397,171 @@ export async function storeNewLead(candidate: Candidate, verification: WebsiteVe
     isFiltered: false,
     filterReason: null,
     evidence: { create: verification.evidence },
-    activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status } } },
-    history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status } } },
+    activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status, batchId } } },
+    history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status, batchId } } },
   } });
-  await prisma.sourceRecord.update({
+  await db.sourceRecord.update({
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: { leadId: lead.id },
+    data: {
+      leadId: lead.id,
+      decision: "stored",
+      reasonCode: verification.status.toLowerCase(),
+      processedAt: new Date(),
+    },
   });
-  await Promise.all(fingerprintValues(candidateDedupeKeys(candidate)).map((item) => prisma.duplicateFingerprint.upsert({
-    where: { fingerprint: item.fingerprint },
-    create: { ...item, leadId: lead.id },
-    update: { leadId: lead.id },
-  })));
+  for (const item of fingerprintValues(candidateDedupeKeys(candidate))) {
+    await db.duplicateFingerprint.upsert({
+      where: { fingerprint: item.fingerprint },
+      create: { ...item, leadId: lead.id },
+      update: { leadId: lead.id },
+    });
+  }
+  return lead;
+}
+
+export async function storeNewLead(candidate: Candidate, verification: WebsiteVerificationResult, batchId?: string) {
+  const gate = evaluateNewLeadGate(candidate, verification);
+  if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
+  const basic = validateCandidateBasics(candidate);
+  if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
+  const contacts = await validatePublicContacts(candidate);
+  if (!contacts.ok) return { stored: false, reviewOnly: false, reason: contacts.reason, leadId: undefined };
+  const lead = await insertQualifiedLead(prisma, candidate, verification, contacts, batchId);
   return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
+}
+
+export async function stageQualifiedLead(runId: string, candidate: Candidate, verification: WebsiteVerificationResult) {
+  const gate = evaluateNewLeadGate(candidate, verification);
+  if (!gate.allowed) return { stored: false, staged: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
+  const basic = validateCandidateBasics(candidate);
+  if (!basic.ok) return { stored: false, staged: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
+  const contacts = await validatePublicContacts(candidate);
+  if (!contacts.ok) return { stored: false, staged: false, reviewOnly: false, reason: contacts.reason, leadId: undefined };
+  const fingerprint = fingerprintValues(candidateDedupeKeys(candidate))[0]?.fingerprint;
+  if (!fingerprint) return { stored: false, staged: false, reviewOnly: false, reason: "missing_fingerprint", leadId: undefined };
+  const payload = JSON.parse(JSON.stringify({ candidate, verification, contacts })) as Prisma.InputJsonValue;
+  const qualification = recheckQualifiedDraft(payload as unknown as QualifiedDraftPayload);
+  if (!qualification.valid) {
+    return { stored: false, staged: false, reviewOnly: qualification.retry, reason: qualification.reason, leadId: undefined };
+  }
+  try {
+    await prisma.qualifiedLeadDraft.upsert({
+      where: { fingerprint },
+      create: {
+        runId,
+        fingerprint,
+        payload,
+        validatedAt: new Date(),
+      },
+      update: { runId, payload, validatedAt: new Date() },
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return { stored: false, staged: false, reviewOnly: false, reason: "duplicate_draft", leadId: undefined };
+    }
+    throw error;
+  }
+  return { stored: false, staged: true, reviewOnly: false, reason: verification.reason, leadId: undefined };
+}
+
+async function duplicateReasonInTransaction(tx: Prisma.TransactionClient, candidate: Candidate) {
+  const keys = candidateDedupeKeys(candidate);
+  const lead = await tx.lead.findFirst({
+    where: {
+      OR: [
+        { externalPlaceId: candidate.externalPlaceId },
+        ...(keys.phone ? [{ normalizedPhoneNumber: keys.phone }] : []),
+        ...(keys.email ? [{ email: keys.email }] : []),
+        ...(keys.domain ? [{ normalizedDomain: keys.domain }] : []),
+        { normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) },
+      ],
+    },
+    select: { id: true },
+  });
+  if (lead) return "duplicate_lead";
+  const fingerprints = dedupeFingerprintValues(keys).map(({ fingerprint }) => fingerprint);
+  if (!fingerprints.length) return null;
+  const [suppressed, excluded] = await Promise.all([
+    tx.suppressedLead.findFirst({ where: { fingerprint: { in: fingerprints } }, select: { id: true } }),
+    tx.leadExclusion.findFirst({
+      where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
+      select: { id: true },
+    }),
+  ]);
+  return suppressed || excluded ? "previously_rejected" : null;
+}
+
+export type FinalizationResult = {
+  inserted: number;
+  totalStored: number;
+  invalid: number;
+  duplicates: number;
+};
+
+/**
+ * Publishes every independently valid draft in one serializable transaction.
+ * Invalid and duplicate drafts remain durable; successful drafts are deleted
+ * only in the same transaction that demonstrably created their Lead records.
+ */
+export async function finalizeQualifiedDrafts(runId: string): Promise<FinalizationResult> {
+  return prisma.$transaction(async (tx) => {
+    const drafts = await tx.qualifiedLeadDraft.findMany({
+      where: { runId, validatedAt: { not: null } },
+      orderBy: { createdAt: "asc" },
+    });
+    let inserted = 0;
+    let invalid = 0;
+    let duplicates = 0;
+    for (const draft of drafts) {
+      const payload = draft.payload as unknown as QualifiedDraftPayload;
+      const qualification = recheckQualifiedDraft(payload);
+      if (!qualification.valid) {
+        invalid += 1;
+        await tx.generationCandidate.updateMany({
+          where: {
+            runId,
+            source: payload.candidate.source ?? "OPENSTREETMAP",
+            sourceRecordId: payload.candidate.externalPlaceId,
+          },
+          data: {
+            status: qualification.retry ? CandidateQueueStatus.PENDING : CandidateQueueStatus.PROCESSED,
+            claimedAt: null,
+            lastError: qualification.reason,
+          },
+        });
+        continue;
+      }
+      const duplicate = await duplicateReasonInTransaction(tx, payload.candidate);
+      if (duplicate) {
+        duplicates += 1;
+        await tx.generationCandidate.updateMany({
+          where: {
+            runId,
+            source: payload.candidate.source ?? "OPENSTREETMAP",
+            sourceRecordId: payload.candidate.externalPlaceId,
+          },
+          data: { status: CandidateQueueStatus.PROCESSED, claimedAt: null, lastError: duplicate },
+        });
+        continue;
+      }
+      const lead = await insertQualifiedLead(
+        tx,
+        payload.candidate,
+        payload.verification,
+        qualification.contacts,
+        runId,
+      );
+      const readBack = await tx.lead.findUnique({
+        where: { id: lead.id },
+        select: { id: true, status: true },
+      });
+      if (!readBack || readBack.status !== "NEW") throw new Error("LEAD_DATABASE_READBACK_FAILED");
+      await tx.qualifiedLeadDraft.delete({ where: { id: draft.id } });
+      inserted += 1;
+    }
+    const totalStored = await tx.lead.count({ where: { batchId: runId } });
+    return { inserted, totalStored, invalid, duplicates };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 120_000 });
 }
 
 function rejectionCode(reason: string) {
@@ -343,10 +598,78 @@ async function terminalRun(runId: string, status: JobStatus, stats: Stats, place
   });
 }
 
+async function finishGenerationRunWithLockHeld(runId: string, cause: string) {
+  await prisma.generationCandidate.updateMany({
+    where: { runId, status: CandidateQueueStatus.PROCESSING },
+    data: {
+      status: CandidateQueueStatus.PENDING,
+      claimedAt: null,
+      lastError: "De deadline is bereikt voordat deze kandidatencontrole kon worden afgerond.",
+    },
+  });
+  const before = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
+  if (terminalStatuses.has(before.status)) return before;
+  const stats = statsFromRun(before);
+  const result = await finalizeQualifiedDrafts(runId);
+  const [pendingCandidates, retryQueueCount] = await Promise.all([
+    prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } }),
+    prisma.generationCandidate.count({
+      where: { runId, status: { in: [CandidateQueueStatus.PENDING, CandidateQueueStatus.FAILED] } },
+    }),
+  ]);
+  stats.stored = result.totalStored;
+  stats.validDrafts = 0;
+  stats.duplicates += result.duplicates;
+  const places = stringArray(before.placesUsed);
+  const errors = stringArray(before.apiErrors);
+  const warnings = stringArray(before.warnings);
+  const status = terminalStatusForStoredLeads(result.totalStored) === "PARTIALLY_COMPLETED"
+    ? JobStatus.PARTIALLY_COMPLETED
+    : JobStatus.COMPLETE;
+  const leadText = result.totalStored === 1
+    ? "1 volledig gekwalificeerde lead is opgeslagen in pipelinefase Nieuw."
+    : `${result.totalStored} volledig gekwalificeerde leads zijn opgeslagen in pipelinefase Nieuw.`;
+  const retryText = retryQueueCount === 1
+    ? "1 onzekere kandidaat blijft bewaard voor een volgende run."
+    : `${retryQueueCount} onzekere kandidaten blijven bewaard voor een volgende run.`;
+  const prefix = "De zoekrun is veilig afgerond.";
+  const noResultReason = result.totalStored === 0
+    ? ` Er is niets opgeslagen omdat geen enkel concept bij de eindcontrole volledig aan alle kwalificatie-eisen voldeed.${result.invalid ? ` ${result.invalid} concepten vielen bij de eindcontrole af.` : ""}`
+    : "";
+  await terminalRun(
+    runId,
+    status,
+    stats,
+    places,
+    errors,
+    warnings,
+    `${prefix} ${leadText} ${retryText}${noResultReason} ${cause}`.trim(),
+  );
+  return prisma.generationRun.update({
+    where: { id: runId },
+    data: { pendingCandidates, retryQueueCount, validDrafts: 0 },
+  });
+}
+
+export async function finishGenerationRun(runId: string, cause: string, lockAlreadyHeld = false) {
+  if (lockAlreadyHeld) return finishGenerationRunWithLockHeld(runId, cause);
+  const env = serverEnv();
+  const lock = await acquireJobLock(
+    `lead-generation:${runId}`,
+    (env.GENERATION_BATCH_DURATION_SECONDS + 10) * 1000,
+  );
+  if (!lock) {
+    return prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
+  }
+  try {
+    return await finishGenerationRunWithLockHeld(runId, cause);
+  } finally {
+    await lock.release();
+  }
+}
+
 function candidateFromQueue(row: GenerationCandidate): Candidate {
-  const candidate = row.payload as unknown as Candidate;
-  if (!candidate || candidate.externalPlaceId !== row.sourceRecordId) throw new Error("Ongeldige kandidaatpayload in de persistente queue.");
-  return candidate;
+  return unwrapGenerationCandidatePayload(row.payload, row.sourceRecordId);
 }
 
 async function finishQueueItem(id: string, status: CandidateQueueStatus, lastError?: string) {
@@ -388,11 +711,17 @@ export async function processGenerationBatch(runId: string) {
   let batchMessage: string | null = null;
 
   try {
+    const [draftCount, finalizedCount] = await Promise.all([
+      prisma.qualifiedLeadDraft.count({ where: { runId, validatedAt: { not: null } } }),
+      prisma.lead.count({ where: { batchId: runId } }),
+    ]);
+    stats.validDrafts = draftCount;
+    stats.stored = finalizedCount;
     run = await prisma.generationRun.update({
       where: { id: runId },
       data: {
         status: JobStatus.RUNNING,
-        startedAt: run.startedAt ?? new Date(),
+        startedAt: run.startedAt,
         batchNumber: { increment: 1 },
         currentPhase: "Zoekopdracht valideren",
         progress: Math.max(run.progress, phaseProgress("validate")),
@@ -400,32 +729,31 @@ export async function processGenerationBatch(runId: string) {
         heartbeatAt: new Date(),
       },
     });
-    if (run.cancelRequested) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd.");
-    if (isGenerationRunExpired(run.startedAt, env.GENERATION_MAX_RUN_MINUTES)) {
-      return terminalRun(
-        runId,
-        JobStatus.TIMED_OUT,
-        stats,
-        places,
-        errors,
-        warnings,
-        `${stats.stored} bevestigde leads opgeslagen. De ingestelde maximale zoektijd van ${env.GENERATION_MAX_RUN_MINUTES} minuten is bereikt na ${run.processedSegments} succesvolle zoeksegmenten en ${stats.sourceFailures} bronfouten; onzekere kandidaten zijn niet opgeslagen.`,
-      );
+    if (finalizedCount >= run.targetCount) {
+      return finishGenerationRun(runId, "Het maximum van 10 volledig gekwalificeerde leads is bereikt.", true);
     }
-
+    if (run.cancelRequested) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd.");
+    if (isGenerationRunExpired(run.startedAt, 0)) {
+      return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt vóór een nieuwe kandidatenbatch.", true);
+    }
     let queued = await prisma.generationCandidate.findMany({
-      where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+      where: { runId, status: CandidateQueueStatus.PENDING },
+      orderBy: [{ attempts: "asc" }, { createdAt: "asc" }],
+      take: env.GENERATION_BATCH_CANDIDATES,
     });
 
-    if (!queued.length) {
+    if (shouldFetchFreshSource({
+      queuedCount: queued.length,
+      queuedOnlyRetries: queued.length > 0 && queued.every(({ attempts }) => attempts > 0),
+      batchNumber: run.batchNumber,
+    })) {
       if (run.processedSegments >= env.GENERATION_MAX_SOURCE_CALLS) {
-        const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
-        return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden; de ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt.`);
+        return finishGenerationRun(runId, "De beschikbare openbare zoeksegmenten voor deze run zijn verwerkt.", true);
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
       const selected = await nextSearchArea();
-      if (!selected) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, "Er zijn geen openbare zoekgebieden beschikbaar.");
+      if (!selected) return finishGenerationRun(runId, "Er zijn geen openbare zoekgebieden beschikbaar.", true);
       const { area, combination, tileCursor } = selected;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
@@ -439,6 +767,9 @@ export async function processGenerationBatch(runId: string) {
       } });
 
       try {
+        if (isGenerationRunExpired(run.startedAt, 0)) {
+          return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt vóór een nieuw bronverzoek.", true);
+        }
         const result = await adapter.searchBusinesses({
           country: area.country, city: area.city, latitude: Number(area.latitude), longitude: Number(area.longitude),
           radius: area.radius, category: area.category, tileCursor,
@@ -478,21 +809,25 @@ export async function processGenerationBatch(runId: string) {
           prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
         ]);
         if (shouldStopForSourceFailures({ sourceFailures: stats.sourceFailures, processedSegments: run.processedSegments, maxFailures: env.GENERATION_MAX_SOURCE_FAILURES })) {
-          const status = stats.stored ? JobStatus.PARTIALLY_COMPLETED : JobStatus.FAILED;
+          if (stats.validDrafts > 0) {
+            return finishGenerationRun(runId, `De gratis openbare bron bleef na ${stats.sourceFailures} pogingen onbereikbaar.`, true);
+          }
           return terminalRun(
             runId,
-            status,
+            JobStatus.FAILED,
             stats,
             places,
             errors,
             warnings,
-            `${stats.stored} bevestigde leads opgeslagen. De gratis openbare bron bleef na ${stats.sourceFailures} pogingen overwegend onbereikbaar; de zoekruimte is niet als uitgeput gemarkeerd en onzekere kandidaten zijn niet opgeslagen. Probeer de generatie later opnieuw.`,
+            `Er zijn geen leads opgeslagen. De gratis openbare bron bleef na ${stats.sourceFailures} pogingen overwegend onbereikbaar; kandidaten blijven bewaard voor een volgende poging.`,
           );
         }
       }
 
       queued = await prisma.generationCandidate.findMany({
-        where: { runId, status: CandidateQueueStatus.PENDING }, orderBy: { createdAt: "asc" }, take: env.GENERATION_BATCH_CANDIDATES,
+        where: { runId, status: CandidateQueueStatus.PENDING },
+        orderBy: [{ attempts: "asc" }, { createdAt: "asc" }],
+        take: env.GENERATION_BATCH_CANDIDATES,
       });
     }
 
@@ -516,6 +851,10 @@ export async function processGenerationBatch(runId: string) {
     const releaseIds: string[] = [];
     const knownReasons = queued.length ? await knownCandidateReasons(queued.map(candidateFromQueue)) : new Map<string, string | null>();
     for (const row of queued) {
+      if (isGenerationRunExpired(run.startedAt, 0)) {
+        releaseIds.push(row.id);
+        continue;
+      }
       if (isBatchDeadlineNear(deadline) || verificationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + verificationWork.length >= run.targetCount) {
         releaseIds.push(row.id);
         continue;
@@ -543,17 +882,22 @@ export async function processGenerationBatch(runId: string) {
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
-      const sourceWebsite = extractCompanyWebsite(candidate);
-      if (sourceWebsite) {
-        const verification: WebsiteVerificationResult = {
-          status: "WEBSITE_FOUND", confidence: 100, website: sourceWebsite,
-          reason: "Eigen bedrijfswebsite rechtstreeks in de brongegevens gevonden.",
-          evidence: [{ checkType: "SOURCE_WEBSITE", result: "FOUND", confidence: 100, evidenceUrl: sourceWebsite, shortExplanation: "Bronveld bevat een officieel bedrijfsdomein." }],
-        };
-        stats.websitesFound += 1; stats.rejected += 1;
-        await excludeCandidate(candidate, verification);
-        await markDecision(candidate, "skipped", "SKIPPED_HAS_WEBSITE");
-        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+      const locationGate = precheckQualifiedLocation(candidate);
+      if (locationGate) {
+        if (locationGate.retry) {
+          if (row.attempts === 0) stats.manualReview += 1;
+          retriedThisBatch += 1;
+          await markDecision(candidate, "retry", locationGate.reason);
+          await finishQueueItem(
+            row.id,
+            candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+            locationGate.reason,
+          );
+        } else {
+          stats.rejected += 1;
+          await markDecision(candidate, "rejected", locationGate.reason);
+          await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED, locationGate.reason);
+        }
         continue;
       }
       const keys = candidateDedupeKeys(candidate);
@@ -567,6 +911,11 @@ export async function processGenerationBatch(runId: string) {
       verificationWork.push({ row, candidate });
     }
     await releaseQueueItems(releaseIds, "Doorgeschoven naar de volgende kleine batch.");
+
+    if (isGenerationRunExpired(run.startedAt, 0)) {
+      await releaseQueueItems(verificationWork.map(({ row }) => row.id), "De tienminutendeadline is bereikt vóór deze kandidatencontrole.");
+      verificationWork.length = 0;
+    }
 
     if (verificationWork.length) {
       stats.websitesChecked += verificationWork.length;
@@ -589,7 +938,17 @@ export async function processGenerationBatch(runId: string) {
           await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
           continue;
         }
-        const verification = result.value;
+        if (isGenerationRunExpired(run.startedAt, 0)) {
+          retriedThisBatch += 1;
+          await markDecision(candidate, "retry", "deadline_before_final_checks");
+          await finishQueueItem(row.id, CandidateQueueStatus.PENDING, "De deadline verstreek voordat de resterende controles konden starten.");
+          continue;
+        }
+        let verification = result.value;
+        if (verification.status === "WEBSITE_FOUND" && verification.website) {
+          const inspected = await inspectOwnedWebsite(verification.website);
+          verification = { ...inspected, evidence: [...verification.evidence, ...inspected.evidence] };
+        }
         const gate = evaluateNewLeadGate(candidate, verification);
         if (!gate.allowed) {
           if (gate.reason === "SKIPPED_HAS_WEBSITE") {
@@ -600,20 +959,45 @@ export async function processGenerationBatch(runId: string) {
             stats.permanentlyClosed += 1;
             await markDecision(candidate, "skipped", gate.reason);
           } else {
-            stats.manualReview += 1;
+            if (row.attempts === 0) stats.manualReview += 1;
+            retriedThisBatch += 1;
             await markDecision(candidate, "retry", gate.reason);
           }
-          await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+          const queueStatus = isReviewRetryReason(gate.reason)
+            ? candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING
+            : CandidateQueueStatus.PROCESSED;
+          await finishQueueItem(row.id, queueStatus, gate.detail);
+          continue;
+        }
+        if (isGenerationRunExpired(run.startedAt, 0)) {
+          retriedThisBatch += 1;
+          await markDecision(candidate, "retry", "deadline_before_final_checks");
+          await finishQueueItem(row.id, CandidateQueueStatus.PENDING, "De deadline verstreek vóór de e-mail/MX- en telefooncontrole kon starten.");
           continue;
         }
         const databaseStarted = Date.now();
         try {
           await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", heartbeatAt: new Date() } });
-          const saved = await storeNewLead(candidate, verification);
+          const saved = await storeNewLead(candidate, verification, runId);
           if (saved.stored) {
-            stats.stored += 1; stats.withoutWebsite += 1; stats.noWebsite += 1;
-            await markDecision(candidate, "stored", "no_website_confirmed", saved.leadId);
+            stats.stored += 1;
+            if (verification.website) stats.websitesFound += 1;
+            if (verification.status === "WEBSITE_OUTDATED" || verification.status === "WEBSITE_BROKEN") stats.outdatedWebsite += 1;
+            else if (verification.website) stats.improvableWebsite += 1;
+            else { stats.withoutWebsite += 1; stats.noWebsite += 1; }
+            await markDecision(candidate, "stored", verification.status.toLowerCase());
           } else {
+            if (isReviewRetryReason(saved.reason)) {
+              if (row.attempts === 0) stats.manualReview += 1;
+              retriedThisBatch += 1;
+              await markDecision(candidate, "retry", saved.reason);
+              await finishQueueItem(
+                row.id,
+                candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+                saved.reason,
+              );
+              continue;
+            }
             stats.rejected += 1;
             await markDecision(candidate, "skipped", saved.reason.startsWith("SKIPPED_") ? saved.reason : rejectionCode(saved.reason));
           }
@@ -636,23 +1020,30 @@ export async function processGenerationBatch(runId: string) {
 
     const state = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { cancelRequested: true, status: true } });
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
-    const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
+    const [pendingCandidates, retryQueueCount] = await Promise.all([
+      prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } }),
+      prisma.generationCandidate.count({ where: { runId, status: { in: [CandidateQueueStatus.PENDING, CandidateQueueStatus.FAILED] } } }),
+    ]);
+    if (isGenerationRunExpired(run.startedAt, 0)) {
+      return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt.", true);
+    }
     const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
-    if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) return terminalRun(runId, JobStatus.COMPLETE, stats, places, errors, warnings, `Doelbatch bereikt: ${stats.stored} bevestigde geen-websiteleads; ${stats.manualReview} onzekere kandidaten zijn veilig overgeslagen.`);
+    if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) {
+      return finishGenerationRun(runId, "Het maximum van 10 volledig gekwalificeerde leads is bereikt.", true);
+    }
     if (completionStatus) {
-      const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
-      return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} bevestigde geen-websiteleads gevonden. De ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt; onzekere kandidaten zijn niet opgeslagen.`);
+      return finishGenerationRun(runId, "De beschikbare zoekruimte voor deze run is verwerkt.", true);
     }
 
     const durationMs = Date.now() - batchStartedAt;
     const event = { jobId: runId, batchNumber: run.batchNumber, step: "batch_completed", durationMs, candidates: queued.length,
-      checked: stats.checked - run.candidatesChecked, stored: stats.stored - run.stored, manualReview: stats.manualReview - run.manualReview,
+      checked: stats.checked - run.candidatesChecked, stored: stats.validDrafts - run.validDrafts, manualReview: stats.manualReview - run.manualReview,
       retries: retriedThisBatch, sourceFailures: stats.sourceFailures - run.sourceFailures, validationDurationMs, databaseDurationMs };
     console.info(JSON.stringify(event));
     await logSource(runId, run.currentSource ?? "GENERATION", "INFO", JSON.stringify(event), run.currentRegion ?? undefined, run.currentCategory ?? undefined);
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
-      pendingCandidates, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
+      pendingCandidates, retryQueueCount, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
       progress: progressFor(stats, run.targetCount, run.processedSegments, env.GENERATION_MAX_SOURCE_CALLS),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
@@ -672,4 +1063,88 @@ export async function runLeadGeneration(runId: string) {
   let run = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
   while (!terminalStatuses.has(run.status)) run = await processGenerationBatch(runId);
   return run;
+}
+
+export async function runGenerationWatchdog(now = new Date()) {
+  const watchdogLock = await acquireJobLock("lead-generation-watchdog", 70_000);
+  if (!watchdogLock) return { active: true, processed: false, reason: "watchdog_already_running" };
+  try {
+    const task = await ensureLeadfinderTask();
+    if (!task.enabled) return { active: false, processed: false, reason: "task_paused", taskName: task.name };
+    await markStaleGenerationRuns(now);
+    const activeRuns = await prisma.generationRun.findMany({
+      where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+    });
+    let active = activeRuns[0] ?? null;
+    const duplicates = activeRuns.slice(1);
+    if (duplicates.length) {
+      await prisma.generationRun.updateMany({
+        where: { id: { in: duplicates.map(({ id }) => id) } },
+        data: {
+          status: JobStatus.CANCELLED,
+          cancelRequested: true,
+          continuousRequested: false,
+          progress: 100,
+          currentPhase: "Dubbele achtergrondrun opgeruimd",
+          message: "Veilig beëindigd omdat één permanente Leadfinder-taak alle zoekbatches verwerkt.",
+          stopReason: "Dubbele achtergrondrun veilig beëindigd.",
+          finishedAt: now,
+          heartbeatAt: now,
+        },
+      });
+    }
+    if (!active) {
+      active = await createGenerationRun({ continuousRequested: true });
+    } else if (!active.continuousRequested || active.cancelRequested) {
+      active = await prisma.generationRun.update({
+        where: { id: active.id },
+        data: { continuousRequested: true, cancelRequested: false },
+      });
+    }
+    await prisma.leadfinderTask.update({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "RUNNING", currentRunId: active.id, lastRunId: active.id, lastHeartbeatAt: now, lastError: null },
+    });
+    if (isGenerationRunExpired(active.startedAt, 0, now)) {
+      const finished = await finishGenerationRun(active.id, "De maximale zoektijd van 10 minuten is bereikt.");
+      await prisma.generationRun.update({ where: { id: finished.id }, data: { continuousRequested: false } });
+      const next = await createGenerationRun({ continuousRequested: true });
+      await prisma.leadfinderTask.update({
+        where: { id: LEADFINDER_TASK_ID },
+        data: { status: "RUNNING", currentRunId: next.id, lastRunId: next.id, lastHeartbeatAt: now },
+      });
+      return { active: true, processed: true, runId: next.id, status: next.status, taskName: task.name, duplicatesRemoved: duplicates.length };
+    }
+    const run = await processGenerationBatch(active.id);
+    if (terminalStatuses.has(run.status)) {
+      await prisma.generationRun.update({ where: { id: run.id }, data: { continuousRequested: false } });
+      const next = await createGenerationRun({ continuousRequested: true });
+      await prisma.leadfinderTask.update({
+        where: { id: LEADFINDER_TASK_ID },
+        data: { status: "RUNNING", currentRunId: next.id, lastRunId: next.id, lastHeartbeatAt: new Date(), lastError: null },
+      });
+      return { active: true, processed: true, runId: next.id, status: next.status, taskName: task.name, duplicatesRemoved: duplicates.length };
+    }
+    await prisma.leadfinderTask.update({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "RUNNING", currentRunId: run.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
+    });
+    return {
+      active: true,
+      processed: true,
+      runId: run.id,
+      status: run.status,
+      taskName: task.name,
+      duplicatesRemoved: duplicates.length,
+    };
+  } catch (error) {
+    await prisma.leadfinderTask.updateMany({
+      where: { id: LEADFINDER_TASK_ID },
+      data: { status: "ERROR", lastHeartbeatAt: new Date(), lastError: errorMessage(error) },
+    });
+    throw error;
+  } finally {
+    await watchdogLock.release();
+  }
 }

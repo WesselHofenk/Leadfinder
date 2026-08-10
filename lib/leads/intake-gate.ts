@@ -1,6 +1,7 @@
 import { isPermanentlyClosed } from "./company-status";
 import { extractCompanyWebsite } from "./website";
 import type { WebsiteVerificationResult } from "./website-verification";
+import { hasRequiredDigitalGap } from "./digital-qualification";
 
 export type IntakeWebsiteStatus = "HAS_WEBSITE" | "NO_WEBSITE_CONFIRMED" | "UNKNOWN";
 export type IntakeSkipReason = "SKIPPED_PERMANENTLY_CLOSED" | "SKIPPED_HAS_WEBSITE" | "SKIPPED_WEBSITE_UNKNOWN";
@@ -25,15 +26,18 @@ export function determineIntakeWebsiteStatus(company: unknown, verification?: Pi
 }
 
 export type NewLeadGateDecision =
-  | { allowed: true; websiteStatus: "NO_WEBSITE_CONFIRMED"; reason: string }
+  | { allowed: true; websiteStatus: WebsiteVerificationResult["status"]; reason: string }
   | { allowed: false; websiteStatus: IntakeWebsiteStatus; reason: IntakeSkipReason; detail: string; website: string | null };
 
 /** Final fail-closed gate. Call this immediately before every new Lead insert. */
-export function evaluateNewLeadGate(company: unknown, verification?: Pick<WebsiteVerificationResult, "status" | "website" | "reason">): NewLeadGateDecision {
+export function evaluateNewLeadGate(company: unknown, verification?: Pick<WebsiteVerificationResult, "status" | "website" | "reason" | "chatbotStatus"> & { evidence?: WebsiteVerificationResult["evidence"] }): NewLeadGateDecision {
   if (isPermanentlyClosed(company)) {
     return { allowed: false, websiteStatus: "UNKNOWN", reason: "SKIPPED_PERMANENTLY_CLOSED", detail: "De bron markeert dit bedrijf als permanent gesloten.", website: null };
   }
   const website = determineIntakeWebsiteStatus(company, verification);
+  if (verification && hasRequiredDigitalGap(verification) && !(website.status === "HAS_WEBSITE" && !verification.website)) {
+    return { allowed: true, websiteStatus: verification.status, reason: verification.reason };
+  }
   if (website.status === "HAS_WEBSITE") {
     return { allowed: false, websiteStatus: website.status, reason: "SKIPPED_HAS_WEBSITE", detail: website.reason, website: website.website };
   }

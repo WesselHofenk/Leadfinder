@@ -17,8 +17,22 @@ describe("deduplicatie binnen een run", () => {
   it("dedupliceert op telefoonnummer", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys(base)); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", companyName: "Andere naam" }))).toBe(true); });
   it("dedupliceert op naam en postcode", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys(base)); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", streetAddress: "Andere straat 2" }))).toBe(true); });
   it("dedupliceert dezelfde lead met hoofdletters en leestekens", () => { const index = new RunDeduplicator(); index.hasOrAdd(candidateDedupeKeys({ ...base, companyName: "De Schilder B.V." })); expect(index.hasOrAdd(candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "de schilder bv", streetAddress: "Andere straat 2" }))).toBe(true); });
+  it("wijst twee generiek genaamde bedrijven in dezelfde stad niet alleen op naam en categorie als duplicaat af", () => {
+    const index = new RunDeduplicator();
+    index.hasOrAdd(candidateDedupeKeys({ ...base, companyName: "Kapsalon", category: "kapper" }));
+    expect(index.hasOrAdd(candidateDedupeKeys({
+      ...base, externalPlaceId: "place-2", companyName: "Kapsalon", category: "kapper", phoneNumber: "06 87654321",
+      postalCode: "3521 AA", streetAddress: "Kanaalweg 22",
+    }))).toBe(false);
+  });
   it("dedupliceert op genormaliseerd domein en e-mail", () => { const first = candidateDedupeKeys({ ...base, website: "https://www.Bedrijf.nl/contact", email: "INFO@BEDRIJF.NL" }); const second = candidateDedupeKeys({ ...base, externalPlaceId: "place-2", phoneNumber: "06 87654321", companyName: "Andere naam", postalCode: "3521 AA", streetAddress: "Andere straat 2", category: "aannemer", website: "http://bedrijf.nl", email: "info@bedrijf.nl" }); const index = new RunDeduplicator(); index.hasOrAdd(first); expect(index.hasOrAdd(second)).toBe(true); expect(fingerprintValues(first).map((item) => item.kind)).toEqual(expect.arrayContaining(["domain", "email"])); });
   it("herstelt bestaande records alleen via sterke identiteitssleutels", () => expect(strongIdentityFingerprintValues(candidateDedupeKeys(base)).map((item) => item.kind)).toEqual(["external", "phone", "postal", "address"]));
+  it("slaat geen herleidbare waarden in fingerprints op", () => {
+    const values = fingerprintValues(candidateDedupeKeys({ ...base, email: "info@bedrijf.nl" }));
+    expect(values.every(({ fingerprint }) => /^v1:[a-f0-9]{64}$/.test(fingerprint))).toBe(true);
+    expect(JSON.stringify(values)).not.toContain(base.phoneNumber);
+    expect(JSON.stringify(values)).not.toContain("info@bedrijf.nl");
+  });
 });
 
 describe("zoeklus", () => {

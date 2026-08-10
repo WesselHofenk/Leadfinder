@@ -1,8 +1,17 @@
+import { createHash } from "node:crypto";
 import type { Candidate } from "./eligibility";
 import { normalizeDomain, normalizeEmail, normalizePhone, normalizeText } from "./normalization";
 import { determineWebsiteStatus } from "./website";
 
 export type DedupeKeys = { externalId: string; phone?: string; email?: string; domain?: string; namePostal?: string; nameCityAddress: string; nameCityCategory: string };
+
+export function hashRawFingerprint(value: string) {
+  return `v1:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+export function identityFingerprint(kind: string, value: string) {
+  return hashRawFingerprint(`${kind}:${value}`);
+}
 
 export function candidateDedupeKeys(candidate: Candidate): DedupeKeys {
   const name = normalizeText(candidate.companyName);
@@ -24,7 +33,12 @@ export function fingerprintValues(keys: DedupeKeys) {
   return [
     ["external", keys.externalId], ["phone", keys.phone], ["email", keys.email], ["domain", keys.domain],
     ["postal", keys.namePostal], ["address", keys.nameCityAddress], ["name_city_category", keys.nameCityCategory],
-  ].filter((item): item is [string, string] => Boolean(item[1])).map(([kind, value]) => ({ kind, fingerprint: `${kind}:${value}` }));
+  ].filter((item): item is [string, string] => Boolean(item[1])).map(([kind, value]) => ({ kind, fingerprint: identityFingerprint(kind, value) }));
+}
+
+/** Exact or address-level identities that are safe for automatic duplicate decisions. */
+export function dedupeFingerprintValues(keys: DedupeKeys) {
+  return fingerprintValues(keys).filter(({ kind }) => kind !== "name_city_category");
 }
 
 export function strongIdentityFingerprintValues(keys: DedupeKeys) {
@@ -35,7 +49,7 @@ export function strongIdentityFingerprintValues(keys: DedupeKeys) {
 export class RunDeduplicator {
   private values = new Set<string>();
   hasOrAdd(keys: DedupeKeys) {
-    const values = fingerprintValues(keys).map((item) => item.fingerprint);
+    const values = dedupeFingerprintValues(keys).map((item) => item.fingerprint);
     if (values.some((value) => this.values.has(value))) return true;
     values.forEach((value) => this.values.add(value));
     return false;

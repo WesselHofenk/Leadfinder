@@ -1,8 +1,41 @@
 import React from "react";
 import Link from "next/link";
-import { ExternalLink } from "lucide-react";
 import { prisma } from "@/lib/prisma";
 import { pipelineStages } from "@/lib/leads/pipeline";
-import { QuickStatus } from "@/components/lead-actions";
+import { PipelineBoard, type PipelineLead } from "@/components/pipeline-board";
 
-export default async function PipelinePage(){const groups=await Promise.all(pipelineStages.map(async({status})=>{const[items,total]=await prisma.$transaction([prisma.lead.findMany({where:{status,isSuppressed:false},orderBy:{updatedAt:"desc"},take:50}),prisma.lead.count({where:{status,isSuppressed:false}})]);return{items,total};}));return <div className="content pipeline-page"><header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Acht vaste fases. Iedere wijziging wordt als activiteit opgeslagen.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header><div className="pipeline-grid" role="region" aria-label="Pipeline met acht horizontaal scrollbare fases" tabIndex={0}>{pipelineStages.map(({status,label},index)=><section className="pipeline-column" key={status}><div className="pipeline-title"><strong>{label}</strong><span className="badge">{groups[index].total}</span></div><div className="pipeline-list">{groups[index].items.map((lead)=><article className="pipeline-card" key={lead.id}><div className="pipeline-card-head"><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_"," ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label={`Open ${lead.companyName}`}><ExternalLink size={15}/></Link></div><span className="small"><b>{lead.opportunityScore}</b>/100 · confidence {lead.websiteConfidence}</span><QuickStatus leadId={lead.id} status={lead.status}/></article>)}{!groups[index].total&&<div className="empty small">Geen leads in deze fase.</div>}</div></section>)}</div></div>;}
+export default async function PipelinePage() {
+  const groups = await Promise.all(pipelineStages.map(async ({ status, label }) => {
+    const [records, total] = await prisma.$transaction([
+      prisma.lead.findMany({ where: { status, isSuppressed: false }, orderBy: { updatedAt: "desc" }, take: 50 }),
+      prisma.lead.count({ where: { status, isSuppressed: false } }),
+    ]);
+    const items: PipelineLead[] = records.map((lead) => ({
+      id: lead.id,
+      companyName: lead.companyName,
+      category: lead.category,
+      city: lead.city,
+      country: lead.country,
+      streetAddress: lead.streetAddress,
+      postalCode: lead.postalCode,
+      email: lead.email,
+      normalizedPhoneNumber: lead.normalizedPhoneNumber,
+      googleMapsUrl: lead.googleMapsUrl,
+      websiteUrl: lead.websiteUrl,
+      websiteStatus: lead.websiteStatus,
+      websiteStatusReason: lead.websiteStatusReason,
+      chatbotStatus: lead.chatbotStatus,
+      chatbotStatusReason: lead.chatbotStatusReason,
+      leadType: lead.leadType,
+      opportunityScore: lead.opportunityScore,
+      websiteConfidence: lead.websiteConfidence,
+      lastVerifiedAt: new Date(lead.lastVerifiedAt ?? lead.updatedAt ?? Date.now()).toISOString(),
+      status: lead.status,
+    }));
+    return { status, label, items, total };
+  }));
+  return <div className="content pipeline-page">
+    <header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Nieuwe gekwalificeerde leads verschijnen direct in Nieuw.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header>
+    <PipelineBoard stages={groups}/>
+  </div>;
+}

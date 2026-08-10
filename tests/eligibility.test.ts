@@ -24,6 +24,12 @@ describe("leadkwalificatie",()=>{
     expect(hasPlausibleBusinessLocation({...candidate,latitude:0,longitude:0,postalCode:"1012 LG"})).toBe(false);
   });
   it("weigert een keten die alleen via het merkveld herkenbaar is",()=>expect(qualifyCandidate({...candidate,brand:"Albert Heijn"},confirmed)).toMatchObject({ok:false,reason:"keten_of_uitgesloten"}));
+  it("weigert expliciete franchise-, corporate- en grote vestigingsstructuren",()=>{
+    expect(qualifyCandidate({...candidate,isFranchise:true},confirmed)).toMatchObject({ok:false,reason:"keten_of_uitgesloten"});
+    expect(qualifyCandidate({...candidate,isCorporate:true},confirmed)).toMatchObject({ok:false,reason:"keten_of_uitgesloten"});
+    expect(qualifyCandidate({...candidate,branchCount:6},confirmed)).toMatchObject({ok:false,reason:"keten_of_uitgesloten"});
+  });
+  it("weigert een niet betrouwbaar bevestigde bedrijfsstatus",()=>expect(qualifyCandidate({...candidate,businessStatus:"UNKNOWN"},confirmed)).toMatchObject({ok:false,reason:"onbetrouwbare_status"}));
 });
 describe("normalisatie",()=>{
   it("normaliseert Nederlandse nummers naar E.164",()=>expect(normalizePhone("06-12345678","NL")).toBe("+31612345678"));

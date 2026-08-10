@@ -1,5 +1,6 @@
 export const pipelineStages = [
   { status: "NEW", label: "Nieuw" },
+  { status: "EMAILED", label: "Gemaild" },
   { status: "VOICEMAIL", label: "Voicemail" },
   { status: "CALL_BACK", label: "Terugbellen" },
   { status: "INTERESTED", label: "Geïnteresseerd" },

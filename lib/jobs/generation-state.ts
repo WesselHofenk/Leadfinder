@@ -1,3 +1,5 @@
+import type { Candidate } from "@/lib/leads/eligibility";
+
 export const terminalGenerationStatuses = ["COMPLETE", "PARTIALLY_COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"] as const;
 
 export function isTerminalGenerationStatus(status: string) {
@@ -16,12 +18,25 @@ export function isBatchDeadlineNear(deadlineMs: number, nowMs = Date.now(), rese
   return nowMs >= deadlineMs - reserveMs;
 }
 
-export function isGenerationRunExpired(startedAt: Date | null, maxMinutes: number, now = new Date()) {
-  return Boolean(startedAt && now.getTime() - startedAt.getTime() >= maxMinutes * 60_000);
+/** A search is continuous; only the user can end its overall run. */
+export function isGenerationRunExpired(_startedAt: Date | null, _maxMinutes: number, _now = new Date()) {
+  void _startedAt;
+  void _maxMinutes;
+  void _now;
+  return false;
+}
+
+export function terminalStatusForStoredLeads(stored: number) {
+  return stored > 0 ? "PARTIALLY_COMPLETED" as const : "COMPLETE" as const;
 }
 
 export function sourceAttemptDelta(sourceSucceeded: boolean) {
   return { processedSegments: sourceSucceeded ? 1 : 0, sourceFailures: sourceSucceeded ? 0 : 1 } as const;
+}
+
+export function shouldFetchFreshSource(input: { queuedCount: number; queuedOnlyRetries: boolean; batchNumber: number }) {
+  if (input.queuedCount === 0) return true;
+  return input.queuedOnlyRetries && input.batchNumber % 3 === 0;
 }
 
 export function shouldStopForSourceFailures(input: { sourceFailures: number; processedSegments: number; maxFailures: number }) {
@@ -38,4 +53,30 @@ export function generationCompletionStatus(input: { usable: number; target: numb
 
 export function candidateRetryStatus(attemptsAfterClaim: number, maxAttempts = 3) {
   return attemptsAfterClaim >= maxAttempts ? "FAILED" as const : "PENDING" as const;
+}
+
+export function unwrapGenerationCandidatePayload(payload: unknown, expectedExternalPlaceId: string): Candidate {
+  const value = payload as { externalPlaceId?: unknown; candidate?: unknown } | null;
+  const direct = value && typeof value.externalPlaceId === "string" ? value : null;
+  const nested = value?.candidate as { externalPlaceId?: unknown } | null | undefined;
+  const candidate = direct ?? (nested && typeof nested.externalPlaceId === "string" ? nested : null);
+  if (!candidate || candidate.externalPlaceId !== expectedExternalPlaceId) {
+    throw new Error("Ongeldige kandidaatpayload in de persistente queue.");
+  }
+  return candidate as Candidate;
+}
+
+const reviewRetryReasons = new Set([
+  "SKIPPED_WEBSITE_UNKNOWN",
+  "website_check_failed",
+  "email_validation_unavailable",
+  "database_error",
+  "vestigingsaantal_onzeker",
+  "locatie_niet_nederlandstalig_vlaanderen",
+  "deadline_before_final_checks",
+]);
+
+/** Reasons that lack conclusive evidence and therefore belong in review/retry, not rejection. */
+export function isReviewRetryReason(reason: string) {
+  return reviewRetryReasons.has(reason);
 }

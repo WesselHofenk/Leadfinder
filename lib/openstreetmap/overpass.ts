@@ -51,13 +51,17 @@ const permanentSignals = ["disused", "abandoned", "demolished", "removed", "raze
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
-const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
+// De gratis publieke servers beantwoorden node-queries betrouwbaar binnen de
+// serverless limiet. Zware way/relation-queries hielden verse vondsten tegen.
+const elementStrategies: readonly OverpassElementStrategy[] = ["node"];
 export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length;
 
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
-  const strategyIndex = normalized % elementStrategies.length;
-  const tileCursor = Math.floor(normalized / elementStrategies.length);
+  // Productie doorzoekt de lichte node-tegels, zodat iedere batch binnen de
+  // gratis server- en uitvoeringstijd een reële kans op resultaten houdt.
+  const strategyIndex = Math.floor(normalized / OSM_TILE_COUNT);
+  const tileCursor = normalized % OSM_TILE_COUNT;
   const strategy = elementStrategies[strategyIndex];
   return { cursor: normalized, tileCursor, strategy, id: `t${tileCursor}-${strategy}` };
 }
@@ -76,6 +80,23 @@ export function clearOverpassCircuitState() { endpointHealth.clear(); }
 function healthyEndpoints(endpoints: string[], now: number) {
   const available = endpoints.filter((endpoint) => (endpointHealth.get(endpoint)?.openUntil ?? 0) <= now);
   return available.length ? available : endpoints;
+}
+
+export function prioritizeOverpassEndpoints(endpoints: string[]) {
+  const priority = (endpoint: string) => {
+    try {
+      const host = new URL(endpoint).hostname;
+      // De VK-mirror is onafhankelijk van de andere twee providers en reageert
+      // doorgaans binnen het serverless tijdsbudget. overpass-api.de verdeelt
+      // zelf al over zijn z/lz4-machines, dus de directe lz4-host staat laatst.
+      if (host === "maps.mail.ru") return 0;
+      if (host === "overpass.private.coffee") return 1;
+      if (host === "overpass-api.de") return 2;
+      if (host === "lz4.overpass-api.de" || host === "z.overpass-api.de") return 3;
+    } catch { /* De normale URL-validatie meldt ongeldige configuratie. */ }
+    return 4;
+  };
+  return [...endpoints].sort((left, right) => priority(left) - priority(right));
 }
 
 function recordEndpointFailure(endpoint: string, now: number) {
@@ -114,8 +135,13 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
     const emailAddresses = [tags.email, tags["contact:email"]].filter((value): value is string => Boolean(value));
     const sourceDates = [element.timestamp, tags.check_date, tags["contact:check_date"], tags["opening_hours:check_date"], tags["survey:date"]]
       .filter((value): value is string => Boolean(value)).map((value) => ({ value, time: Date.parse(value) })).filter(({ time }) => Number.isFinite(time)).sort((a, b) => b.time - a.time);
-    const activitySignals = ["opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date", "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram"]
+    const activitySignals = [
+      "opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date",
+      "phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone",
+      "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram",
+    ]
       .filter((key) => Boolean(tags[key]));
+    const recentActive = Boolean(activitySignals.length && sourceDates[0] && Date.now() - sourceDates[0].time <= 2 * 365.25 * 24 * 60 * 60 * 1000);
     return [{
       externalPlaceId: `osm:${element.type}/${element.id}`,
       source: "OPENSTREETMAP",
@@ -128,7 +154,7 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       website: positiveWebsite,
       websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
-      businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : "UNKNOWN",
+      businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : recentActive ? "OPERATIONAL" : "UNKNOWN",
       closureSignals,
       activitySignals,
       rawData: tags,
@@ -198,9 +224,20 @@ export function overpassTile(latitude: number, longitude: number, radius: number
 export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy }) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
-  const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]';
+  const latitudeDelta = params.radius / 111_320;
+  const longitudeDelta = params.radius / (111_320 * Math.max(0.2, Math.cos(params.latitude * Math.PI / 180)));
+  const bbox = [
+    params.latitude - latitudeDelta,
+    params.longitude - longitudeDelta,
+    params.latitude + latitudeDelta,
+    params.longitude + longitudeDelta,
+  ].map((value) => value.toFixed(7)).join(",");
+  // Eén contactfilter houdt de response klein zonder de bron te dwingen twee
+  // dure regex-filters te combineren. De intakegate controleert daarna nog
+  // steeds streng of zowel telefoon als een afleverbaar e-mailadres aanwezig zijn.
+  const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone|email|contact:email)$"~"."]';
   const statements = filters.map((filter) =>
-    `${strategy}(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})${filter}[name]${contactFilter};`,
+    `${strategy}(${bbox})${filter}[name]${contactFilter};`,
   ).join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
@@ -230,7 +267,11 @@ async function fetchWithTimeout(fetchImpl: typeof fetch, endpoint: string, query
   try {
     return await fetchImpl(endpoint, {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "SitoraLeadfinder/4.0 (public-business-discovery)" },
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "application/json",
+        "User-Agent": "SitoraLeadfinder/4.1 (public-business-discovery; info@sitora.nl)",
+      },
       body: new URLSearchParams({ data: query }),
       signal: controller.signal,
       cache: "no-store",
@@ -270,7 +311,9 @@ export async function searchOverpass(params: SearchParams) {
   if (!Number.isFinite(params.latitude) || !Number.isFinite(params.longitude) || Math.abs(params.latitude) > 90 || Math.abs(params.longitude) > 180) {
     throw new Error("De locatie kon niet worden gevonden of bevat ongeldige coördinaten.");
   }
-  const configuredEndpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
+  const configuredEndpoints = prioritizeOverpassEndpoints(
+    [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))],
+  );
   const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
   const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));

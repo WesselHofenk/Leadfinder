@@ -15,6 +15,7 @@ enum UserRole {
 
 enum LeadStatus {
   NEW
+  EMAILED
   VOICEMAIL
   CALL_BACK
   INTERESTED
@@ -22,6 +23,12 @@ enum LeadStatus {
   QUOTE_SENT
   CUSTOMER
   NOT_INTERESTED
+}
+
+enum OutreachEmailStatus {
+  RESERVED
+  SENT
+  FAILED
 }
 
 enum LeadType {
@@ -96,6 +103,30 @@ enum WebsiteStatus {
   OWN_WEBSITE
   OUTDATED
   IMPROVABLE
+  IMPROVABLE_WEBSITE
+  UNKNOWN
+}
+
+enum ContactValidationStatus {
+  PENDING
+  DELIVERABLE
+  VALID
+  INVALID
+  UNKNOWN
+}
+
+enum ChatbotStatus {
+  PRESENT
+  NOT_PRESENT
+  UNKNOWN
+}
+
+enum ChainStatus {
+  INDEPENDENT
+  SMALL_GROUP
+  FRANCHISE
+  LARGE_CHAIN
+  CORPORATE
   UNKNOWN
 }
 
@@ -127,15 +158,21 @@ model Session {
 }
 
 model Lead {
-  id                            String                 @id @default(cuid())
-  externalPlaceId               String                 @unique
+  id                            String                  @id @default(cuid())
+  externalPlaceId               String                  @unique
   companyName                   String
   normalizedCompanyName         String
   contactPersonName             String?
   email                         String?
+  emailValidationStatus         ContactValidationStatus @default(PENDING)
+  emailValidationSource         String?
+  emailValidatedAt              DateTime?
   phoneNumber                   String
-  normalizedPhoneNumber         String                 @unique
+  normalizedPhoneNumber         String                  @unique
   internationalPhoneNumber      String?
+  phoneValidationStatus         ContactValidationStatus @default(PENDING)
+  phoneValidationSource         String?
+  phoneValidatedAt              DateTime?
   category                      String
   subCategory                   String?
   country                       String
@@ -146,42 +183,49 @@ model Lead {
   streetAddress                 String
   houseNumber                   String?
   normalizedAddress             String
-  latitude                      Decimal                @db.Decimal(10, 7)
-  longitude                     Decimal                @db.Decimal(10, 7)
+  latitude                      Decimal                 @db.Decimal(10, 7)
+  longitude                     Decimal                 @db.Decimal(10, 7)
   googleMapsUrl                 String
   website                       String?
   websiteUrl                    String?
   normalizedDomain              String?
-  websiteStatus                 WebsiteStatus          @default(UNKNOWN)
+  websiteStatus                 WebsiteStatus           @default(UNKNOWN)
   websiteStatusReason           String?
-  websiteConfidence             Int                    @default(0)
+  websiteConfidence             Int                     @default(0)
   websiteSource                 String?
+  chatbotStatus                 ChatbotStatus           @default(UNKNOWN)
+  chatbotStatusReason           String?
+  chainStatus                   ChainStatus             @default(UNKNOWN)
+  branchCount                   Int?
+  qualificationReason           String?
+  batchId                       String?
+  dedupeFingerprint             String?                 @unique
   sourceUrl                     String?
   sourceFetchedAt               DateTime?
-  googlePlaceId                 String?                @unique
+  googlePlaceId                 String?                 @unique
   googleWebsiteCheckAttemptedAt DateTime?
   googleWebsiteVerifiedAt       DateTime?
   googleWebsitePresent          Boolean?
   employeeCount                 Int?
-  leadType                      LeadType               @default(NO_WEBSITE)
-  opportunityScore              Int                    @default(0)
+  leadType                      LeadType                @default(NO_WEBSITE)
+  opportunityScore              Int                     @default(0)
   conversionQualityScore        Int?
-  isFiltered                    Boolean                @default(false)
+  isFiltered                    Boolean                 @default(false)
   filterReason                  String?
-  doNotContact                  Boolean                @default(false)
+  doNotContact                  Boolean                 @default(false)
   lastWebsiteAnalysisAt         DateTime?
   businessStatus                BusinessStatus
-  source                        LeadSource             @default(OPENSTREETMAP)
-  confidenceScore               Int                    @default(50)
-  confidenceLevel               ConfidenceLevel        @default(MEDIUM)
-  isActive                      Boolean                @default(true)
-  isSuppressed                  Boolean                @default(false)
-  firstDiscoveredAt             DateTime               @default(now())
-  lastVerifiedAt                DateTime               @default(now())
-  createdAt                     DateTime               @default(now())
-  updatedAt                     DateTime               @updatedAt
-  status                        LeadStatus             @default(NEW)
-  notes                         String                 @default("")
+  source                        LeadSource              @default(OPENSTREETMAP)
+  confidenceScore               Int                     @default(50)
+  confidenceLevel               ConfidenceLevel         @default(MEDIUM)
+  isActive                      Boolean                 @default(true)
+  isSuppressed                  Boolean                 @default(false)
+  firstDiscoveredAt             DateTime                @default(now())
+  lastVerifiedAt                DateTime                @default(now())
+  createdAt                     DateTime                @default(now())
+  updatedAt                     DateTime                @updatedAt
+  status                        LeadStatus              @default(NEW)
+  notes                         String                  @default("")
   lastContactAt                 DateTime?
   nextFollowUpAt                DateTime?
   contactPerson                 String?
@@ -197,6 +241,7 @@ model Lead {
   evidence                      VerificationEvidence[]
   sourceRecords                 SourceRecord[]
   activities                    LeadActivity[]
+  outreachEmail                 OutreachEmail?
 
   @@unique([normalizedCompanyName, normalizedAddress], map: "lead_name_address_unique")
   @@unique([normalizedCompanyName, latitude, longitude], map: "lead_name_coordinates_unique")
@@ -216,6 +261,33 @@ model Lead {
   @@index([status, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
+  @@index([batchId])
+}
+
+model OutreachEmail {
+  id             String              @id @default(cuid())
+  leadId         String              @unique
+  lead           Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  status         OutreachEmailStatus @default(RESERVED)
+  recipientEmail String              @unique
+  companyName    String
+  subject        String
+  body           String
+  dateKey        String
+  messageId      String?
+  lastError      String?
+  attemptCount   Int                 @default(0)
+  nextAttemptAt  DateTime?
+  providerAcceptedAt DateTime?
+  archivedAt     DateTime?
+  sentMailbox    String?
+  reservedAt     DateTime            @default(now())
+  sentAt         DateTime?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  @@index([dateKey, status])
+  @@index([status, reservedAt])
 }
 
 model GenerationRun {
@@ -228,6 +300,7 @@ model GenerationRun {
   duplicates          Int                   @default(0)
   rejected            Int                   @default(0)
   stored              Int                   @default(0)
+  validDrafts         Int                   @default(0)
   manualReview        Int                   @default(0)
   websitesChecked     Int                   @default(0)
   websitesFound       Int                   @default(0)
@@ -243,12 +316,14 @@ model GenerationRun {
   apiErrors           Json                  @default("[]")
   exhausted           Boolean               @default(false)
   cancelRequested     Boolean               @default(false)
+  continuousRequested Boolean               @default(false)
   progress            Int                   @default(0)
   message             String?
   heartbeatAt         DateTime?
   processedSegments   Int                   @default(0)
   batchNumber         Int                   @default(0)
   pendingCandidates   Int                   @default(0)
+  retryQueueCount     Int                   @default(0)
   retriedCandidates   Int                   @default(0)
   lastBatchDurationMs Int?
   existingLeads       Int                   @default(0)
@@ -267,9 +342,57 @@ model GenerationRun {
   updatedAt           DateTime              @updatedAt
   logs                SourceLog[]
   candidates          GenerationCandidate[]
+  qualifiedDrafts     QualifiedLeadDraft[]
 
   @@index([status, createdAt])
   @@index([status, updatedAt])
+}
+
+model LeadfinderTask {
+  id              String   @id
+  name            String   @unique
+  enabled         Boolean  @default(true)
+  status          String   @default("ACTIVE")
+  currentRunId    String?
+  lastRunId       String?
+  lastHeartbeatAt DateTime?
+  lastError       String?
+  settings        Json     @default("{}")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model ColdEmailTask {
+  id                   String   @id
+  name                 String   @unique
+  enabled              Boolean  @default(true)
+  status               String   @default("ACTIVE")
+  timeZone             String   @default("Europe/Amsterdam")
+  windowStartHour      Int      @default(9)
+  windowEndHour        Int      @default(17)
+  rampStartDate        String   @default("2026-08-10")
+  startDailyLimit      Int      @default(20)
+  weeklyIncrement      Int      @default(10)
+  maximumDailyLimit    Int      @default(100)
+  lastHeartbeatAt      DateTime?
+  lastSuccessfulSentAt DateTime?
+  lastError            String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+}
+
+model QualifiedLeadDraft {
+  id          String        @id @default(cuid())
+  runId       String
+  run         GenerationRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  fingerprint String        @unique
+  payload     Json
+  validatedAt DateTime?
+  updatedAt   DateTime      @updatedAt
+  createdAt   DateTime      @default(now())
+
+  @@index([runId, createdAt])
+  @@index([runId, validatedAt])
 }
 
 model GenerationCandidate {
