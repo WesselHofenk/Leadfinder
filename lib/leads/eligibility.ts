@@ -1,7 +1,9 @@
+
 import { confidenceLevel, excludedBusinessValues } from "./config";
 import { isPermanentlyClosed, isTemporarilyClosed } from "./company-status";
 import { evaluateNewLeadGate } from "./intake-gate";
 import { normalizeDomain, normalizeEmails, normalizePhones, normalizePostalCode, normalizeText } from "./normalization";
+import { detectBlockedLocation } from "./blocked-location";
 import { determineWebsiteStatus, isNonOwnedWebsite } from "./website";
 
 export type Candidate = {
@@ -13,20 +15,30 @@ export type Candidate = {
   latitude: number; longitude: number; googleMapsUrl: string; subCategory?: string;
   source?: "GOOGLE_PLACES" | "OPENSTREETMAP"; houseNumber?: string;
   brand?: string; brandWikidata?: string; operator?: string;
-  branchCount?: number; isFranchise?: boolean; isCorporate?: boolean;
   phoneNumbers?: Array<string | null | undefined>; emailAddresses?: Array<string | null | undefined>; activitySignals?: string[];
   websiteFields?: Array<string | null | undefined>;
   links?: unknown; contact?: unknown; contactInfo?: unknown; details?: unknown; attributes?: unknown; externalLinks?: unknown; socialLinks?: unknown;
   rawData?: unknown; sourceData?: unknown; websiteAbsenceConfirmed?: boolean;
-  email?: string; closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
+  sourceWebsiteFieldsChecked?: boolean;
+  email?: string; emailSource?: string; emailSourceUrl?: string; emailPubliclyListed?: boolean;
+  emailMxVerified?: boolean; emailVerifiedAt?: string;
+  closureSignals?: string[]; sourceUpdatedAt?: string; sourceUrl?: string; fetchedAt?: string;
+  formattedAddress?: string; language?: string; languageConfidence?: number; regionLanguage?: string;
+  locality?: string; town?: string; village?: string; suburb?: string; district?: string; county?: string; region?: string;
+  googlePlaceId?: string; googleBusinessProfileUrl?: string; googleBusinessProfileVerified?: boolean; googleBusinessStatusVerified?: boolean;
+  description?: string; contactText?: string; reviewSnippets?: string[]; socialUrls?: string[];
+  singleLocationStatus?: "CONFIRMED" | "MULTIPLE" | "UNCERTAIN";
+  singleLocationReason?: string; locationEvidence?: string[]; duplicateListingIds?: string[];
 };
 
 export type EligibleBase = Candidate & {
-  normalizedPhoneNumber: string; normalizedCompanyName: string; normalizedAddress: string;
+  normalizedPhoneNumber: string | null; normalizedCompanyName: string; normalizedAddress: string;
   normalizedDomain: string | null; email?: string; businessStatus: "OPERATIONAL" | "UNKNOWN";
   confidenceScore: number; confidenceLevel: "LOW" | "MEDIUM" | "HIGH";
 };
-export type EligibleLead = EligibleBase & { leadType: "NO_WEBSITE" };
+export type EligibleLead = EligibleBase & {
+  leadType: "NO_WEBSITE" | "WEBSITE_OUTDATED" | "WEBSITE_BROKEN" | "IMPROVABLE_WEBSITE";
+};
 
 const MAX_OSM_SOURCE_AGE_MS = 6 * 365.25 * 24 * 60 * 60 * 1000;
 
@@ -34,10 +46,22 @@ export function hasPlausibleBusinessLocation(candidate: Candidate) {
   const country = candidate.country.toUpperCase();
   const postalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, country);
   const hasHouseNumber = Boolean(candidate.houseNumber?.trim() || /\d/.test(candidate.streetAddress));
-  const bounds = country === "NL"
-    ? candidate.latitude >= 50.7 && candidate.latitude <= 53.7 && candidate.longitude >= 3.2 && candidate.longitude <= 7.3
-    : country === "BE" && candidate.latitude >= 49.4 && candidate.latitude <= 51.6 && candidate.longitude >= 2.4 && candidate.longitude <= 6.5;
-  return Boolean(postalCode && hasHouseNumber && candidate.streetAddress.trim().length >= 6 && bounds);
+  const bounds = (
+    country === "NL"
+    && candidate.latitude >= 50.7 && candidate.latitude <= 53.7
+    && candidate.longitude >= 3.2 && candidate.longitude <= 7.3
+  ) || (
+    country === "BE"
+    && candidate.latitude >= 49.45 && candidate.latitude <= 51.55
+    && candidate.longitude >= 2.45 && candidate.longitude <= 6.45
+  );
+  const preciseAddress = Boolean(postalCode && hasHouseNumber && candidate.streetAddress.trim().length >= 6);
+  const usableMappedLocation = Boolean(
+    candidate.city.trim()
+    && normalizeText(candidate.city) !== "onbekend"
+    && candidate.streetAddress.trim().length >= 3,
+  );
+  return Boolean(bounds && (preciseAddress || usableMappedLocation));
 }
 
 export function hasRecentSourceEvidence(candidate: Candidate, now = Date.now()) {
@@ -48,18 +72,22 @@ export function hasRecentSourceEvidence(candidate: Candidate, now = Date.now()) 
 
 export function validateCandidateBasics(candidate: Candidate): { ok: true; lead: EligibleBase } | { ok: false; reason: string } {
   if (!candidate.externalPlaceId || !candidate.companyName || !candidate.streetAddress || !candidate.city) return { ok: false, reason: "onvolledig" };
+  const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+  if (blocked.blocked) return { ok: false, reason: blocked.reason ?? "blocked_location" };
   if (!["NL", "BE"].includes(candidate.country.toUpperCase())) return { ok: false, reason: "buiten_gebied" };
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { ok: false, reason: "niet_operationeel" };
-  if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || candidate.isFranchise || candidate.isCorporate || (candidate.branchCount ?? 1) > 5 || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
+  if (isLikelyChain(candidate.companyName, candidate.brand, candidate.operator) || candidate.brandWikidata || excludedBusinessValues.has(candidate.category.toLowerCase())) return { ok: false, reason: "keten_of_uitgesloten" };
   if (!hasPlausibleBusinessLocation(candidate)) return { ok: false, reason: "onvolledige_locatie" };
   if (!hasRecentSourceEvidence(candidate)) return { ok: false, reason: "verouderde_bron" };
-  const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0];
-  if (!normalizedPhoneNumber) return { ok: false, reason: "ongeldig_nummer" };
-  const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
-  if (status === "UNKNOWN") return { ok: false, reason: "onbetrouwbare_status" };
-  let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
-  const normalizedPostalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, candidate.country) ?? undefined;
+
+  const normalizedPhoneNumber = normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country)[0] ?? null;
+  if (!normalizedPhoneNumber) return { ok: false, reason: "invalid_phone" };
   const normalizedEmail = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])[0];
+  const status = candidate.businessStatus?.toUpperCase() === "OPERATIONAL" ? "OPERATIONAL" : "UNKNOWN";
+  let confidenceScore = candidate.source === "OPENSTREETMAP" ? 78 : 74;
+  if (status === "UNKNOWN") confidenceScore -= 10;
+  if (!normalizedPhoneNumber) confidenceScore -= 4;
+  const normalizedPostalCode = normalizePostalCode(candidate.postalCode || candidate.streetAddress, candidate.country) ?? undefined;
   if (normalizedPostalCode && (candidate.houseNumber || /\d/.test(candidate.streetAddress))) confidenceScore += 5;
   if (normalizedEmail) confidenceScore += 3;
   if (candidate.activitySignals?.length) confidenceScore += Math.min(4, candidate.activitySignals.length);
@@ -79,7 +107,24 @@ export function qualifyCandidate(candidate: Candidate, verification?: Parameters
   if (!basic.ok) return basic;
   const gate = evaluateNewLeadGate(candidate, verification);
   if (!gate.allowed) return { ok: false, reason: gate.reason === "SKIPPED_HAS_WEBSITE" ? "eigen_website" : gate.reason === "SKIPPED_PERMANENTLY_CLOSED" ? "niet_operationeel" : "website_onzeker" };
-  return { ok: true, lead: { ...basic.lead, website: isNonOwnedWebsite(candidate.website) ? undefined : candidate.website, normalizedDomain: null, leadType: "NO_WEBSITE" } };
+  const leadType: EligibleLead["leadType"] = verification?.status === "WEBSITE_OUTDATED"
+    ? "WEBSITE_OUTDATED"
+    : verification?.status === "WEBSITE_BROKEN"
+      ? "WEBSITE_BROKEN"
+      : verification?.status === "IMPROVABLE_WEBSITE"
+        ? "IMPROVABLE_WEBSITE"
+        : "NO_WEBSITE";
+  const qualifiedWebsite = leadType !== "NO_WEBSITE";
+  const website = qualifiedWebsite ? verification?.website ?? candidate.website : isNonOwnedWebsite(candidate.website) ? undefined : candidate.website;
+  return {
+    ok: true,
+    lead: {
+      ...basic.lead,
+      website,
+      normalizedDomain: qualifiedWebsite ? normalizeDomain(website) : null,
+      leadType,
+    },
+  };
 }
 
 const chainNames = ["mcdonalds","burger king","subway","dominos","kfc","starbucks","hema","action","aldi","lidl","jumbo","ah to go","albert heijn","kruidvat","etos","gamma","praxis","kwikfit","basic fit","anytime fitness","van der valk","fletcher hotels","ibis hotel"];

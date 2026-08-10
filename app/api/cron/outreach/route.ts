@@ -1,9 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { secureCompare } from "@/lib/auth/session";
-import { getDailyOutreachSummary, resendTodayOutreach, runDailyOutreach, sendOutreachTestEmail, verifyOutreachMailbox } from "@/lib/jobs/outreach";
+import { ensureDailyColdEmailBatch } from "@/lib/email/campaign";
+import { processColdEmailQueue, rescheduleStaleColdEmails } from "@/lib/email/service";
+import { COLD_EMAIL_CAMPAIGN_ID, ensureColdEmailCampaignState } from "@/lib/email/state";
+import { getColdEmailTaskSnapshot } from "@/lib/jobs/cold-email-task";
+import { prisma } from "@/lib/prisma";
 
-export const maxDuration = 300;
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
@@ -14,38 +18,46 @@ export async function GET(request: NextRequest) {
   }
 
   const now = new Date();
-  try {
-    if (request.nextUrl.searchParams.get("verify") === "1") {
-      return NextResponse.json(await verifyOutreachMailbox());
-    }
-    if (request.nextUrl.searchParams.get("test") === "1") {
-      return NextResponse.json(await sendOutreachTestEmail());
-    }
-    if (request.nextUrl.searchParams.get("status") === "1") {
-      return NextResponse.json(await getDailyOutreachSummary(now));
-    }
-    if (request.nextUrl.searchParams.get("resend") === "1") {
-      return NextResponse.json(await resendTodayOutreach({ now }));
-    }
-    if (request.nextUrl.searchParams.get("outdated") === "1") {
-      return NextResponse.json(await runDailyOutreach({ now, campaign: "OUTDATED_WEBSITE" }));
-    }
-    if (request.nextUrl.searchParams.get("extraOutdated") === "1") {
-      return NextResponse.json(await runDailyOutreach({ now, campaign: "OUTDATED_WEBSITE", additionalBatchSize: 5 }));
-    }
-    const result = await runDailyOutreach({ now, campaign: "NEW_PIPELINE", scheduled: true });
-    console.info("Dagelijkse cold-emailrun", {
-      status: result.status,
-      sent: result.sent,
-      sentToday: "sentToday" in result ? result.sentToday : undefined,
-      dailyLimit: "dailyLimit" in result ? result.dailyLimit : undefined,
-      failures: "failures" in result && Array.isArray(result.failures) ? result.failures.length : undefined,
-      archiveFailures: "archiveFailures" in result && Array.isArray(result.archiveFailures) ? result.archiveFailures.length : undefined,
+  const task = await ensureColdEmailCampaignState(now);
+  if (request.nextUrl.searchParams.get("status") === "1") {
+    return NextResponse.json(await getColdEmailTaskSnapshot(now));
+  }
+  if (!task.enabled) {
+    await prisma.coldEmailCampaign.update({
+      where: { id: COLD_EMAIL_CAMPAIGN_ID },
+      data: { status: "PAUSED", lastHeartbeatAt: now },
     });
-    return NextResponse.json(result);
+    return NextResponse.json({ status: "disabled" });
+  }
+
+  await prisma.coldEmailCampaign.update({
+    where: { id: COLD_EMAIL_CAMPAIGN_ID },
+    data: { status: "RUNNING", lastHeartbeatAt: now },
+  });
+  try {
+    const recovery = await rescheduleStaleColdEmails(now);
+    const delivery = await processColdEmailQueue(now);
+    const campaign = await ensureDailyColdEmailBatch(now);
+    const latestSent = await prisma.coldEmail.findFirst({
+      where: { smtpAcceptedAt: { not: null } },
+      orderBy: { smtpAcceptedAt: "desc" },
+      select: { smtpAcceptedAt: true },
+    });
+    await prisma.coldEmailCampaign.update({
+      where: { id: COLD_EMAIL_CAMPAIGN_ID },
+      data: {
+        status: "ACTIVE",
+        lastHeartbeatAt: new Date(),
+        lastSuccessfulSentAt: latestSent?.smtpAcceptedAt,
+      },
+    });
+    return NextResponse.json({ recovery, campaign, delivery });
   } catch (error) {
-    return NextResponse.json({
-      error: error instanceof Error ? error.message : "Dagelijkse e-mailrun mislukt",
-    }, { status: 500 });
+    const message = error instanceof Error ? error.message : "Cold-emailtaak mislukt";
+    await prisma.coldEmailCampaign.update({
+      where: { id: COLD_EMAIL_CAMPAIGN_ID },
+      data: { status: "ERROR", lastHeartbeatAt: new Date(), lastProviderError: message },
+    });
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

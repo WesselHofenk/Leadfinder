@@ -4,8 +4,6 @@ import { prisma } from "@/lib/prisma";
 
 export const LEADFINDER_TASK_ID = "leadfinder-continuous";
 export const LEADFINDER_TASK_NAME = "Leadfinder doorlopend zoeken";
-export const COLD_EMAIL_TASK_ID = "cold-email-continuous";
-export const COLD_EMAIL_TASK_NAME = "Cold emails automatisch versturen";
 
 export async function ensureLeadfinderTask() {
   return prisma.leadfinderTask.upsert({
@@ -55,12 +53,4 @@ export async function stopLeadfinderTask() {
     }),
   ]);
   return { cancelled: cancelled.count, ...(await getLeadfinderTaskSnapshot()) };
-}
-
-export async function ensureColdEmailTask() {
-  return prisma.coldEmailTask.upsert({
-    where: { id: COLD_EMAIL_TASK_ID },
-    create: { id: COLD_EMAIL_TASK_ID, name: COLD_EMAIL_TASK_NAME },
-    update: { name: COLD_EMAIL_TASK_NAME },
-  });
 }

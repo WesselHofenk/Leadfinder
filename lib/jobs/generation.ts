@@ -1,25 +1,41 @@
-import { CandidateQueueStatus, JobStatus, Prisma, type GenerationCandidate, type GenerationRun } from "@prisma/client";
+
+import { CandidateQueueStatus, JobStatus, Prisma, ValidationCandidateStatus, type GenerationCandidate, type GenerationRun } from "@prisma/client";
 
 import { serverEnv } from "@/lib/env";
-import { candidateDedupeKeys, dedupeFingerprintValues, fingerprintValues, RunDeduplicator } from "@/lib/leads/deduplication";
+import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentityFingerprintValues } from "@/lib/leads/deduplication";
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
-import { validatePublicContacts } from "@/lib/leads/contact-validation";
-import { inspectOwnedWebsite } from "@/lib/leads/digital-qualification";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
+import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
+import { hasReadableAddress, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { validatePublicBusinessEmail } from "@/lib/leads/business-email";
+import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
-import { normalizeText } from "@/lib/leads/normalization";
-import { precheckQualifiedLocation, recheckQualifiedDraft, type DeliverableContacts, type QualifiedDraftPayload } from "@/lib/leads/qualified-draft";
-import { verifyWebsiteCandidate, type WebsiteVerificationResult } from "@/lib/leads/website-verification";
-import { nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
+import { qualifyWebsiteCandidate } from "@/lib/leads/digital-qualification";
+import { normalizePhones, normalizeText } from "@/lib/leads/normalization";
+import { candidateQualityScore } from "@/lib/leads/candidate-score";
+import { applySingleLocationDecision, assessSingleLocation, directSingleLocationSignal, organizationNameKey, type SingleLocationDecision, type SingleLocationReason } from "@/lib/leads/single-location";
+import { NEW_PIPELINE_STAGE_ID } from "@/lib/leads/pipeline";
+import { importDueValidationRetries, importInterruptedGenerationCandidates, markValidationRejected, queueValidationRetry } from "@/lib/leads/retry-queue";
+import { extractCompanyWebsite } from "@/lib/leads/website";
+import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
+import { initialOverpassSearchCursor, nextOverpassTileCursor, OSM_SEARCH_CURSOR_COUNT, overpassSearchPlan, type OverpassEvent } from "@/lib/openstreetmap/overpass";
 import { prisma } from "@/lib/prisma";
-import { enabledSourceAdapters } from "@/lib/sources/openstreetmap";
-import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
+import { enabledSourceAdapters, SourceCircuitOpenError } from "@/lib/sources/openstreetmap";
 import { acquireJobLock } from "./lock";
-import { candidateRetryStatus, generationCompletionStatus, isBatchDeadlineNear, isGenerationRunExpired, isReviewRetryReason, phaseProgress, shouldFetchFreshSource, shouldStopForSourceFailures, sourceAttemptDelta, terminalGenerationStatuses, terminalStatusForStoredLeads, unwrapGenerationCandidatePayload } from "./generation-state";
+import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN } from "./generation-config";
+import { exhaustedSearchAreasReason } from "./generation-summary";
+import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, locationValidationBatchLimit, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses, terminalStatusForStoredLeads } from "./generation-state";
+import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
+import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
+import { publishQualifiedDrafts } from "./qualified-draft-publication";
+import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
 
 type Stats = {
   found: number;
   checked: number;
+  cheapRejected: number;
+  externallyValidated: number;
+  cacheHits: number;
   withoutWebsite: number;
   duplicates: number;
   existing: number;
@@ -35,16 +51,117 @@ type Stats = {
   outdatedWebsite: number;
   improvableWebsite: number;
   sourceFailures: number;
+  wrongLocationRejected: number;
+  insufficientDataRejected: number;
+  validCandidates: number;
+  databaseInsertAttempts: number;
+  databaseInsertFailures: number;
+  blockedBrussels: number;
+  blockedGhent: number;
+  invalidPhone: number;
+  emailsFound: number;
+  emailsMissing: number;
+  emailsInvalid: number;
+  emailRetries: number;
+  emailsExternallyVerified: number;
+  languageRejected: number;
+  multipleLocationsRejected: number;
+  chainRejected: number;
+  franchiseRejected: number;
+  sameNameMultipleAddresses: number;
+  samePhoneMultipleAddresses: number;
+  locationCountUncertain: number;
+  duplicateListingsMerged: number;
 };
 
 const terminalStatuses = new Set<JobStatus>(terminalGenerationStatuses as readonly JobStatus[]);
 const errorMessage = (error: unknown) => error instanceof Error ? error.message.slice(0, 300) : "Onbekende bronfout";
 const stringArray = (value: Prisma.JsonValue): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+export class DuplicateIdentityError extends Error {
+  constructor(readonly fingerprint: string, readonly existingLeadId: string) {
+
+    super(`Identiteitsvingerafdruk ${fingerprint} hoort al bij lead ${existingLeadId}.`);
+    this.name = "DuplicateIdentityError";
+  }
+}
+
+export function databaseErrorEvidence(error: unknown) {
+  if (error instanceof Prisma.PrismaClientKnownRequestError) {
+    const meta = error.meta && typeof error.meta === "object" ? error.meta as Record<string, unknown> : {};
+    return {
+      code: error.code,
+      model: typeof meta.modelName === "string" ? meta.modelName : undefined,
+      constraint: typeof meta.constraint === "string" ? meta.constraint : undefined,
+      target: Array.isArray(meta.target) ? meta.target.map(String) : typeof meta.target === "string" ? [meta.target] : undefined,
+      field: typeof meta.field_name === "string" ? meta.field_name : undefined,
+      message: errorMessage(error),
+    };
+  }
+  return { code: error instanceof DuplicateIdentityError ? "DUPLICATE_IDENTITY" : "DATABASE_ERROR", message: errorMessage(error) };
+}
+
+function candidateCheckResults(candidate: Candidate, extra?: Record<string, unknown>) {
+  const phones = normalizePhones(
+    [candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])],
+    candidate.country,
+  );
+  const officialSourceWebsite = extractCompanyWebsite(candidate);
+  return {
+    businessStatus: isPermanentlyClosed(candidate)
+      ? "closed"
+      : isTemporarilyClosed(candidate) ? "temporarily_closed" : candidate.businessStatus?.toLowerCase() || "unknown",
+    address: hasReadableAddress(candidate) ? "readable" : "missing_or_unreadable",
+    phone: phones.length ? "valid_and_normalized" : "missing_or_invalid",
+    publicBusinessEmail: !candidate.email
+      ? "missing"
+      : candidate.emailMxVerified ? "public_and_mx_verified" : "present_not_yet_mx_verified",
+    sourceWebsite: officialSourceWebsite ? "official_website_found" : "no_official_website_in_source",
+    language: candidate.language || "unknown",
+    locationCount: candidate.singleLocationStatus || "not_yet_checked",
+    duplicateMatch: Array.isArray(extra?.matchedFields) ? extra.matchedFields : [],
+  };
+}
+
+function decisionEvidence(candidate: Candidate, extra?: Record<string, unknown>): Prisma.InputJsonValue {
+  const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+  return JSON.parse(JSON.stringify({
+    sourceRecordId: candidate.externalPlaceId,
+    sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl,
+    country: candidate.country,
+    province: candidate.province,
+    municipality: candidate.municipality,
+    city: candidate.city,
+    postalCode: candidate.postalCode,
+    streetAddress: candidate.streetAddress,
+    normalizedPhones: normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country),
+    email: candidate.email,
+    emailSource: candidate.emailSource,
+    emailSourceUrl: candidate.emailSourceUrl,
+    emailMxVerified: candidate.emailMxVerified,
+    emailVerifiedAt: candidate.emailVerifiedAt,
+    businessStatus: candidate.businessStatus,
+    language: candidate.language,
+    languageConfidence: candidate.languageConfidence,
+    sourceUpdatedAt: candidate.sourceUpdatedAt,
+    blockedArea: blocked.area,
+    blockedField: blocked.matchedField,
+    singleLocationStatus: candidate.singleLocationStatus,
+    singleLocationReason: candidate.singleLocationReason,
+    locationEvidence: candidate.locationEvidence,
+    checkResults: candidateCheckResults(candidate, extra),
+    ...extra,
+  }));
+}
+
 function statsFromRun(run: GenerationRun): Stats {
   return {
     found: run.candidatesFound,
     checked: run.candidatesChecked,
+    cheapRejected: run.cheapRejected,
+    externallyValidated: run.externallyValidated,
+    cacheHits: run.cacheHits,
+
     withoutWebsite: run.withoutWebsite,
     duplicates: run.duplicates,
     existing: run.existingLeads,
@@ -60,6 +177,27 @@ function statsFromRun(run: GenerationRun): Stats {
     outdatedWebsite: run.outdatedWebsite,
     improvableWebsite: run.improvableWebsite,
     sourceFailures: run.sourceFailures,
+    wrongLocationRejected: run.wrongLocationRejected,
+    insufficientDataRejected: run.insufficientDataRejected,
+    validCandidates: run.validCandidates,
+    databaseInsertAttempts: run.databaseInsertAttempts,
+    databaseInsertFailures: run.databaseInsertFailures,
+    blockedBrussels: run.blockedBrussels,
+    blockedGhent: run.blockedGhent,
+    invalidPhone: run.invalidPhone,
+    emailsFound: run.emailsFound,
+    emailsMissing: run.emailsMissing,
+    emailsInvalid: run.emailsInvalid,
+    emailRetries: run.emailRetries,
+    emailsExternallyVerified: run.emailsExternallyVerified,
+    languageRejected: run.languageRejected,
+    multipleLocationsRejected: run.multipleLocationsRejected,
+    chainRejected: run.chainRejected,
+    franchiseRejected: run.franchiseRejected,
+    sameNameMultipleAddresses: run.sameNameMultipleAddresses,
+    samePhoneMultipleAddresses: run.samePhoneMultipleAddresses,
+    locationCountUncertain: run.locationCountUncertain,
+    duplicateListingsMerged: run.duplicateListingsMerged,
   };
 }
 
@@ -68,6 +206,9 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   return {
     candidatesFound: stats.found,
     candidatesChecked: stats.checked,
+    cheapRejected: stats.cheapRejected,
+    externallyValidated: stats.externallyValidated,
+    cacheHits: stats.cacheHits,
     withoutWebsite: stats.withoutWebsite,
     duplicates: stats.duplicates,
     existingLeads: stats.existing,
@@ -83,6 +224,28 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
     outdatedWebsite: stats.outdatedWebsite,
     improvableWebsite: stats.improvableWebsite,
     sourceFailures: stats.sourceFailures,
+    wrongLocationRejected: stats.wrongLocationRejected,
+    insufficientDataRejected: stats.insufficientDataRejected,
+    validCandidates: stats.validCandidates,
+    databaseInsertAttempts: stats.databaseInsertAttempts,
+    databaseInsertFailures: stats.databaseInsertFailures,
+    blockedBrussels: stats.blockedBrussels,
+    blockedGhent: stats.blockedGhent,
+    invalidPhone: stats.invalidPhone,
+    emailsFound: stats.emailsFound,
+    emailsMissing: stats.emailsMissing,
+    emailsInvalid: stats.emailsInvalid,
+    emailRetries: stats.emailRetries,
+    emailsExternallyVerified: stats.emailsExternallyVerified,
+    languageRejected: stats.languageRejected,
+    multipleLocationsRejected: stats.multipleLocationsRejected,
+    chainRejected: stats.chainRejected,
+    franchiseRejected: stats.franchiseRejected,
+    sameNameMultipleAddresses: stats.sameNameMultipleAddresses,
+
+    samePhoneMultipleAddresses: stats.samePhoneMultipleAddresses,
+    locationCountUncertain: stats.locationCountUncertain,
+    duplicateListingsMerged: stats.duplicateListingsMerged,
     estimatedCostCents: 0,
     placesUsed: places,
     branchesUsed: branches,
@@ -92,94 +255,109 @@ function runData(stats: Stats, places: string[], errors: string[], warnings: str
   };
 }
 
-function capacity(stats: Stats) { return stats.stored + stats.validDrafts; }
+function capacity(stats: Pick<Stats, "validDrafts">) { return stats.validDrafts; }
+
+function preservedCandidateCount(stats: Pick<Stats, "manualReview">, pendingCandidates: number) {
+  return Math.max(stats.manualReview, pendingCandidates);
+}
+
+function timeLimitReason(stats: Stats, pendingCandidates: number, maxMinutes: number, consecutiveSourceFailures: number) {
+  const preserved = preservedCandidateCount(stats, pendingCandidates);
+  if (consecutiveSourceFailures > 0 && stats.checked === 0) {
+    return `De zoekrun van ${maxMinutes} minuten is afgerond; de gratis bedrijfsbronnen waren tijdelijk niet bereikbaar en er zijn geen kandidaten gecontroleerd.`;
+  }
+  return `De zoekrun van ${maxMinutes} minuten is afgerond na controle van ${stats.checked} kandidaten${preserved ? `; ${preserved} kandidaten vereisen een latere hercontrole` : ""}.`;
+}
+
+function candidateBudgetReason(stats: Stats, pendingCandidates: number, maxCandidates: number) {
+  const preserved = preservedCandidateCount(stats, pendingCandidates);
+  return `De kandidaatslimiet van ${maxCandidates} is bereikt na controle van ${stats.checked} unieke kandidaten${preserved ? `; ${preserved} kandidaten vereisen een latere hercontrole` : ""}.`;
+}
 
 export async function createGenerationRun(options: { continuousRequested?: boolean } = {}) {
-  return prisma.$transaction(async (tx) => {
+  const env = serverEnv();
+  const target = env.LEAD_GENERATION_TARGET;
+  const run = await prisma.$transaction(async (tx) => {
     const startedAt = new Date();
-    const reusableDrafts = await tx.qualifiedLeadDraft.findMany({
+    const reusable = await tx.qualifiedLeadDraft.findMany({
       orderBy: { createdAt: "asc" },
-      take: 10,
-      select: { id: true, payload: true },
+      take: target,
+      select: { id: true },
     });
-    const retryCandidates = await tx.generationCandidate.findMany({
-      where: {
-        status: CandidateQueueStatus.PENDING,
-        run: { status: { in: [JobStatus.COMPLETE, JobStatus.PARTIALLY_COMPLETED, JobStatus.FAILED, JobStatus.TIMED_OUT, JobStatus.CANCELLED] } },
-      },
-      orderBy: { updatedAt: "asc" },
-      take: 16,
-      select: { source: true, sourceRecordId: true, segment: true, payload: true, attempts: true, lastError: true },
-    });
-    const run = await tx.generationRun.create({
+    const created = await tx.generationRun.create({
       data: {
-        targetCount: 10,
-        startedAt,
-        continuousRequested: options.continuousRequested ?? false,
+        targetCount: target,
         stored: 0,
         validDrafts: 0,
-        retryQueueCount: retryCandidates.length,
+        maxCandidates: MAX_CANDIDATES_PER_RUN,
+        continuousRequested: options.continuousRequested ?? false,
+        startedAt,
         currentPhase: "Zoekopdracht klaarzetten",
         progress: phaseProgress("queued"),
-        message: reusableDrafts.length
-          ? `${reusableDrafts.length} eerder gekwalificeerde concepten worden opnieuw gecontroleerd voordat de zoekopdracht verdergaat.`
+        message: reusable.length
+          ? `${reusable.length} eerder gekwalificeerde concepten worden binnen deze tienminutenrun opnieuw gevalideerd.`
           : "De zoekopdracht is gevalideerd en staat klaar.",
         heartbeatAt: startedAt,
       },
     });
-    if (reusableDrafts.length) {
+    if (reusable.length) {
       await tx.qualifiedLeadDraft.updateMany({
-        where: { id: { in: reusableDrafts.map(({ id }) => id) } },
-        data: { runId: run.id, validatedAt: null },
+        where: { id: { in: reusable.map(({ id }) => id) } },
+        data: { runId: created.id, validatedAt: null },
       });
     }
-    const reusableCandidates = reusableDrafts.flatMap(({ payload }) => {
-      const draft = payload as unknown as QualifiedDraftPayload;
-      return draft.candidate?.externalPlaceId ? [{
-        runId: run.id,
-        source: draft.candidate.source ?? "OPENSTREETMAP",
-        sourceRecordId: draft.candidate.externalPlaceId,
-        segment: "reusable-qualified-draft",
-        payload: JSON.parse(JSON.stringify(draft.candidate)) as Prisma.InputJsonValue,
-      }] : [];
-    });
-    const reusableRetryCandidates = retryCandidates.flatMap((candidate) => {
-      try {
-        const normalized = unwrapGenerationCandidatePayload(candidate.payload, candidate.sourceRecordId);
-        return [{
-          ...candidate,
-          runId: run.id,
-          payload: JSON.parse(JSON.stringify(normalized)) as Prisma.InputJsonValue,
-        }];
-      } catch {
-        return [];
-      }
-    });
-    await tx.generationCandidate.createMany({
-      data: [
-        ...reusableRetryCandidates,
-        ...reusableCandidates,
-      ],
-      skipDuplicates: true,
-    });
-    return run;
+    return created;
   });
+  const event = { jobId: run.id, step: "job_started", startedAt: (run.startedAt ?? run.createdAt).toISOString(), targetCount: run.targetCount, sources: ["OPENSTREETMAP"] };
+  console.info(JSON.stringify(event));
+  await logSource(run.id, "GENERATION", "INFO", JSON.stringify(event)).catch((error) => {
+    console.warn(JSON.stringify({ jobId: run.id, step: "job_start_log_failed", message: errorMessage(error) }));
+  });
+  return run;
 }
 
 export async function markStaleGenerationRuns(now = new Date()) {
   const env = serverEnv();
   const staleBefore = new Date(now.getTime() - env.GENERATION_WATCHDOG_SECONDS * 1000);
+  const expiredBefore = new Date(now.getTime() - env.GENERATION_MAX_RUN_MINUTES * 60_000);
+  const expiredRuns = await prisma.generationRun.findMany({
+    where: {
+      status: { in: [JobStatus.PENDING, JobStatus.RUNNING] },
+      startedAt: { not: null, lte: expiredBefore },
+
+    },
+    select: { id: true },
+  });
+  const expiredIds = expiredRuns.map(({ id }) => id);
   await prisma.generationCandidate.updateMany({
     where: {
       status: "PROCESSING",
-      claimedAt: { lt: staleBefore },
+      OR: [
+        { leaseExpiresAt: { lt: now } },
+        { leaseExpiresAt: null, claimedAt: { lt: staleBefore } },
+        ...(expiredIds.length ? [{ runId: { in: expiredIds } }] : []),
+      ],
     },
-    data: { status: "PENDING", claimedAt: null, lastError: "Onderbroken batch automatisch vrijgegeven." },
+    data: { status: "PENDING", claimedAt: null, leaseOwner: null, leaseExpiresAt: null, lastError: "Onderbroken batch automatisch vrijgegeven." },
   });
+  for (const { id } of expiredRuns) {
+    await finishGenerationRun(id, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`).catch(async (error) => {
+      await prisma.generationRun.update({
+        where: { id },
+        data: {
+          status: JobStatus.PENDING,
+          currentPhase: "Eindopslag opnieuw proberen",
+          message: `De database kon de eindopslag nog niet voltooien; alle concepten zijn behouden. ${errorMessage(error)}`,
+          heartbeatAt: now,
+        },
+      });
+    });
+  }
   return prisma.generationRun.updateMany({
     where: {
       status: JobStatus.RUNNING,
       updatedAt: { lt: staleBefore },
+      ...(expiredIds.length ? { id: { notIn: expiredIds } } : {}),
     },
     data: {
       status: JobStatus.PENDING,
@@ -192,29 +370,95 @@ export async function markStaleGenerationRuns(now = new Date()) {
 }
 
 export async function latestGenerationRun() {
-  await markStaleGenerationRuns();
-  return prisma.generationRun.findFirst({ orderBy: { createdAt: "desc" } });
+  // Status polling is read-only. Recovery is handled by the queue watchdog and
+  // mutation paths; running the stale-run repair for every browser poll caused
+  // several extra writes and reads per second for as long as a tab stayed open.
+  return prisma.generationRun.findFirst({
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      status: true,
+      targetCount: true,
+      maxCandidates: true,
+      candidatesReserved: true,
+      candidatesFound: true,
+      candidatesChecked: true,
+      cheapRejected: true,
+      externallyValidated: true,
+      cacheHits: true,
+      stored: true,
+      validDrafts: true,
+      withoutWebsite: true,
+      manualReview: true,
+      duplicates: true,
+      existingLeads: true,
+      rejected: true,
+      websitesChecked: true,
+      websitesFound: true,
+      permanentlyClosed: true,
+      temporarilyClosed: true,
+      sourceFailures: true,
+      sourceRequests: true,
+      sourceSuccesses: true,
+      sourceEmptyResponses: true,
+      sourceTechnicalErrors: true,
+      processedSegments: true,
+      wrongLocationRejected: true,
+      insufficientDataRejected: true,
+
+      validCandidates: true,
+      databaseInsertAttempts: true,
+      databaseInsertFailures: true,
+      totalDurationMs: true,
+      consecutiveSourceFailures: true,
+      blockedBrussels: true,
+      blockedGhent: true,
+      invalidPhone: true,
+      emailsFound: true,
+      emailsMissing: true,
+      emailsInvalid: true,
+      emailRetries: true,
+      emailsExternallyVerified: true,
+      languageRejected: true,
+      multipleLocationsRejected: true,
+      chainRejected: true,
+      franchiseRejected: true,
+      sameNameMultipleAddresses: true,
+      samePhoneMultipleAddresses: true,
+      locationCountUncertain: true,
+      duplicateListingsMerged: true,
+      pendingCandidates: true,
+      retryQueueCount: true,
+      retriedCandidates: true,
+      batchNumber: true,
+      exhausted: true,
+      apiErrors: true,
+      warnings: true,
+      currentPhase: true,
+      currentSource: true,
+      currentRegion: true,
+      currentCategory: true,
+      currentTile: true,
+      remainingSegments: true,
+      progress: true,
+      message: true,
+      stopReason: true,
+      startedAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
 }
 
 export async function cancelGenerationRun(runId?: string) {
   const active = runId
     ? await prisma.generationRun.findFirst({ where: { id: runId, status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } } })
     : await prisma.generationRun.findFirst({ where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } }, orderBy: { createdAt: "desc" } });
-  if (!active) {
-    const latest = runId
-      ? await prisma.generationRun.findUnique({ where: { id: runId } })
-      : await prisma.generationRun.findFirst({ where: { continuousRequested: true }, orderBy: { createdAt: "desc" } });
-    if (!latest) return null;
-    return prisma.generationRun.update({
-      where: { id: latest.id },
-      data: { continuousRequested: false, cancelRequested: true },
-    });
-  }
+  if (!active) return null;
   return prisma.generationRun.update({
     where: { id: active.id },
     data: {
       cancelRequested: true,
-      continuousRequested: false,
       status: JobStatus.CANCELLED,
       progress: 100,
       currentPhase: "Geannuleerd",
@@ -234,7 +478,51 @@ async function logOverpassEvent(runId: string, city: string, category: string, e
   const entry = { jobId: runId, step: "source_fetch", ...event };
   const level = event.errorType ? "ERROR" : "INFO";
   console.info(JSON.stringify(entry));
-  await logSource(runId, "OPENSTREETMAP", level, JSON.stringify(entry), city, category);
+  await prisma.$transaction([
+    prisma.sourceLog.create({ data: {
+      runId, source: "OPENSTREETMAP", level, message: JSON.stringify(entry).slice(0, 500), city, category,
+    } }),
+    prisma.generationRun.update({
+      where: { id: runId },
+      data: {
+        sourceRequests: { increment: event.errorType === "cancelled" ? 0 : 1 },
+
+        sourceSuccesses: { increment: !event.errorType && typeof event.resultCount === "number" ? 1 : 0 },
+        sourceEmptyResponses: { increment: !event.errorType && event.resultCount === 0 ? 1 : 0 },
+        sourceTechnicalErrors: { increment: event.errorType && event.errorType !== "cancelled" ? 1 : 0 },
+      },
+    }),
+  ]);
+}
+
+async function recordBlockedCandidates(runId: string, candidates: Candidate[]) {
+  if (!candidates.length) return;
+  const rows = candidates.map((candidate) => ({
+    candidate,
+    detected: detectBlockedLocation(candidate as Candidate & Record<string, unknown>),
+  }));
+  await prisma.sourceLog.createMany({ data: rows.map(({ candidate, detected }) => ({
+    runId, source: candidate.source ?? "OPENSTREETMAP", level: "INFO", city: candidate.city, category: candidate.category,
+    message: JSON.stringify({ jobId: runId, step: "blocked_location_rejected", sourceRecordId: candidate.externalPlaceId,
+      area: detected.area, reason: detected.reason, matchedField: detected.matchedField }).slice(0, 500),
+  })) });
+  await Promise.allSettled(rows.map(({ candidate, detected }) => prisma.sourceRecord.upsert({
+    where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
+    create: {
+      source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId,
+      sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl, rawName: candidate.companyName,
+      rawAddress: candidate.formattedAddress ?? candidate.streetAddress,
+      rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email, rawEmailSource: candidate.emailSource,
+      rawWebsite: candidate.website, rawBusinessStatus: candidate.businessStatus,
+      decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+      processedAt: new Date(), decisionEvidence: decisionEvidence(candidate, { blockedReason: detected.reason }), payload: JSON.parse(JSON.stringify(candidate)),
+    },
+    update: {
+      decision: "rejected", reasonCode: detected.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+      processedAt: new Date(), decisionEvidence: decisionEvidence(candidate, { blockedReason: detected.reason }), payload: JSON.parse(JSON.stringify(candidate)),
+    },
+  })));
 }
 
 async function sourceRecord(candidate: Candidate) {
@@ -248,6 +536,8 @@ async function sourceRecord(candidate: Candidate) {
       rawName: candidate.companyName,
       rawAddress: candidate.streetAddress,
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email,
+      rawEmailSource: candidate.emailSource,
       rawWebsite: candidate.website,
       rawBusinessStatus: candidate.businessStatus,
       payload: JSON.parse(JSON.stringify(candidate)),
@@ -258,6 +548,8 @@ async function sourceRecord(candidate: Candidate) {
       rawName: candidate.companyName,
       rawAddress: candidate.streetAddress,
       rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+      rawEmail: candidate.email,
+      rawEmailSource: candidate.emailSource,
       rawWebsite: candidate.website,
       rawBusinessStatus: candidate.businessStatus,
       payload: JSON.parse(JSON.stringify(candidate)),
@@ -265,56 +557,241 @@ async function sourceRecord(candidate: Candidate) {
   });
 }
 
-async function markDecision(candidate: Candidate, decision: string, reasonCode: string, leadId?: string) {
+async function markDecision(candidate: Candidate, decision: string, reasonCode: string, leadId?: string, extraEvidence?: Record<string, unknown>) {
+  const evidence = decisionEvidence(candidate, extraEvidence);
   await prisma.sourceRecord.update({
     where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: { decision, reasonCode, processedAt: new Date(), leadId },
+    data: { decision, reasonCode, decisionEvidence: evidence, processedAt: new Date(), leadId },
   });
-  if (reasonCode.startsWith("SKIPPED_")) {
-    console.info(JSON.stringify({ step: "candidate_skipped", source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId, companyName: candidate.companyName, reasonCode }));
-  }
+  await prisma.searchCombination.updateMany({
+    where: {
+      country: candidate.country.toUpperCase(),
+      city: candidate.city,
+
+      category: candidate.category,
+      source: candidate.source ?? "OPENSTREETMAP",
+    },
+    data: {
+      candidatesChecked: { increment: 1 },
+      ...(decision === "retry" ? { retryCandidates: { increment: 1 } } : {}),
+      ...(["rejected", "skipped", "duplicate"].includes(decision) ? { rejectedCandidates: { increment: 1 } } : {}),
+      ...(decision === "stored" ? { lastSuccessAt: new Date() } : {}),
+    },
+  });
+  console.info(JSON.stringify({
+    step: "candidate_decision",
+    source: candidate.source ?? "OPENSTREETMAP",
+    sourceRecordId: candidate.externalPlaceId,
+    companyName: candidate.companyName,
+    decision,
+    reasonCode,
+    leadId,
+    databaseWriteConfirmed: decision === "stored" && Boolean(leadId),
+    checkResults: candidateCheckResults(candidate, extraEvidence),
+  }));
 }
+
+type KnownCandidateMatch = {
+  reason: string;
+  disposition: "duplicate" | "rejected";
+  leadId?: string;
+  matchedFields: string[];
+};
 
 async function knownCandidateReasons(candidates: Candidate[]) {
   const entries = candidates.map((candidate) => ({ candidate, keys: candidateDedupeKeys(candidate) }));
-  const fingerprints = [...new Set(entries.flatMap(({ keys }) => dedupeFingerprintValues(keys).map(({ fingerprint }) => fingerprint)))];
+  const fingerprints = [...new Set(entries.flatMap(({ keys }) => fingerprintValues(keys).map(({ fingerprint }) => fingerprint)))];
   const [sourceRecords, leads, suppressed, exclusions] = await Promise.all([
     prisma.sourceRecord.findMany({
       where: { OR: entries.map(({ candidate }) => ({ source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId })) },
-      select: { source: true, sourceRecordId: true, decision: true },
+      select: { source: true, sourceRecordId: true, decision: true, reasonCode: true, leadId: true },
     }),
     prisma.lead.findMany({
       where: { OR: [
         { externalPlaceId: { in: entries.map(({ candidate }) => candidate.externalPlaceId) } },
+        { googlePlaceId: { in: entries.flatMap(({ keys }) => keys.googlePlaceId ? [keys.googlePlaceId] : []) } },
         { normalizedPhoneNumber: { in: entries.flatMap(({ keys }) => keys.phone ? [keys.phone] : []) } },
-        { email: { in: entries.flatMap(({ keys }) => keys.email ? [keys.email] : []) } },
+        { email: { in: entries.flatMap(({ keys }) => keys.email ? [keys.email] : []), mode: "insensitive" } },
         { normalizedDomain: { in: entries.flatMap(({ keys }) => keys.domain ? [keys.domain] : []) } },
         ...entries.map(({ candidate }) => ({ normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) })),
       ] },
-      select: { externalPlaceId: true, normalizedPhoneNumber: true, email: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
+      select: { id: true, externalPlaceId: true, googlePlaceId: true, normalizedPhoneNumber: true, email: true, normalizedDomain: true, normalizedCompanyName: true, normalizedAddress: true },
     }),
     prisma.suppressedLead.findMany({ where: { fingerprint: { in: fingerprints } }, select: { fingerprint: true } }),
     prisma.leadExclusion.findMany({ where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }, select: { identityKey: true } }),
   ]);
-  const priorSources = new Set(sourceRecords
-    .filter(({ decision }) => decision && !["retry", "qualified_draft"].includes(decision))
-    .map(({ source, sourceRecordId }) => `${source}:${sourceRecordId}`));
   const blocked = new Set([...suppressed.map(({ fingerprint }) => fingerprint), ...exclusions.map(({ identityKey }) => identityKey)]);
-  return new Map(entries.map(({ candidate, keys }) => {
-    let reason: string | null = null;
-    if (priorSources.has(`${candidate.source ?? "OPENSTREETMAP"}:${candidate.externalPlaceId}`) || leads.some((lead) => lead.externalPlaceId === candidate.externalPlaceId)) reason = "duplicate_source_id";
-    else if (keys.domain && leads.some((lead) => lead.normalizedDomain === keys.domain)) reason = "duplicate_domain";
-    else if (keys.email && leads.some((lead) => lead.email === keys.email)) reason = "duplicate_email";
-    else if (keys.phone && leads.some((lead) => lead.normalizedPhoneNumber === keys.phone)) reason = "duplicate_phone";
-    else if (leads.some((lead) => lead.normalizedCompanyName === normalizeText(candidate.companyName) && lead.normalizedAddress === normalizeText(candidate.streetAddress))) reason = "duplicate_name_address";
-    else if (dedupeFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) reason = "previously_rejected";
-    return [candidate.externalPlaceId, reason] as const;
+  return new Map<string, KnownCandidateMatch | null>(entries.map(({ candidate, keys }) => {
+    let match: KnownCandidateMatch | null = null;
+    const priorSource = sourceRecords.find(({ source, sourceRecordId }) => source === (candidate.source ?? "OPENSTREETMAP") && sourceRecordId === candidate.externalPlaceId);
+    const sourceLead = leads.find((lead) => lead.externalPlaceId === candidate.externalPlaceId);
+    const googlePlaceLead = keys.googlePlaceId ? leads.find((lead) => lead.googlePlaceId === keys.googlePlaceId) : undefined;
+    const emailLead = keys.email ? leads.find((lead) => lead.email?.trim().toLowerCase() === keys.email) : undefined;
+    const domainLead = keys.domain ? leads.find((lead) => lead.normalizedDomain === keys.domain) : undefined;
+    const phoneLead = keys.phone ? leads.find((lead) => lead.normalizedPhoneNumber === keys.phone) : undefined;
+    const addressLead = leads.find((lead) => lead.normalizedCompanyName === normalizeText(candidate.companyName) && lead.normalizedAddress === normalizeText(candidate.streetAddress));
+    if (sourceLead || googlePlaceLead || priorSource?.leadId || ["stored", "duplicate"].includes(priorSource?.decision ?? "")) {
+      match = {
+        reason: googlePlaceLead ? "duplicate_google_place_id" : "duplicate_source_id",
+        disposition: "duplicate",
+        leadId: sourceLead?.id ?? googlePlaceLead?.id ?? priorSource?.leadId ?? undefined,
+        matchedFields: [googlePlaceLead ? "google_place_id" : "source_id"],
+      };
+    } else if (emailLead) match = { reason: "duplicate_email", disposition: "duplicate", leadId: emailLead.id, matchedFields: ["email"] };
+    else if (domainLead) match = { reason: "duplicate_domain", disposition: "duplicate", leadId: domainLead.id, matchedFields: ["domain"] };
+    else if (phoneLead) match = { reason: "duplicate_phone", disposition: "duplicate", leadId: phoneLead.id, matchedFields: ["phone"] };
+    else if (addressLead) match = { reason: "duplicate_name_address", disposition: "duplicate", leadId: addressLead.id, matchedFields: ["name", "address"] };
+    else if (["skipped", "rejected"].includes(priorSource?.decision ?? "") && [
+      "SKIPPED_PERMANENTLY_CLOSED",
+      "SKIPPED_HAS_WEBSITE",
+      "BUSINESS_CLOSED",
+      "REGION_NOT_ALLOWED",
+      "OWN_WEBSITE_FOUND",
+      "EXCLUDED_CATEGORY",
+
+      "BLOCKED_BRUSSELS",
+      "BLOCKED_GHENT",
+      "meerdere_vestigingen",
+      "vermoedelijke_keten",
+      "franchise",
+      "merk_of_netwerk",
+      "zelfde_naam_meerdere_adressen",
+      "zelfde_telefoon_meerdere_adressen",
+    ].includes(priorSource?.reasonCode ?? "")) {
+      match = { reason: priorSource?.reasonCode ?? "previously_rejected", disposition: "rejected", matchedFields: ["source_id"] };
+    } else if (strongIdentityFingerprintValues(keys).some(({ fingerprint }) => blocked.has(fingerprint))) {
+      match = { reason: "previously_rejected", disposition: "rejected", matchedFields: ["strong_identity"] };
+    }
+    return [candidate.externalPlaceId, match] as const;
   }));
+}
+
+function countSingleLocationDecision(stats: Stats, decision: SingleLocationDecision) {
+  if (decision.status === "MULTIPLE") stats.multipleLocationsRejected += 1;
+  if (["vermoedelijke_keten", "merk_of_netwerk"].includes(decision.reason)) stats.chainRejected += 1;
+  if (decision.reason === "franchise") stats.franchiseRejected += 1;
+  if (decision.reason === "zelfde_naam_meerdere_adressen") stats.sameNameMultipleAddresses += 1;
+  if (decision.reason === "zelfde_telefoon_meerdere_adressen") stats.samePhoneMultipleAddresses += 1;
+  if (decision.status === "UNCERTAIN") stats.locationCountUncertain += 1;
+  if (decision.reason === "dubbele_vermelding_zelfde_vestiging") stats.duplicateListingsMerged += Math.max(1, decision.duplicateExternalIds.length);
+}
+
+async function excludeSingleLocation(candidate: Candidate, reason: SingleLocationReason) {
+  const keys = candidateDedupeKeys(candidate);
+  await Promise.all(strongIdentityFingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
+    where: { identityKey },
+    create: {
+      identityKey,
+      source: candidate.source,
+      sourceRecordId: candidate.externalPlaceId,
+      phoneNormalized: keys.phone,
+      nameNormalized: organizationNameKey(candidate.companyName, candidate.city),
+      postalCode: candidate.postalCode,
+      reason,
+    },
+    update: { reason, expiresAt: null },
+  })));
+}
+
+function candidateFromLead(lead: {
+  externalPlaceId: string; companyName: string; phoneNumber: string; internationalPhoneNumber: string | null;
+  email: string | null; category: string; country: string; province: string | null; municipality: string | null;
+  city: string; postalCode: string | null; streetAddress: string; formattedAddress: string | null;
+  latitude: Prisma.Decimal; longitude: Prisma.Decimal; googleMapsUrl: string; sourceUrl: string | null;
+}) : Candidate {
+  return {
+    externalPlaceId: lead.externalPlaceId,
+    companyName: lead.companyName,
+    phoneNumber: lead.phoneNumber,
+    internationalPhoneNumber: lead.internationalPhoneNumber ?? undefined,
+    email: lead.email ?? undefined,
+    category: lead.category,
+    country: lead.country,
+    province: lead.province ?? undefined,
+    municipality: lead.municipality ?? undefined,
+    city: lead.city,
+    postalCode: lead.postalCode ?? undefined,
+    streetAddress: lead.streetAddress,
+    formattedAddress: lead.formattedAddress ?? undefined,
+    latitude: Number(lead.latitude),
+    longitude: Number(lead.longitude),
+    googleMapsUrl: lead.googleMapsUrl,
+    sourceUrl: lead.sourceUrl ?? undefined,
+  };
+}
+
+async function databaseLocationEvidence(candidate: Candidate) {
+  const phones = [candidate.phoneNumber, candidate.internationalPhoneNumber, ...(candidate.phoneNumbers ?? [])]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const normalizedPhones = normalizePhones(phones, candidate.country);
+  const [records, leads] = await Promise.all([
+    prisma.sourceRecord.findMany({
+      where: { OR: [
+        { rawName: { equals: candidate.companyName, mode: "insensitive" } },
+        ...(phones.length ? [{ rawPhone: { in: phones } }] : []),
+
+      ] },
+      select: { sourceRecordId: true, payload: true },
+      take: 100,
+    }),
+    prisma.lead.findMany({
+      where: { OR: [
+        { normalizedCompanyName: normalizeText(candidate.companyName) },
+        ...(normalizedPhones.length ? [{ normalizedPhoneNumber: { in: normalizedPhones } }] : []),
+      ] },
+      select: {
+        externalPlaceId: true, companyName: true, phoneNumber: true, internationalPhoneNumber: true, email: true,
+        category: true, country: true, province: true, municipality: true, city: true, postalCode: true,
+        streetAddress: true, formattedAddress: true, latitude: true, longitude: true, googleMapsUrl: true, sourceUrl: true,
+      },
+      take: 100,
+    }),
+  ]);
+  const sourceCandidates = records.flatMap((record): Candidate[] => {
+    const payload = record.payload as unknown as Candidate | null;
+    return payload?.externalPlaceId && payload.companyName ? [payload] : [];
+  });
+  return [...sourceCandidates, ...leads.map(candidateFromLead)];
+}
+
+async function verifySingleLocationForRun(runId: string, candidate: Candidate) {
+  const direct = directSingleLocationSignal(candidate);
+  if (direct) return { candidate: applySingleLocationDecision(candidate, direct), decision: direct, externallyValidated: false };
+  try {
+    const database = await databaseLocationEvidence(candidate);
+    const adapter = enabledSourceAdapters().find((source) => source.id === candidate.source && source.findIdentityMatches);
+    if (!adapter?.findIdentityMatches) {
+      const decision = assessSingleLocation(candidate, database, false);
+      return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: false };
+    }
+    const sourceMatches = await adapter.findIdentityMatches(candidate, (event) => logOverpassEvent(runId, candidate.city, candidate.category, event));
+    const related = [...new Map([...database, ...sourceMatches].map((item) => [item.externalPlaceId, item])).values()];
+    const decision = assessSingleLocation(candidate, related, true);
+    return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: true };
+  } catch (error) {
+    const decision = assessSingleLocation(candidate, [], false);
+    decision.evidence.push(`Identiteitscontrole mislukt: ${errorMessage(error)}`);
+    return { candidate: applySingleLocationDecision(candidate, decision), decision, externallyValidated: true };
+  }
+}
+
+async function logDuplicateMatch(runId: string, candidate: Candidate, match: KnownCandidateMatch | { reason: string; matchedExternalId?: string; matchedFields: string[] }) {
+  const event = {
+    jobId: runId,
+    step: "candidate_duplicate",
+    candidateId: candidate.externalPlaceId,
+    matchedLeadId: "leadId" in match ? match.leadId : undefined,
+    matchedCandidateId: "matchedExternalId" in match ? match.matchedExternalId : undefined,
+    matchedFields: match.matchedFields,
+    reason: match.reason,
+  };
+  console.info(JSON.stringify(event));
+  await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify(event), candidate.city, candidate.category);
 }
 
 async function excludeCandidate(candidate: Candidate, verification: WebsiteVerificationResult) {
   const keys = candidateDedupeKeys(candidate);
-  await Promise.all(dedupeFingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
+  await Promise.all(fingerprintValues(keys).map(({ fingerprint: identityKey }) => prisma.leadExclusion.upsert({
     where: { identityKey },
     create: {
       identityKey,
@@ -330,364 +807,636 @@ async function excludeCandidate(candidate: Candidate, verification: WebsiteVerif
   })));
 }
 
-type LeadWriteClient = typeof prisma | Prisma.TransactionClient;
-async function insertQualifiedLead(
-  db: LeadWriteClient,
+type LeadWriteClient = Prisma.TransactionClient;
+
+async function insertValidatedLead(
+
+  tx: LeadWriteClient,
   candidate: Candidate,
   verification: WebsiteVerificationResult,
-  contacts: DeliverableContacts,
   batchId?: string,
 ) {
-  const basic = validateCandidateBasics(candidate);
-  if (!basic.ok) throw new Error(`Kandidaat verloor kwalificatie tijdens definitieve opslag: ${basic.reason}`);
-  const dedupeFingerprint = fingerprintValues(candidateDedupeKeys(candidate))[0]?.fingerprint;
-  const lead = await db.lead.create({ data: {
-    externalPlaceId: basic.lead.externalPlaceId,
-    companyName: basic.lead.companyName,
-    normalizedCompanyName: basic.lead.normalizedCompanyName,
-    phoneNumber: basic.lead.phoneNumber || contacts.phone,
-    normalizedPhoneNumber: contacts.phone,
-    internationalPhoneNumber: basic.lead.internationalPhoneNumber || contacts.phone,
-    phoneValidationStatus: contacts.phoneStatus,
-    phoneValidationSource: contacts.phoneSource,
-    phoneValidatedAt: contacts.phoneValidatedAt,
-    email: contacts.email,
-    emailValidationStatus: contacts.emailStatus,
-    emailValidationSource: contacts.emailSource,
-    emailValidatedAt: contacts.emailValidatedAt,
-    category: basic.lead.category,
-    subCategory: basic.lead.subCategory,
-    country: basic.lead.country,
-    province: basic.lead.province,
-    municipality: basic.lead.municipality,
-    city: basic.lead.city,
-    postalCode: basic.lead.postalCode,
-    streetAddress: basic.lead.streetAddress,
-    houseNumber: basic.lead.houseNumber,
-    normalizedAddress: basic.lead.normalizedAddress,
-    latitude: new Prisma.Decimal(basic.lead.latitude),
-    longitude: new Prisma.Decimal(basic.lead.longitude),
-    googleMapsUrl: basic.lead.googleMapsUrl,
-    website: verification.website,
-    websiteUrl: verification.website,
-    normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
-    websiteStatus: verification.status,
-    websiteStatusReason: verification.reason,
-    websiteConfidence: verification.confidence,
-    websiteSource: "local_verification",
-    chatbotStatus: verification.chatbotStatus ?? (verification.website ? "UNKNOWN" : "NOT_PRESENT"),
-    chatbotStatusReason: verification.chatbotReason ?? (verification.website ? "Chatbotcontrole niet beschikbaar." : "Er is geen zelfstandige website waarop een chatwidget kan draaien."),
-    chainStatus: "INDEPENDENT",
-    qualificationReason: verification.reason,
-    batchId,
-    dedupeFingerprint,
-    sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
-    sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
-    leadType: verification.website
-      ? ["WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(verification.status) ? "OUTDATED_WEBSITE" : "IMPROVABLE_WEBSITE"
-      : "NO_WEBSITE",
-    opportunityScore: verification.website ? 80 : 90,
-    conversionQualityScore: 0,
-    businessStatus: basic.lead.businessStatus,
-    source: candidate.source ?? "OPENSTREETMAP",
-    confidenceScore: basic.lead.confidenceScore,
-    confidenceLevel: basic.lead.confidenceLevel,
-    status: "NEW",
-    isActive: true,
-    isFiltered: false,
-    filterReason: null,
-    evidence: { create: verification.evidence },
-    activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: { source: candidate.source, websiteStatus: verification.status, batchId } } },
-    history: { create: { event: "LEAD_GENERATED", details: { source: candidate.source, websiteStatus: verification.status, batchId } } },
-  } });
-  await db.sourceRecord.update({
-    where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
-    data: {
-      leadId: lead.id,
-      decision: "stored",
-      reasonCode: verification.status.toLowerCase(),
-      processedAt: new Date(),
-    },
-  });
-  for (const item of fingerprintValues(candidateDedupeKeys(candidate))) {
-    await db.duplicateFingerprint.upsert({
-      where: { fingerprint: item.fingerprint },
-      create: { ...item, leadId: lead.id },
-      update: { leadId: lead.id },
-    });
-  }
-  return lead;
-}
-
-export async function storeNewLead(candidate: Candidate, verification: WebsiteVerificationResult, batchId?: string) {
+  // Existing leads must remain untouched.
+  // Validation applies only to newly generated candidates.
+  if (candidate.singleLocationStatus !== "CONFIRMED") return {
+    stored: false,
+    reviewOnly: candidate.singleLocationStatus !== "MULTIPLE",
+    reason: candidate.singleLocationReason || "onzeker_aantal_vestigingen",
+    leadId: undefined,
+  };
+  const strict = validateStrictLead(candidate, verification);
+  if (!strict.valid) return { stored: false, reviewOnly: false, reason: strict.reasons[0], leadId: undefined };
   const gate = evaluateNewLeadGate(candidate, verification);
   if (!gate.allowed) return { stored: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
   const basic = validateCandidateBasics(candidate);
   if (!basic.ok) return { stored: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
-  const contacts = await validatePublicContacts(candidate);
-  if (!contacts.ok) return { stored: false, reviewOnly: false, reason: contacts.reason, leadId: undefined };
-  const lead = await insertQualifiedLead(prisma, candidate, verification, contacts, batchId);
-  return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
+  const verifiedEmail = Boolean(candidate.email?.trim() && candidate.emailMxVerified && candidate.emailSourceUrl?.trim());
+  const finalLocation = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
+  if (finalLocation.blocked) return {
+    stored: false, reviewOnly: false,
+    reason: finalLocation.area === "BRUSSELS" ? "BLOCKED_BRUSSELS" : "BLOCKED_GHENT",
+    leadId: undefined,
+  };
+  const identityFingerprints = strongIdentityFingerprintValues(candidateDedupeKeys(candidate));
+  const dedupeFingerprint = identityFingerprints.find(({ kind }) => kind === "phone")?.fingerprint
+    ?? identityFingerprints.find(({ kind }) => kind === "google_place_id")?.fingerprint
+    ?? identityFingerprints[0]?.fingerprint;
+    const lead = await tx.lead.create({ data: {
+      externalPlaceId: basic.lead.externalPlaceId,
+      companyName: basic.lead.companyName,
+      normalizedCompanyName: basic.lead.normalizedCompanyName,
+      phoneNumber: basic.lead.normalizedPhoneNumber!,
+      normalizedPhoneNumber: basic.lead.normalizedPhoneNumber,
+      internationalPhoneNumber: basic.lead.internationalPhoneNumber || basic.lead.normalizedPhoneNumber || null,
+      phoneValidationStatus: "VALID",
+      phoneValidationSource: candidate.sourceUrl || candidate.googleMapsUrl,
+      phoneValidatedAt: new Date(),
+      email: verifiedEmail ? basic.lead.email : null,
+      emailSource: verifiedEmail ? candidate.emailSource : null,
+      emailSourceUrl: verifiedEmail ? candidate.emailSourceUrl : null,
+      emailMxVerified: verifiedEmail,
+      emailVerifiedAt: verifiedEmail ? (candidate.emailVerifiedAt ? new Date(candidate.emailVerifiedAt) : new Date()) : null,
+      emailValidationStatus: verifiedEmail ? "DELIVERABLE" : "INVALID",
+      emailValidationSource: verifiedEmail ? candidate.emailSourceUrl : null,
+      emailValidatedAt: verifiedEmail ? (candidate.emailVerifiedAt ? new Date(candidate.emailVerifiedAt) : new Date()) : null,
+      category: basic.lead.category,
+      subCategory: basic.lead.subCategory,
+      country: basic.lead.country,
+      province: basic.lead.province,
+      municipality: basic.lead.municipality,
+      city: basic.lead.city,
+      postalCode: basic.lead.postalCode,
+      streetAddress: basic.lead.streetAddress,
+      formattedAddress: candidate.formattedAddress || basic.lead.streetAddress,
+      houseNumber: basic.lead.houseNumber,
+      normalizedAddress: basic.lead.normalizedAddress,
+      latitude: new Prisma.Decimal(basic.lead.latitude),
+      longitude: new Prisma.Decimal(basic.lead.longitude),
+      googleMapsUrl: candidate.googleBusinessProfileUrl || basic.lead.googleMapsUrl,
+      googlePlaceId: candidate.googlePlaceId,
+      googleBusinessProfileUrl: candidate.googleBusinessProfileUrl,
+      googleBusinessProfileVerified: Boolean(candidate.googleBusinessProfileVerified),
+      googleBusinessVerifiedAt: candidate.googleBusinessProfileVerified ? new Date() : null,
+      website: verification.website,
+      websiteUrl: verification.website,
+      normalizedDomain: verification.website ? new URL(verification.website).hostname.replace(/^www\./, "") : null,
+      websiteStatus: verification.status,
+      websiteStatusReason: verification.reason,
+      websiteConfidence: verification.confidence,
+      websiteSource: "local_verification",
+      sourceUrl: basic.lead.sourceUrl ?? basic.lead.googleMapsUrl,
+      sourceFetchedAt: basic.lead.fetchedAt ? new Date(basic.lead.fetchedAt) : new Date(),
+      leadType: verification.status === "NO_WEBSITE_CONFIRMED"
+        ? "NO_WEBSITE"
+        : verification.status === "IMPROVABLE_WEBSITE" ? "IMPROVABLE_WEBSITE" : "OUTDATED_WEBSITE",
+      opportunityScore: verification.status === "NO_WEBSITE_CONFIRMED" ? 90 : verification.status === "WEBSITE_BROKEN" ? 95 : 80,
+      conversionQualityScore: 0,
+
+      qualificationReason: verification.reason,
+      batchId,
+      dedupeFingerprint,
+      businessStatus: "OPERATIONAL",
+      statusConfidence: strict.active.confidence,
+      language: "nl",
+      languageConfidence: strict.language.confidence,
+      regionLanguage: candidate.regionLanguage || "Nederlands",
+      verificationSource: candidate.source ?? "OPENSTREETMAP",
+      singleLocationVerified: true,
+      singleLocationReason: candidate.singleLocationReason || "enkele_vestiging_bevestigd",
+      singleLocationVerifiedAt: new Date(),
+      socialUrls: (candidate.socialUrls ?? []) as Prisma.InputJsonValue,
+      source: candidate.source ?? "OPENSTREETMAP",
+      confidenceScore: basic.lead.confidenceScore,
+      confidenceLevel: basic.lead.confidenceLevel,
+      pipelineStageId: NEW_PIPELINE_STAGE_ID,
+      isActive: true,
+      isFiltered: false,
+      filterReason: null,
+      evidence: { create: [
+        ...verification.evidence,
+        ...(verifiedEmail ? [{
+          checkType: "BUSINESS_EMAIL",
+          result: "PUBLIC_MX_VERIFIED",
+          confidence: 95,
+          evidenceUrl: candidate.emailSourceUrl,
+          shortExplanation: `Openbaar zakelijk e-mailadres via ${candidate.emailSource || candidate.source || "openbare bron"}; MX-record bevestigd.`,
+        }] : []),
+      ] },
+      activities: { create: { type: "LEAD_GENERATED", summary: verification.reason, details: {
+        source: candidate.source, websiteStatus: verification.status, emailSource: verifiedEmail ? candidate.emailSource : null, emailMxVerified: verifiedEmail,
+      } } },
+      history: { create: { event: "LEAD_GENERATED", details: {
+        source: candidate.source, websiteStatus: verification.status, emailSource: verifiedEmail ? candidate.emailSource : null, emailMxVerified: verifiedEmail,
+      } } },
+    } });
+    await tx.sourceRecord.upsert({
+      where: { source_sourceRecordId: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId } },
+      create: {
+        source: candidate.source ?? "OPENSTREETMAP",
+        sourceRecordId: candidate.externalPlaceId,
+        sourceUrl: candidate.sourceUrl ?? candidate.googleMapsUrl,
+        fetchedAt: candidate.fetchedAt ? new Date(candidate.fetchedAt) : new Date(),
+        rawName: candidate.companyName,
+        rawAddress: candidate.streetAddress,
+        rawPhone: candidate.internationalPhoneNumber || candidate.phoneNumber,
+        rawEmail: candidate.email,
+        rawEmailSource: candidate.emailSource,
+        rawWebsite: candidate.website,
+        rawBusinessStatus: candidate.businessStatus,
+        decision: "stored",
+        reasonCode: verification.status.toLowerCase(),
+        processedAt: new Date(),
+        leadId: lead.id,
+        payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
+      },
+      update: {
+        leadId: lead.id, decision: "stored", reasonCode: verification.status.toLowerCase(), processedAt: new Date(),
+        rawEmail: candidate.email, rawEmailSource: candidate.emailSource,
+      },
+    });
+    await tx.validationCandidate.updateMany({
+      where: { source: candidate.source ?? "OPENSTREETMAP", sourceRecordId: candidate.externalPlaceId },
+      data: {
+        status: "PROMOTED_TO_LEAD",
+        promotedLeadId: lead.id,
+        failureReason: "Kandidaat transactioneel gepromoveerd naar pipelinefase Nieuw.",
+        websiteStatus: verification.status,
+        websiteConfidence: verification.confidence,
+        verificationEvidence: JSON.parse(JSON.stringify(verification.evidence)) as Prisma.InputJsonValue,
+        validatedAt: new Date(),
+        rejectedAt: null,
+      },
+    });
+    await tx.searchCombination.updateMany({
+      where: {
+        country: candidate.country.toUpperCase(), city: candidate.city,
+        category: candidate.category, source: candidate.source ?? "OPENSTREETMAP",
+      },
+
+      data: { validLeads: { increment: 1 } },
+    });
+    const candidateFingerprints = fingerprintValues(candidateDedupeKeys(candidate));
+    await tx.duplicateFingerprint.createMany({
+      data: candidateFingerprints.map((item) => ({ ...item, leadId: lead.id })),
+      skipDuplicates: true,
+    });
+    const conflictingIdentity = await tx.duplicateFingerprint.findFirst({
+      where: { fingerprint: { in: identityFingerprints.map(({ fingerprint }) => fingerprint) }, NOT: { leadId: lead.id } },
+      select: { fingerprint: true, leadId: true },
+    });
+    if (conflictingIdentity?.leadId) throw new DuplicateIdentityError(conflictingIdentity.fingerprint, conflictingIdentity.leadId);
+    const storedLead = await tx.lead.findUnique({
+      where: { id: lead.id },
+      select: {
+        id: true,
+        pipelineStageId: true,
+        isActive: true,
+        phoneNumber: true,
+        email: true,
+      },
+    });
+    if (
+      !storedLead
+      || storedLead.pipelineStageId !== NEW_PIPELINE_STAGE_ID
+      || !storedLead.isActive
+      || !storedLead.phoneNumber
+      || !storedLead.email
+    ) {
+      throw new Error("LEAD_DATABASE_READBACK_FAILED");
+    }
+    return { stored: true, reviewOnly: false, reason: verification.reason, leadId: lead.id };
 }
 
+export async function saveValidatedLead(candidate: Candidate, verification: WebsiteVerificationResult, batchId?: string) {
+  return prisma.$transaction(
+    (tx) => insertValidatedLead(tx, candidate, verification, batchId),
+    { maxWait: 5_000, timeout: 20_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+  );
+}
+
+export const storeNewLead = saveValidatedLead;
+
+type QualifiedDraftPayload = {
+  candidate: Candidate;
+  verification: WebsiteVerificationResult;
+};
+
 export async function stageQualifiedLead(runId: string, candidate: Candidate, verification: WebsiteVerificationResult) {
+  const strict = validateStrictLead(candidate, verification);
+  if (!strict.valid) return { staged: false, reviewOnly: false, reason: strict.reasons[0] };
   const gate = evaluateNewLeadGate(candidate, verification);
-  if (!gate.allowed) return { stored: false, staged: false, reviewOnly: false, reason: gate.reason, leadId: undefined };
+  if (!gate.allowed) return { staged: false, reviewOnly: gate.reason === "SKIPPED_WEBSITE_UNKNOWN", reason: gate.reason };
   const basic = validateCandidateBasics(candidate);
-  if (!basic.ok) return { stored: false, staged: false, reviewOnly: false, reason: basic.reason, leadId: undefined };
-  const contacts = await validatePublicContacts(candidate);
-  if (!contacts.ok) return { stored: false, staged: false, reviewOnly: false, reason: contacts.reason, leadId: undefined };
-  const fingerprint = fingerprintValues(candidateDedupeKeys(candidate))[0]?.fingerprint;
-  if (!fingerprint) return { stored: false, staged: false, reviewOnly: false, reason: "missing_fingerprint", leadId: undefined };
-  const payload = JSON.parse(JSON.stringify({ candidate, verification, contacts })) as Prisma.InputJsonValue;
-  const qualification = recheckQualifiedDraft(payload as unknown as QualifiedDraftPayload);
-  if (!qualification.valid) {
-    return { stored: false, staged: false, reviewOnly: qualification.retry, reason: qualification.reason, leadId: undefined };
-  }
+  if (!basic.ok) return { staged: false, reviewOnly: false, reason: basic.reason };
+  const identityFingerprints = strongIdentityFingerprintValues(candidateDedupeKeys(candidate));
+  const fingerprint = identityFingerprints.find(({ kind }) => kind === "phone")?.fingerprint
+    ?? identityFingerprints.find(({ kind }) => kind === "google_place_id")?.fingerprint
+    ?? identityFingerprints[0]?.fingerprint
+    ?? fingerprintValues(candidateDedupeKeys(candidate))[0]?.fingerprint;
+  if (!fingerprint) return { staged: false, reviewOnly: false, reason: "MISSING_IDENTITY_FINGERPRINT" };
   try {
     await prisma.qualifiedLeadDraft.upsert({
       where: { fingerprint },
       create: {
         runId,
         fingerprint,
-        payload,
+        payload: JSON.parse(JSON.stringify({ candidate, verification } satisfies QualifiedDraftPayload)) as Prisma.InputJsonValue,
         validatedAt: new Date(),
       },
-      update: { runId, payload, validatedAt: new Date() },
+      update: {
+        runId,
+        payload: JSON.parse(JSON.stringify({ candidate, verification } satisfies QualifiedDraftPayload)) as Prisma.InputJsonValue,
+        validatedAt: new Date(),
+      },
     });
+    return { staged: true, reviewOnly: false, reason: verification.reason };
   } catch (error) {
     if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      return { stored: false, staged: false, reviewOnly: false, reason: "duplicate_draft", leadId: undefined };
+      return { staged: false, reviewOnly: false, reason: "DUPLICATE_QUALIFIED_DRAFT" };
+
     }
     throw error;
   }
-  return { stored: false, staged: true, reviewOnly: false, reason: verification.reason, leadId: undefined };
 }
 
-async function duplicateReasonInTransaction(tx: Prisma.TransactionClient, candidate: Candidate) {
-  const keys = candidateDedupeKeys(candidate);
-  const lead = await tx.lead.findFirst({
-    where: {
-      OR: [
-        { externalPlaceId: candidate.externalPlaceId },
-        ...(keys.phone ? [{ normalizedPhoneNumber: keys.phone }] : []),
-        ...(keys.email ? [{ email: keys.email }] : []),
-        ...(keys.domain ? [{ normalizedDomain: keys.domain }] : []),
-        { normalizedCompanyName: normalizeText(candidate.companyName), normalizedAddress: normalizeText(candidate.streetAddress) },
-      ],
-    },
-    select: { id: true },
+function draftPayload(value: Prisma.JsonValue): QualifiedDraftPayload {
+  const payload = value as unknown as QualifiedDraftPayload;
+  if (!payload?.candidate?.externalPlaceId || !payload.verification?.status) throw new Error("INVALID_QUALIFIED_DRAFT");
+  return payload;
+}
+
+async function revalidateReusableDrafts(runId: string, runDeadline: number) {
+  const drafts = await prisma.qualifiedLeadDraft.findMany({
+    where: { runId, validatedAt: null },
+    orderBy: { createdAt: "asc" },
   });
-  if (lead) return "duplicate_lead";
-  const fingerprints = dedupeFingerprintValues(keys).map(({ fingerprint }) => fingerprint);
-  if (!fingerprints.length) return null;
-  const [suppressed, excluded] = await Promise.all([
-    tx.suppressedLead.findFirst({ where: { fingerprint: { in: fingerprints } }, select: { id: true } }),
-    tx.leadExclusion.findFirst({
-      where: { identityKey: { in: fingerprints }, OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
-      select: { id: true },
-    }),
-  ]);
-  return suppressed || excluded ? "previously_rejected" : null;
+  for (const draft of drafts) {
+    if (Date.now() >= runDeadline) break;
+    let payload: QualifiedDraftPayload;
+    try {
+      payload = draftPayload(draft.payload);
+    } catch {
+      continue;
+    }
+    const email = await validatePublicBusinessEmail(payload.candidate);
+    if (email.status !== "VALID") {
+      await queueValidationRetry({
+        runId,
+        candidate: payload.candidate,
+        verification: payload.verification,
+        reason: email.reason,
+      });
+      continue;
+    }
+    const candidate = {
+      ...payload.candidate,
+      email: email.email,
+      emailAddresses: [email.email],
+      emailSource: email.source,
+      emailSourceUrl: email.sourceUrl,
+      emailPubliclyListed: true,
+      emailMxVerified: true,
+      emailVerifiedAt: email.checkedAt,
+    };
+    if (
+      !validateStrictLead(candidate, payload.verification).valid
+      || !evaluateNewLeadGate(candidate, payload.verification).allowed
+      || !validateCandidateBasics(candidate).ok
+    ) {
+      await queueValidationRetry({
+        runId,
+        candidate,
+        verification: payload.verification,
+        reason: "QUALIFIED_DRAFT_REVALIDATION_FAILED",
+      });
+      continue;
+    }
+    await prisma.qualifiedLeadDraft.update({
+      where: { id: draft.id },
+      data: {
+        payload: JSON.parse(JSON.stringify({ candidate, verification: payload.verification } satisfies QualifiedDraftPayload)) as Prisma.InputJsonValue,
+        validatedAt: new Date(),
+      },
+    });
+  }
 }
 
-export type FinalizationResult = {
-  inserted: number;
-  totalStored: number;
-  invalid: number;
-  duplicates: number;
-};
+export async function finalizeQualifiedBatch(runId: string) {
+  const env = serverEnv();
+  const drafts = await prisma.qualifiedLeadDraft.findMany({
+    where: { runId },
+    orderBy: { createdAt: "asc" },
+  });
+  const staleBefore = Date.now() - env.QUALIFIED_DRAFT_MAX_AGE_HOURS * 60 * 60_000;
+  const eligible: Array<{ id: string; payload: QualifiedDraftPayload; identities: string[] }> = [];
+  const retryAfterCommit: Array<{ payload: QualifiedDraftPayload; reason: string }> = [];
+  const batchIdentityFingerprints = new Set<string>();
 
-/**
- * Publishes every independently valid draft in one serializable transaction.
- * Invalid and duplicate drafts remain durable; successful drafts are deleted
- * only in the same transaction that demonstrably created their Lead records.
- */
-export async function finalizeQualifiedDrafts(runId: string): Promise<FinalizationResult> {
-  return prisma.$transaction(async (tx) => {
-    const drafts = await tx.qualifiedLeadDraft.findMany({
-      where: { runId, validatedAt: { not: null } },
-      orderBy: { createdAt: "asc" },
-    });
-    let inserted = 0;
-    let invalid = 0;
-    let duplicates = 0;
-    for (const draft of drafts) {
-      const payload = draft.payload as unknown as QualifiedDraftPayload;
-      const qualification = recheckQualifiedDraft(payload);
-      if (!qualification.valid) {
-        invalid += 1;
-        await tx.generationCandidate.updateMany({
-          where: {
-            runId,
-            source: payload.candidate.source ?? "OPENSTREETMAP",
-            sourceRecordId: payload.candidate.externalPlaceId,
-          },
-          data: {
-            status: qualification.retry ? CandidateQueueStatus.PENDING : CandidateQueueStatus.PROCESSED,
-            claimedAt: null,
-            lastError: qualification.reason,
-          },
-        });
-        continue;
-      }
-      const duplicate = await duplicateReasonInTransaction(tx, payload.candidate);
-      if (duplicate) {
-        duplicates += 1;
-        await tx.generationCandidate.updateMany({
-          where: {
-            runId,
-            source: payload.candidate.source ?? "OPENSTREETMAP",
-            sourceRecordId: payload.candidate.externalPlaceId,
-          },
-          data: { status: CandidateQueueStatus.PROCESSED, claimedAt: null, lastError: duplicate },
-        });
-        continue;
-      }
-      const lead = await insertQualifiedLead(
-        tx,
-        payload.candidate,
-        payload.verification,
-        qualification.contacts,
-        runId,
-      );
-      const readBack = await tx.lead.findUnique({
-        where: { id: lead.id },
-        select: { id: true, status: true },
-      });
-      if (!readBack || readBack.status !== "NEW") throw new Error("LEAD_DATABASE_READBACK_FAILED");
-      await tx.qualifiedLeadDraft.delete({ where: { id: draft.id } });
-      inserted += 1;
+  for (const draft of drafts) {
+    let payload: QualifiedDraftPayload;
+
+    try {
+      payload = draftPayload(draft.payload);
+    } catch {
+      continue;
     }
+    if (!draft.validatedAt || draft.updatedAt.getTime() < staleBefore) {
+      retryAfterCommit.push({
+        payload,
+        reason: draft.validatedAt ? "QUALIFIED_DRAFT_EXPIRED" : "QUALIFIED_DRAFT_NOT_REVALIDATED",
+      });
+      continue;
+    }
+    const strict = validateStrictLead(payload.candidate, payload.verification);
+    const gate = evaluateNewLeadGate(payload.candidate, payload.verification);
+    const basic = validateCandidateBasics(payload.candidate);
+    if (!strict.valid || !gate.allowed || !basic.ok) {
+      const reason = !strict.valid
+        ? strict.reasons[0]
+        : !gate.allowed
+          ? gate.reason
+          : basic.ok ? "INVALID_QUALIFIED_DRAFT" : basic.reason;
+      retryAfterCommit.push({
+        payload,
+        reason,
+      });
+      continue;
+    }
+    const identities = strongIdentityFingerprintValues(candidateDedupeKeys(payload.candidate)).map(({ fingerprint }) => fingerprint);
+    const duplicateInBatch = identities.some((fingerprint) => batchIdentityFingerprints.has(fingerprint));
+    if (duplicateInBatch) continue;
+    identities.forEach((fingerprint) => batchIdentityFingerprints.add(fingerprint));
+    eligible.push({ id: draft.id, payload, identities });
+  }
+
+  const result = await prisma.$transaction(async (tx) => {
+    const publication = await publishQualifiedDrafts({
+      drafts: eligible.map((draft) => ({ id: draft.id, value: draft.payload, identityKeys: draft.identities })),
+      isValid: () => true,
+      duplicateExists: async (identityKeys) => Boolean(identityKeys.length && await tx.duplicateFingerprint.findFirst({
+        where: { fingerprint: { in: identityKeys }, leadId: { not: null } },
+        select: { leadId: true },
+      })),
+      insert: async (draft) => (await insertValidatedLead(tx, draft.value.candidate, draft.value.verification, runId)).stored,
+      removeStored: async (draftIds) => {
+        await tx.qualifiedLeadDraft.deleteMany({ where: { id: { in: draftIds } } });
+      },
+    });
     const totalStored = await tx.lead.count({ where: { batchId: runId } });
-    return { inserted, totalStored, invalid, duplicates };
-  }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 120_000 });
+    await tx.generationRun.update({
+      where: { id: runId },
+      data: { stored: totalStored, validDrafts: 0 },
+    });
+    return { inserted: publication.inserted, totalStored, validDrafts: 0, duplicates: publication.duplicates };
+  }, { maxWait: 10_000, timeout: 120_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+
+  await Promise.allSettled(retryAfterCommit.map(({ payload, reason }) => queueValidationRetry({
+    runId,
+    candidate: payload.candidate,
+    verification: payload.verification,
+    reason,
+  })));
+  return result;
 }
 
 function rejectionCode(reason: string) {
-  return ({ niet_operationeel: "likely_closed", keten_of_uitgesloten: "excluded_category", onbetrouwbare_status: "manual_verification_required" } as Record<string, string>)[reason] ?? "invalid_business";
+  return ({
+    niet_operationeel: "BUSINESS_CLOSED",
+    keten_of_uitgesloten: "EXCLUDED_CATEGORY",
+    onbetrouwbare_status: "BUSINESS_NOT_CONFIRMED_ACTIVE",
+  } as Record<string, string>)[reason] ?? (reason || "INVALID_BUSINESS");
 }
 
-async function nextSearchArea() {
-  const area = await prisma.coverageArea.findFirst({
-    where: { status: { not: "PAUSED" } },
-    orderBy: [{ lastScannedAt: { sort: "asc", nulls: "first" } }, { priority: "asc" }, { city: "asc" }, { category: "asc" }],
+function strictReasonMessage(reason: StrictLeadReason) {
+  return ({
+    BLOCKED_BRUSSELS: "Bedrijf ligt in Brussel of het Brussels Hoofdstedelijk Gewest",
+    BLOCKED_GHENT: "Bedrijf ligt in Gent of een Gentse deelgemeente",
+    PHONE_REQUIRED: "Geen geldig openbaar telefoonnummer",
+    EMAIL_REQUIRED: "Geen geldig openbaar zakelijk e-mailadres",
+    NO_PUBLIC_BUSINESS_PROFILE: "Geen aantoonbare openbare bedrijfsvermelding",
+    REGION_NOT_ALLOWED: "Buiten Nederland en België",
+
+    LANGUAGE_NOT_DUTCH: "Niet aantoonbaar Nederlandstalig",
+    BUSINESS_NOT_CONFIRMED_ACTIVE: "Status onbekend of niet positief actief bevestigd",
+    BUSINESS_CLOSED: "Bedrijf is gesloten",
+    ADDRESS_NOT_USABLE: "Geen volledig normaal adres beschikbaar",
+    WEBSITE_NOT_QUALIFIED: "Website is niet aantoonbaar afwezig, verouderd, kapot of duidelijk verbeterbaar",
+    OWN_WEBSITE_FOUND: "Heeft een eigen website",
+    SINGLE_LOCATION_NOT_CONFIRMED: "Aantal fysieke vestigingen is niet als precies één bevestigd",
+  } satisfies Record<StrictLeadReason, string>)[reason];
+}
+
+async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
+  const now = new Date();
+  const usedCityKeys = new Set([...attemptedSegments].map((segment) => segment.split(":").slice(0, 2).join(":")));
+  const activeCategories = await prisma.category.findMany({
+    where: { isActive: true },
+    select: { name: true, priority: true },
+    orderBy: [{ priority: "asc" }, { name: "asc" }],
   });
-  if (!area) return null;
+  if (!activeCategories.length) return { selected: null, totalStrategies: 0, attemptedStrategies: 0, remainingSegments: 0 };
+  const coverageWhere = {
+    status: { not: "PAUSED" as const },
+    category: { in: activeCategories.map(({ name }) => name) },
+    country: { in: ["NL", "BE"] },
+  };
+  // Cooldowns prioritize polite source use but are not durable exhaustion.
+  // Load the complete active NL search space so a later run can continue with
+  // another page/tag/element strategy even when every area was recently used.
+  const candidates = await prisma.coverageArea.findMany({
+    where: coverageWhere,
+    orderBy: [{ priority: "asc" }, { lastScannedAt: { sort: "asc", nulls: "first" } }, { city: "asc" }, { category: "asc" }],
+  });
+  const blockedAreaIds = candidates.filter((area) => detectBlockedLocation(area as typeof area & Record<string, unknown>).blocked).map(({ id }) => id);
+  if (blockedAreaIds.length) await prisma.coverageArea.updateMany({
+    where: { id: { in: blockedAreaIds } },
+    data: { status: "PAUSED", errorMessage: "Uitgesloten door harde locatieblokkade: Brussel/Gent" },
+  });
+  const areas = candidates.filter(({ id }) => !blockedAreaIds.includes(id));
+  const space = searchSpaceProgress(areas, attemptedSegments, OSM_SEARCH_CURSOR_COUNT);
+  if (!areas.length) return { selected: null, totalStrategies: 0, attemptedStrategies: 0, remainingSegments: 0 };
+  const combinations = await prisma.searchCombination.findMany({
+    where: { OR: areas.map((candidate) => ({ country: candidate.country, city: candidate.city, category: candidate.category, source: "OPENSTREETMAP" })) },
+    select: {
+      id: true, tileCursor: true,
+      country: true, city: true, category: true, useCount: true, candidatesFound: true, candidatesChecked: true,
+      validLeads: true, errorCount: true, averageDurationMs: true, lastUsedAt: true, lastSuccessAt: true, nextEligibleAt: true,
+    },
+  });
+  const combinationByArea = new Map(combinations.map((item) => [`${item.country}:${item.city}:${item.category}`, item]));
+  const firstCursorForRun = (area: { country: string; city: string; category: string }) => {
+    const prefix = `${area.country}:${area.city}:${area.category}:`;
+    return [...attemptedSegments].some((segment) => segment.startsWith(prefix))
+      ? combinationByArea.get(`${area.country}:${area.city}:${area.category}`)?.tileCursor
+        ?? initialOverpassSearchCursor(area.country, area.city, area.category)
+      : initialOverpassSearchCursor(area.country, area.city, area.category);
+  };
+  const availableAreas = areas.filter((area) => nextUnattemptedCursor({
+    area,
+    currentCursor: firstCursorForRun(area),
+    cursorCount: OSM_SEARCH_CURSOR_COUNT,
+    attemptedSegments,
+    cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
+  }) !== null);
+  if (!availableAreas.length) return {
+    selected: null,
+    totalStrategies: space.total,
+    attemptedStrategies: space.attempted,
+    remainingSegments: space.remaining,
+  };
+  const sequence = combinations.reduce((sum, item) => sum + item.useCount, 0);
+  const select = (candidateAreas: typeof areas, ignoreCooldowns = false) => selectAdaptiveSearchArea({
+    areas: candidateAreas, categories: activeCategories, combinations, sequence, now, ignoreCooldowns,
+  });
+  const unusedCities = availableAreas.filter((area) => !usedCityKeys.has(`${area.country}:${area.city}`));
+  // Historical yield and provider reliability lead. City spreading is only a
+  // tie-breaking pool after the productive combinations have had a chance.
+  const area = select(availableAreas)
+    ?? select(availableAreas, true)
+    ?? select(unusedCities, true);
+  if (!area) throw new Error("Er resteert zoekruimte, maar er kon geen zoeksegment worden geselecteerd.");
   const combination = await prisma.searchCombination.upsert({
+
     where: { country_city_category_source: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" } },
-    create: { country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP" },
-    update: {},
+    create: {
+      country: area.country, city: area.city, category: area.category, source: "OPENSTREETMAP",
+      region: area.region, searchTerm: area.category, provider: "OPENSTREETMAP", nextEligibleAt: now,
+      tileCursor: initialOverpassSearchCursor(area.country, area.city, area.category),
+    },
+    update: { region: area.region, searchTerm: area.category },
   });
-  return { area, combination, tileCursor: combination.tileCursor % OSM_SEARCH_CURSOR_COUNT };
+  const tileCursor = nextUnattemptedCursor({
+    area,
+    currentCursor: firstCursorForRun(area),
+    cursorCount: OSM_SEARCH_CURSOR_COUNT,
+    attemptedSegments,
+    cursorLabel: (cursor) => overpassSearchPlan(cursor).id,
+  });
+  if (tileCursor === null) return {
+    selected: null,
+    totalStrategies: space.total,
+    attemptedStrategies: space.total,
+    remainingSegments: 0,
+  };
+  return {
+    selected: { area, combination, tileCursor },
+    totalStrategies: space.total,
+    attemptedStrategies: space.attempted,
+    remainingSegments: Math.max(0, space.remaining - 1),
+  };
 }
 
-async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string) {
+async function terminalRun(runId: string, status: JobStatus, stats: Stats, places: string[], errors: string[], warnings: string[], reason: string, exhausted = false) {
+  const current = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: {
+    targetCount: true, maxCandidates: true, candidatesReserved: true, sourceRequests: true, sourceSuccesses: true,
+    sourceEmptyResponses: true, sourceTechnicalErrors: true, processedSegments: true, sourceFailures: true,
+    startedAt: true, createdAt: true,
+  } });
+  const summary = `Resultaten: zoeksegmenten ${current.processedSegments + current.sourceFailures}; geslaagde segmenten ${current.processedSegments}; tijdelijk onbereikbare segmenten ${current.sourceFailures}; endpointpogingen ${current.sourceRequests}; succesvolle responses ${current.sourceSuccesses}; geldige lege responses ${current.sourceEmptyResponses}; technische bronfouten ${current.sourceTechnicalErrors}; ruw gevonden ${stats.found}; uniek gereserveerd ${current.candidatesReserved}/${current.maxCandidates}; gecontroleerd ${stats.checked}; verkeerde locatie ${stats.wrongLocationRejected}; onvoldoende gegevens ${stats.insufficientDataRejected}; geldig vóór opslag ${stats.validCandidates}; databasepogingen ${stats.databaseInsertAttempts}; databasefouten ${stats.databaseInsertFailures}; met website ${stats.websitesFound}; gesloten ${stats.permanentlyClosed + stats.temporarilyClosed}; zonder geldig telefoonnummer ${stats.invalidPhone}; meerdere vestigingen ${stats.multipleLocationsRejected}; ketens/franchises ${stats.chainRejected + stats.franchiseRejected}; duplicaten ${stats.duplicates}; onzeker ${stats.manualReview}; definitief opgeslagen ${stats.stored}.`;
+  const finalReason = status === JobStatus.CANCELLED ? reason : `${reason} ${summary}`;
+  const durationMs = Date.now() - (current.startedAt ?? current.createdAt).getTime();
+  const event = { jobId: runId, step: "job_completed", status, durationMs, ...stats, sources: ["OPENSTREETMAP"], searchAreas: places };
+  console.info(JSON.stringify(event));
+  await logSource(runId, "GENERATION", status === JobStatus.FAILED ? "ERROR" : "INFO", JSON.stringify(event)).catch((error) => {
+    console.warn(JSON.stringify({ jobId: runId, step: "job_end_log_failed", message: errorMessage(error) }));
+  });
   return prisma.generationRun.update({
     where: { id: runId },
     data: {
       ...runData(stats, places, errors, warnings),
       status,
       progress: 100,
-      exhausted: (status === JobStatus.COMPLETE || status === JobStatus.PARTIALLY_COMPLETED) && stats.stored < (await prisma.generationRun.findUniqueOrThrow({ where: { id: runId }, select: { targetCount: true } })).targetCount,
+      exhausted,
       currentPhase: status === JobStatus.CANCELLED ? "Geannuleerd" : status === JobStatus.TIMED_OUT ? "Tijdslimiet bereikt" : status === JobStatus.FAILED ? "Mislukt" : status === JobStatus.PARTIALLY_COMPLETED ? "Gedeeltelijk afgerond" : "Voltooid",
-      message: reason,
-      stopReason: reason,
+      message: finalReason,
+      stopReason: finalReason,
+      totalDurationMs: durationMs,
       finishedAt: new Date(),
     },
   });
 }
 
-async function finishGenerationRunWithLockHeld(runId: string, cause: string) {
-  await prisma.generationCandidate.updateMany({
-    where: { runId, status: CandidateQueueStatus.PROCESSING },
-    data: {
-      status: CandidateQueueStatus.PENDING,
-      claimedAt: null,
-      lastError: "De deadline is bereikt voordat deze kandidatencontrole kon worden afgerond.",
-    },
-  });
-  const before = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
-  if (terminalStatuses.has(before.status)) return before;
-  const stats = statsFromRun(before);
-  const result = await finalizeQualifiedDrafts(runId);
-  const [pendingCandidates, retryQueueCount] = await Promise.all([
-    prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } }),
-    prisma.generationCandidate.count({
-      where: { runId, status: { in: [CandidateQueueStatus.PENDING, CandidateQueueStatus.FAILED] } },
-    }),
+async function finishGenerationRun(runId: string, reason: string, exhausted = false) {
+  const result = await finalizeQualifiedBatch(runId);
+  const [run, retryQueueCount] = await Promise.all([
+    prisma.generationRun.findUniqueOrThrow({ where: { id: runId } }),
+    retryQueueCountForRun(runId),
   ]);
+  const stats = statsFromRun(run);
   stats.stored = result.totalStored;
-  stats.validDrafts = 0;
+  stats.validDrafts = result.validDrafts;
   stats.duplicates += result.duplicates;
-  const places = stringArray(before.placesUsed);
-  const errors = stringArray(before.apiErrors);
-  const warnings = stringArray(before.warnings);
-  const status = terminalStatusForStoredLeads(result.totalStored) === "PARTIALLY_COMPLETED"
-    ? JobStatus.PARTIALLY_COMPLETED
-    : JobStatus.COMPLETE;
-  const leadText = result.totalStored === 1
-    ? "1 volledig gekwalificeerde lead is opgeslagen in pipelinefase Nieuw."
-    : `${result.totalStored} volledig gekwalificeerde leads zijn opgeslagen in pipelinefase Nieuw.`;
-  const retryText = retryQueueCount === 1
-    ? "1 onzekere kandidaat blijft bewaard voor een volgende run."
-    : `${retryQueueCount} onzekere kandidaten blijven bewaard voor een volgende run.`;
-  const prefix = "De zoekrun is veilig afgerond.";
-  const noResultReason = result.totalStored === 0
-    ? ` Er is niets opgeslagen omdat geen enkel concept bij de eindcontrole volledig aan alle kwalificatie-eisen voldeed.${result.invalid ? ` ${result.invalid} concepten vielen bij de eindcontrole af.` : ""}`
-    : "";
-  await terminalRun(
+  await prisma.generationRun.update({ where: { id: runId }, data: { retryQueueCount } });
+  const leadNoun = result.totalStored === 1 ? "lead is" : "leads zijn";
+  const retryNoun = retryQueueCount === 1 ? "kandidaat blijft" : "kandidaten blijven";
+  const finalReason = `${reason} ${result.totalStored} volledig gekwalificeerde ${leadNoun} opgeslagen in de pipeline. ${retryQueueCount} ${retryNoun} bewaard voor een gerichte hercontrole. ${run.processedSegments} zoeksegmenten slaagden en ${run.sourceFailures} bronsegmenten waren tijdelijk niet bereikbaar.`;
+  return terminalRun(
     runId,
-    status,
+    terminalStatusForStoredLeads(result.totalStored) as JobStatus,
     stats,
-    places,
-    errors,
-    warnings,
-    `${prefix} ${leadText} ${retryText}${noResultReason} ${cause}`.trim(),
+    stringArray(run.placesUsed),
+    stringArray(run.apiErrors),
+    stringArray(run.warnings),
+
+    finalReason,
+    exhausted,
   );
-  return prisma.generationRun.update({
-    where: { id: runId },
-    data: { pendingCandidates, retryQueueCount, validDrafts: 0 },
-  });
 }
 
-export async function finishGenerationRun(runId: string, cause: string, lockAlreadyHeld = false) {
-  if (lockAlreadyHeld) return finishGenerationRunWithLockHeld(runId, cause);
-  const env = serverEnv();
-  const lock = await acquireJobLock(
-    `lead-generation:${runId}`,
-    (env.GENERATION_BATCH_DURATION_SECONDS + 10) * 1000,
-  );
-  if (!lock) {
-    return prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
-  }
-  try {
-    return await finishGenerationRunWithLockHeld(runId, cause);
-  } finally {
-    await lock.release();
-  }
+async function retryQueueCountForRun(runId: string) {
+  const [generationCandidates, validationCandidates] = await Promise.all([
+    prisma.generationCandidate.count({
+      where: { runId, status: { in: [CandidateQueueStatus.PENDING, CandidateQueueStatus.PROCESSING, CandidateQueueStatus.FAILED] } },
+    }),
+    prisma.validationCandidate.count({
+      where: {
+        originRunId: runId,
+        status: {
+          in: [
+            ValidationCandidateStatus.RETRY_REQUIRED,
+            ValidationCandidateStatus.RETRY_SCHEDULED,
+            ValidationCandidateStatus.VALIDATING,
+          ],
+        },
+      },
+    }),
+  ]);
+  return Math.max(generationCandidates, validationCandidates);
 }
 
 function candidateFromQueue(row: GenerationCandidate): Candidate {
-  return unwrapGenerationCandidatePayload(row.payload, row.sourceRecordId);
+  const candidate = row.payload as unknown as Candidate;
+  if (!candidate || candidate.externalPlaceId !== row.sourceRecordId) throw new Error("Ongeldige kandidaatpayload in de persistente queue.");
+  return candidate;
 }
 
 async function finishQueueItem(id: string, status: CandidateQueueStatus, lastError?: string) {
   await prisma.generationCandidate.update({
     where: { id },
-    data: { status, lastError: lastError?.slice(0, 300) ?? null, claimedAt: null, processedAt: status === CandidateQueueStatus.PROCESSED || status === CandidateQueueStatus.FAILED ? new Date() : null },
+    data: {
+      status,
+      lastError: lastError?.slice(0, 300) ?? null,
+      claimedAt: null,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      nextEligibleAt: status === CandidateQueueStatus.PENDING ? new Date(Date.now() + 15 * 60_000) : new Date(),
+      processedAt: status === CandidateQueueStatus.PROCESSED || status === CandidateQueueStatus.FAILED ? new Date() : null,
+    },
   });
 }
 
 async function releaseQueueItems(ids: string[], reason: string) {
   if (!ids.length) return;
-  await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, lastError: reason } });
+  await prisma.generationCandidate.updateMany({ where: { id: { in: ids }, status: CandidateQueueStatus.PROCESSING }, data: { status: CandidateQueueStatus.PENDING, claimedAt: null, leaseOwner: null, leaseExpiresAt: null, lastError: reason } });
 }
 
-function progressFor(stats: Stats, target: number, processedSegments: number, maxSegments: number) {
-  const resultProgress = Math.min(72, Math.round((capacity(stats) / Math.max(1, target)) * 72));
-  const searchProgress = Math.min(18, Math.round((processedSegments / Math.max(1, maxSegments)) * 18));
-  return Math.min(94, Math.max(5, 5 + resultProgress + searchProgress));
+async function pendingQueueItems(runId: string, take: number) {
+  if (take <= 0) return [];
+  return prisma.generationCandidate.findMany({
+    where: { runId, status: CandidateQueueStatus.PENDING, nextEligibleAt: { lte: new Date() } },
+    orderBy: [{ qualityScore: "desc" }, { createdAt: "asc" }],
+    take,
+  });
 }
 
 export async function processGenerationBatch(runId: string) {
@@ -696,21 +1445,31 @@ export async function processGenerationBatch(runId: string) {
   let run = await prisma.generationRun.findUniqueOrThrow({ where: { id: runId } });
   if (terminalStatuses.has(run.status)) return run;
   const batchStartedAt = Date.now();
-  const deadline = batchStartedAt + env.GENERATION_BATCH_DURATION_SECONDS * 1000;
+  let deadline = batchStartedAt + env.GENERATION_BATCH_DURATION_SECONDS * 1000;
   const lock = await acquireJobLock(`lead-generation:${runId}`, (env.GENERATION_BATCH_DURATION_SECONDS + 10) * 1000);
   if (!lock) return run;
 
+  if (run.maxCandidates > MAX_CANDIDATES_PER_RUN) {
+    run = await prisma.generationRun.update({ where: { id: runId }, data: { maxCandidates: MAX_CANDIDATES_PER_RUN } });
+  }
   const stats = statsFromRun(run);
   const errors = stringArray(run.apiErrors);
   const warnings = stringArray(run.warnings);
   const places = stringArray(run.placesUsed);
   const dedupe = new RunDeduplicator();
   let retriedThisBatch = 0;
+
   let validationDurationMs = 0;
   let databaseDurationMs = 0;
   let batchMessage: string | null = null;
+  let consecutiveSourceFailures = run.consecutiveSourceFailures;
+  const originalStartedAt = run.startedAt ?? run.createdAt;
+  const runDeadline = originalStartedAt.getTime() + env.GENERATION_MAX_RUN_MINUTES * 60_000;
 
   try {
+    if (Date.now() < runDeadline) {
+      await revalidateReusableDrafts(runId, runDeadline);
+    }
     const [draftCount, finalizedCount] = await Promise.all([
       prisma.qualifiedLeadDraft.count({ where: { runId, validatedAt: { not: null } } }),
       prisma.lead.count({ where: { batchId: runId } }),
@@ -721,7 +1480,7 @@ export async function processGenerationBatch(runId: string) {
       where: { id: runId },
       data: {
         status: JobStatus.RUNNING,
-        startedAt: run.startedAt,
+        startedAt: originalStartedAt,
         batchNumber: { increment: 1 },
         currentPhase: "Zoekopdracht valideren",
         progress: Math.max(run.progress, phaseProgress("validate")),
@@ -729,112 +1488,252 @@ export async function processGenerationBatch(runId: string) {
         heartbeatAt: new Date(),
       },
     });
-    if (finalizedCount >= run.targetCount) {
-      return finishGenerationRun(runId, "Het maximum van 10 volledig gekwalificeerde leads is bereikt.", true);
+    if (finalizedCount > 0) {
+      return finishGenerationRun(runId, "Een onderbroken eindopslag is veilig hervat.");
     }
+    if (draftCount >= run.targetCount) {
+      return finishGenerationRun(runId, `Het maximum van ${run.targetCount} volledig gekwalificeerde kandidaten is bereikt.`);
+    }
+    deadline = Math.min(deadline, runDeadline);
     if (run.cancelRequested) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd.");
-    if (isGenerationRunExpired(run.startedAt, 0)) {
-      return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt vóór een nieuwe kandidatenbatch.", true);
+    if (isGenerationRunExpired(run.startedAt, env.GENERATION_MAX_RUN_MINUTES)) {
+      return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
     }
-    let queued = await prisma.generationCandidate.findMany({
-      where: { runId, status: CandidateQueueStatus.PENDING },
-      orderBy: [{ attempts: "asc" }, { createdAt: "asc" }],
-      take: env.GENERATION_BATCH_CANDIDATES,
-    });
 
-    if (shouldFetchFreshSource({
-      queuedCount: queued.length,
-      queuedOnlyRetries: queued.length > 0 && queued.every(({ attempts }) => attempts > 0),
-      batchNumber: run.batchNumber,
-    })) {
-      if (run.processedSegments >= env.GENERATION_MAX_SOURCE_CALLS) {
-        return finishGenerationRun(runId, "De beschikbare openbare zoeksegmenten voor deze run zijn verwerkt.", true);
+    const queueTake = () => Math.min(
+      env.GENERATION_BATCH_CANDIDATES,
+      MAX_CANDIDATES_PER_BATCH,
+      Math.max(0, run.maxCandidates - stats.checked),
+    );
+    let queued = await pendingQueueItems(runId, queueTake());
+
+    let retryQuotaRemaining = generationRetryImportLimit(
+      env.GENERATION_BATCH_CANDIDATES,
+      run.retriedCandidates,
+      Math.min(12, Math.max(0, run.maxCandidates - run.candidatesReserved)),
+    );
+
+    if (!queued.length && retryQuotaRemaining > 0) {
+      const carriedCandidates = await importInterruptedGenerationCandidates(runId, retryQuotaRemaining);
+      if (carriedCandidates) {
+        stats.found += carriedCandidates;
+        retriedThisBatch += carriedCandidates;
+        run.candidatesReserved += carriedCandidates;
+        await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: carriedCandidates } } });
+        queued = await pendingQueueItems(runId, queueTake());
+        batchMessage = `${carriedCandidates} nog niet gecontroleerde kandidaten uit een onderbroken run zijn veilig hervat.`;
+        retryQuotaRemaining -= carriedCandidates;
+      }
+    }
+
+    if (!queued.length && retryQuotaRemaining > 0) {
+      const importedRetries = await importDueValidationRetries(runId, retryQuotaRemaining);
+      if (importedRetries) {
+        retriedThisBatch += importedRetries;
+        run.candidatesReserved += importedRetries;
+        await prisma.generationRun.update({ where: { id: runId }, data: { candidatesReserved: { increment: importedRetries } } });
+        queued = await pendingQueueItems(runId, queueTake());
+        batchMessage = `${importedRetries} onzekere kandidaten zijn uit de duurzame retryqueue opnieuw ingepland.`;
+      }
+    }
+
+    if (!queued.length) {
+      const pendingCandidates = await prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } });
+
+      if (stats.checked >= run.maxCandidates) {
+        return finishGenerationRun(runId, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+      }
+      if (run.candidatesReserved >= run.maxCandidates) {
+        return finishGenerationRun(runId, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+      }
+      if (shouldStopForSourceOutage(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
+        if (capacity(stats)) return finishGenerationRun(runId, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar.`);
+        return terminalRun(runId, JobStatus.FAILED, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. Er waren geen volledig geldige concepten om op te slaan; bestaande gegevens en retrykandidaten zijn behouden.`);
+      }
+      if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS) {
+        return finishGenerationRun(runId, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd; er worden in deze run geen nieuwe bronverzoeken gestart.`);
+      }
+      if (Date.now() >= runDeadline) {
+        return finishGenerationRun(runId, timeLimitReason(stats, pendingCandidates, env.GENERATION_MAX_RUN_MINUTES, consecutiveSourceFailures));
       }
       const adapters = enabledSourceAdapters();
       if (!adapters.length) throw new Error("Er is geen gratis databron ingeschakeld.");
-      const selected = await nextSearchArea();
-      if (!selected) return finishGenerationRun(runId, "Er zijn geen openbare zoekgebieden beschikbaar.", true);
-      const { area, combination, tileCursor } = selected;
+      const searchPlan = await nextSearchArea(new Set(places));
+      if (!searchPlan.selected) {
+        const reason = searchPlan.totalStrategies === 0
+          ? "Er zijn geen actieve Nederlandse openbare zoekgebieden en branches geconfigureerd; er zijn geen bronverzoeken uitgevoerd."
+          : stats.sourceFailures > 0
+            ? `Er zijn in deze run geen onbeproefde zoekstrategieën meer, maar ${stats.sourceFailures} mislukte bronbatches zijn niet als succesvol verwerkt gemarkeerd en blijven beschikbaar voor een vervolgrun.`
+            : `${exhaustedSearchAreasReason({ candidatesChecked: stats.checked, stored: stats.stored, rejected: stats.rejected, manualReview: stats.manualReview })} ${searchPlan.attemptedStrategies}/${searchPlan.totalStrategies} unieke zoekstrategieën zijn in deze run succesvol uitgevoerd.`;
+        if (capacity(stats)) return finishGenerationRun(runId, reason, stats.sourceFailures === 0);
+        return terminalRun(runId, JobStatus.FAILED, stats, places, errors, warnings, reason, stats.sourceFailures === 0);
+      }
+      const { area, combination, tileCursor } = searchPlan.selected;
+      const { remainingSegments } = searchPlan;
       const adapter = adapters[0];
       const region = `${area.city}, ${area.country}`;
       const tileLabel = overpassSearchPlan(tileCursor).id;
-      const segment = `${area.country}:${area.city}:${area.category}:${tileLabel}`;
+      const segment = searchStrategySegment(area, tileCursor, (cursor) => overpassSearchPlan(cursor).id);
+      // Record the attempt before the external request. Failed public-source
+      // calls must also rotate the run to another city instead of repeatedly
+      // consuming the time budget on the same temporarily unhealthy area.
+      if (!places.includes(segment)) places.push(segment);
+      const sourceStartedAt = Date.now();
 
+      run.progress = Math.max(run.progress, phaseProgress("source"));
       await prisma.generationRun.update({ where: { id: runId }, data: {
         currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: adapter.id, currentRegion: region,
         currentCategory: area.category, currentTile: tileLabel, continuationCursor: segment,
-        message: `Zoektegel ${tileLabel} voor ${area.category} in ${region} wordt met een eigen requesttimeout opgehaald.`, heartbeatAt: new Date(),
+        remainingSegments, placesUsed: places,
+        progress: run.progress,
+        message: `Nieuwe zoekstrategie ${searchPlan.attemptedStrategies + 1}/${searchPlan.totalStrategies} voor deze run: ${tileLabel}, ${area.category} in ${region}.`, heartbeatAt: new Date(),
       } });
+      await logSource(runId, adapter.id, "INFO", JSON.stringify({
+        jobId: runId,
+        step: "search_segment_reserved",
+        segment,
+        attemptedStrategies: searchPlan.attemptedStrategies + 1,
+        totalStrategies: searchPlan.totalStrategies,
+        remainingSegments,
+      }), area.city, area.category);
 
+      if (Date.now() >= runDeadline) {
+        return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
+      }
       try {
-        if (isGenerationRunExpired(run.startedAt, 0)) {
-          return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt vóór een nieuw bronverzoek.", true);
-        }
         const result = await adapter.searchBusinesses({
           country: area.country, city: area.city, latitude: Number(area.latitude), longitude: Number(area.longitude),
           radius: area.radius, category: area.category, tileCursor,
           onEvent: (event) => logOverpassEvent(runId, area.city, area.category, event),
         });
-        const queuedResult = await prisma.generationCandidate.createMany({
-          data: result.candidates.map((candidate) => ({
-            runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
-            payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
-          })),
-          skipDuplicates: true,
-        });
-        stats.found += queuedResult.count;
         const attemptDelta = sourceAttemptDelta(true);
+        const sourceDurationMs = Date.now() - sourceStartedAt;
         warnings.push(...result.warnings);
-        if (!places.includes(segment)) places.push(segment);
-        await prisma.$transaction([
-          prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date(), resultsFound: { increment: queuedResult.count } } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: {
-            useCount: { increment: 1 }, candidatesFound: { increment: queuedResult.count }, lastUsedAt: new Date(),
-            tileCursor: nextOverpassTileCursor(tileCursor, true), lastTile: result.tile, lastError: null,
-          } }),
-          prisma.generationRun.update({ where: { id: runId }, data: { processedSegments: { increment: attemptDelta.processedSegments }, lastError: null } }),
-        ]);
+        const normalizedCandidates = result.candidates.map((candidate) => ({
+          ...candidate,
+          province: candidate.province || area.region,
+          municipality: candidate.municipality || area.municipality || undefined,
+          regionLanguage: candidate.regionLanguage || (area.country === "BE" ? "Vlaanderen" : "Nederland"),
+        }));
+        const blockedCandidates = normalizedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).blocked);
+        const allowedCandidates = normalizedCandidates.filter((candidate) => !detectBlockedLocation(candidate as Candidate & Record<string, unknown>).blocked);
+        stats.blockedBrussels += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "BRUSSELS").length;
+        stats.blockedGhent += blockedCandidates.filter((candidate) => detectBlockedLocation(candidate as Candidate & Record<string, unknown>).area === "GHENT").length;
+        stats.rejected += blockedCandidates.length;
+
+        await recordBlockedCandidates(runId, blockedCandidates);
+        const bufferedCandidates = allowedCandidates
+          .sort((left, right) => candidateQualityScore(right) - candidateQualityScore(left))
+          .slice(0, env.LEAD_CANDIDATE_BUFFER);
+        const knownAtSource = bufferedCandidates.length ? await knownCandidateReasons(bufferedCandidates) : new Map<string, KnownCandidateMatch | null>();
+        const novelCandidatesBeforeCap = bufferedCandidates.filter((candidate) => {
+          const known = knownAtSource.get(candidate.externalPlaceId);
+          if (!known) return true;
+          if (known.disposition === "rejected") stats.rejected += 1;
+          else { stats.duplicates += 1; stats.existing += 1; }
+          return false;
+        });
+        stats.cacheHits += bufferedCandidates.length - novelCandidatesBeforeCap.length;
+        stats.cheapRejected += bufferedCandidates.length - novelCandidatesBeforeCap.length;
+        const novelCandidates = novelCandidatesBeforeCap.slice(0, candidateReservationLimit(run.maxCandidates, run.candidatesReserved, novelCandidatesBeforeCap.length));
+        const queuedResult = await prisma.$transaction(async (tx) => {
+          const inserted = await tx.generationCandidate.createMany({
+            data: novelCandidates.map((candidate) => ({
+              runId, source: candidate.source ?? adapter.id, sourceRecordId: candidate.externalPlaceId, segment,
+              payload: JSON.parse(JSON.stringify(candidate)) as Prisma.InputJsonValue,
+              qualityScore: candidateQualityScore(candidate),
+            })),
+            skipDuplicates: true,
+          });
+          const nextEligibleAt = new Date(Date.now() + lowYieldCooldownMs(combination.useCount + 1, combination.validLeads));
+          await tx.coverageArea.update({ where: { id: area.id }, data: {
+            lastScannedAt: new Date(), nextScanAt: nextEligibleAt, resultsFound: { increment: result.candidates.length }, errorMessage: null,
+          } });
+          await tx.searchCombination.update({ where: { id: combination.id }, data: {
+            useCount: { increment: 1 }, candidatesFound: { increment: result.candidates.length }, lastUsedAt: new Date(),
+            region: area.region, searchTerm: area.category, provider: result.sourceUrl ?? adapter.id,
+            totalDurationMs: { increment: BigInt(sourceDurationMs) },
+             averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
+             tileCursor: nextOverpassTileCursor(tileCursor),
+             lastTile: result.tile, lastError: null, lastSuccessAt: new Date(), nextEligibleAt,
+          } });
+          await tx.generationRun.update({ where: { id: runId }, data: {
+            processedSegments: { increment: attemptDelta.processedSegments },
+            candidatesReserved: { increment: inserted.count },
+            consecutiveSourceFailures: 0,
+            lastError: null,
+          } });
+          return inserted;
+        });
+        const queueDuplicates = Math.max(0, novelCandidates.length - queuedResult.count);
+        stats.duplicates += queueDuplicates;
+        stats.existing += queueDuplicates;
+        stats.found += result.candidates.length;
         run.processedSegments += attemptDelta.processedSegments;
-        batchMessage = `${queuedResult.count} nieuwe kandidaten zijn duurzaam in de controlequeue gezet.`;
+        run.candidatesReserved += queuedResult.count;
+        consecutiveSourceFailures = nextConsecutiveSourceFailures(consecutiveSourceFailures, true);
+        batchMessage = `${result.candidates.length} kandidaten gevonden; ${blockedCandidates.length} uit Brussel/Gent afgewezen, ${queueDuplicates} reeds in deze run aanwezig en ${queuedResult.count} nog onbekende kandidaten duurzaam in de controlequeue gezet.`;
       } catch (error) {
         const message = errorMessage(error);
+        const sourceDurationMs = Date.now() - sourceStartedAt;
+        if (error instanceof SourceCircuitOpenError) {
+          const segmentIndex = places.lastIndexOf(segment);
+          if (segmentIndex >= 0) places.splice(segmentIndex, 1);
+          return prisma.generationRun.update({
+            where: { id: runId },
+            data: {
+              ...runData(stats, places, errors, warnings),
+              status: JobStatus.RUNNING,
+              continuationCursor: segment,
+              lastError: `SOURCE_CIRCUIT_OPEN:${error.retryAfterMs}`,
+              currentPhase: "Bronhosts koelen kort af",
+              message: "Alle bronhosts zitten tijdelijk in hun afkoelperiode. Dezelfde zoekcursor wordt over 30 seconden opnieuw ingepland zonder het foutbudget te verbruiken.",
+            },
+          });
+        }
         const attemptDelta = sourceAttemptDelta(false);
         stats.sourceFailures += attemptDelta.sourceFailures;
+        consecutiveSourceFailures = nextConsecutiveSourceFailures(consecutiveSourceFailures, false);
         errors.push(`${adapter.id} / ${region} / ${area.category}: ${message}`);
         batchMessage = `Deze bronbatch mislukte zonder eerdere resultaten te verliezen. De volgende zoekcombinatie wordt geprobeerd.`;
         await Promise.all([
           logSource(runId, adapter.id, "ERROR", JSON.stringify({ jobId: runId, batchNumber: run.batchNumber, step: "source_failed", region, category: area.category, tile: tileLabel, errorCode: "SOURCE_ERROR", message }), area.city, area.category),
-          prisma.coverageArea.update({ where: { id: area.id }, data: { lastScannedAt: new Date() } }),
-          prisma.searchCombination.update({ where: { id: combination.id }, data: { useCount: { increment: 1 }, lastUsedAt: new Date(), tileCursor: nextOverpassTileCursor(tileCursor, false), lastTile: tileLabel, lastError: message } }),
-          prisma.generationRun.update({ where: { id: runId }, data: { lastError: message } }),
+          prisma.coverageArea.update({ where: { id: area.id }, data: {
+            nextScanAt: new Date(Date.now() + 5 * 60_000), errorMessage: `Tijdelijke bronfout: ${message}`,
+          } }),
+
+          prisma.searchCombination.update({ where: { id: combination.id }, data: {
+            errorCount: { increment: 1 }, lastUsedAt: new Date(),
+            region: area.region, searchTerm: area.category, provider: adapter.id,
+            totalDurationMs: { increment: BigInt(sourceDurationMs) },
+            averageDurationMs: Math.round((Number(combination.totalDurationMs) + sourceDurationMs) / (combination.useCount + 1)),
+            lastTile: tileLabel, lastError: message,
+            nextEligibleAt: new Date(Date.now() + 5 * 60_000),
+          } }),
+          prisma.generationRun.update({ where: { id: runId }, data: {
+            consecutiveSourceFailures: { increment: 1 },
+            lastError: message,
+          } }),
         ]);
-        if (shouldStopForSourceFailures({ sourceFailures: stats.sourceFailures, processedSegments: run.processedSegments, maxFailures: env.GENERATION_MAX_SOURCE_FAILURES })) {
-          if (stats.validDrafts > 0) {
-            return finishGenerationRun(runId, `De gratis openbare bron bleef na ${stats.sourceFailures} pogingen onbereikbaar.`, true);
-          }
-          return terminalRun(
-            runId,
-            JobStatus.FAILED,
-            stats,
-            places,
-            errors,
-            warnings,
-            `Er zijn geen leads opgeslagen. De gratis openbare bron bleef na ${stats.sourceFailures} pogingen overwegend onbereikbaar; kandidaten blijven bewaard voor een volgende poging.`,
-          );
+        if (sourceFailureWarningDue(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES)) {
+          warnings.push(`${consecutiveSourceFailures} openbare bronbatches reageerden achter elkaar niet; de run gaat door met andere plaatsen, branches, tegels en hosts.`);
         }
       }
 
-      queued = await prisma.generationCandidate.findMany({
-        where: { runId, status: CandidateQueueStatus.PENDING },
-        orderBy: [{ attempts: "asc" }, { createdAt: "asc" }],
-        take: env.GENERATION_BATCH_CANDIDATES,
-      });
+      queued = await pendingQueueItems(runId, queueTake());
     }
 
+    if (Date.now() >= runDeadline) {
+      return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
+    }
     if (queued.length) {
+      await prisma.generationRun.update({ where: { id: runId }, data: {
+        currentPhase: "Kandidaten valideren", progress: run.progress,
+        message: `${queued.length} kandidaten worden gecontroleerd op status, contactgegevens en duplicaten.`, heartbeatAt: new Date(),
+      } });
       await prisma.generationCandidate.updateMany({
         where: { id: { in: queued.map(({ id }) => id) }, status: CandidateQueueStatus.PENDING },
-        data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date() },
+        data: { status: CandidateQueueStatus.PROCESSING, claimedAt: new Date(), leaseOwner: `${runId}:${run.batchNumber}`, leaseExpiresAt: new Date(deadline + 10_000) },
       });
     }
 
@@ -848,83 +1747,267 @@ export async function processGenerationBatch(runId: string) {
     }
 
     const verificationWork: Array<{ row: GenerationCandidate; candidate: Candidate }> = [];
+    const locationWork: Array<{ row: GenerationCandidate; candidate: Candidate }> = [];
     const releaseIds: string[] = [];
-    const knownReasons = queued.length ? await knownCandidateReasons(queued.map(candidateFromQueue)) : new Map<string, string | null>();
+    const knownReasons = queued.length ? await knownCandidateReasons(queued.map(candidateFromQueue)) : new Map<string, KnownCandidateMatch | null>();
     for (const row of queued) {
-      if (isGenerationRunExpired(run.startedAt, 0)) {
-        releaseIds.push(row.id);
-        continue;
+      if (Date.now() >= runDeadline) {
+        await releaseQueueItems(queued.map(({ id }) => id), "De tienminutentermijn is verstreken vóór een nieuwe kandidatencontrole.");
+        return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
       }
-      if (isBatchDeadlineNear(deadline) || verificationWork.length >= env.GENERATION_BATCH_WEBSITE_CHECKS || capacity(stats) + verificationWork.length >= run.targetCount) {
+      if (stats.checked >= run.maxCandidates || isBatchDeadlineNear(deadline) || locationWork.length >= locationValidationBatchLimit(env.GENERATION_BATCH_WEBSITE_CHECKS) || capacity(stats) + locationWork.length >= run.targetCount) {
         releaseIds.push(row.id);
         continue;
       }
       await prisma.generationCandidate.update({ where: { id: row.id }, data: { attempts: { increment: 1 } } });
-      const candidate = candidateFromQueue(row);
+      let candidate = candidateFromQueue(row);
       if (row.attempts === 0) stats.checked += 1;
       await sourceRecord(candidate);
       if (isPermanentlyClosed(candidate)) {
         stats.permanentlyClosed += 1;
+        stats.cheapRejected += 1;
         await markDecision(candidate, "skipped", "SKIPPED_PERMANENTLY_CLOSED");
+        await markValidationRejected(candidate, "SKIPPED_PERMANENTLY_CLOSED");
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
       if (isTemporarilyClosed(candidate)) {
         stats.temporarilyClosed += 1;
-        await markDecision(candidate, "skipped", "SKIPPED_TEMPORARILY_CLOSED");
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", "BUSINESS_CLOSED");
+        await markValidationRejected(candidate, "BUSINESS_CLOSED");
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      if (!hasReadableAddress(candidate)) {
+        candidate = await enrichCandidateAddress(candidate);
+
+        await sourceRecord(candidate);
+      }
+      // Reject deterministic failures and known identities before spending a
+      // remote request on contact enrichment or the nationwide location lookup.
+      const preliminary = validateStrictLeadBeforeContactEnrichment(candidate);
+      if (!preliminary.valid) {
+        if (isStatusVerificationRetry(preliminary.reasons)) {
+          if (row.attempts === 0) stats.manualReview += 1;
+          retriedThisBatch += 1;
+          await markDecision(candidate, "retry", "STATUS_VERIFICATION_REQUIRED", undefined, {
+            activeStatus: preliminary.active.status,
+            activeConfidence: preliminary.active.confidence,
+            retryAttempt: row.attempts + 1,
+          });
+          await queueValidationRetry({ runId, candidate, reason: "STATUS_VERIFICATION_REQUIRED" });
+          await finishQueueItem(
+            row.id,
+            candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+            "STATUS_VERIFICATION_REQUIRED",
+          );
+          continue;
+        }
+        const reason = preliminary.reasons[0];
+        if (preliminary.reasons.includes("BLOCKED_BRUSSELS")) stats.blockedBrussels += 1;
+        if (preliminary.reasons.includes("BLOCKED_GHENT")) stats.blockedGhent += 1;
+        if (preliminary.reasons.includes("PHONE_REQUIRED")) stats.invalidPhone += 1;
+        if (preliminary.reasons.includes("LANGUAGE_NOT_DUTCH")) stats.languageRejected += 1;
+        if (preliminary.reasons.includes("REGION_NOT_ALLOWED")) stats.wrongLocationRejected += 1;
+        if (preliminary.reasons.some((item) => ["NO_PUBLIC_BUSINESS_PROFILE", "ADDRESS_NOT_USABLE", "BUSINESS_NOT_CONFIRMED_ACTIVE"].includes(item))) {
+          stats.insufficientDataRejected += 1;
+        }
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        const evidence = {
+          reasons: preliminary.reasons,
+          language: preliminary.language.language,
+          languageConfidence: preliminary.language.confidence,
+          activeStatus: preliminary.active.status,
+          activeConfidence: preliminary.active.confidence,
+          blockedArea: preliminary.blocked.area,
+          blockedField: preliminary.blocked.matchedField,
+        };
+        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
+          jobId: runId, step: "strict_quality_rejected", sourceRecordId: candidate.externalPlaceId,
+          reasons: preliminary.reasons, message: strictReasonMessage(reason), evidence,
+        }), candidate.city, candidate.category);
+        await markDecision(candidate, "rejected", reason, undefined, evidence);
+        await markValidationRejected(candidate, reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      const publicPhones = normalizePhones(
+        [candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])],
+        candidate.country,
+      );
+      if (!publicPhones.length) {
+        stats.invalidPhone += 1;
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", "PHONE_ENRICHMENT_REQUIRED", undefined, {
+          contactRequirement: "Een geldig openbaar telefoonnummer is verplicht voordat de kandidaat een lead kan worden.",
+        });
+        await queueValidationRetry({ runId, candidate, reason: "PHONE_ENRICHMENT_REQUIRED" });
+        await finishQueueItem(
+          row.id,
+          candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+          "PHONE_ENRICHMENT_REQUIRED",
+        );
+        continue;
+      }
+      if (Date.now() >= runDeadline) {
+        await releaseQueueItems(queued.map(({ id }) => id), "De tienminutentermijn is verstreken vóór de e-mail- en MX-controle.");
+        return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
+      }
+      const emailValidation = await validatePublicBusinessEmail(candidate);
+      if (emailValidation.status === "MISSING" || emailValidation.status === "RETRY") {
+        if (emailValidation.status === "MISSING") stats.emailsMissing += 1;
+        else stats.emailRetries += 1;
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+
+        const retryReason = emailValidation.status === "MISSING" ? "BUSINESS_EMAIL_REQUIRED" : emailValidation.reason;
+        await markDecision(candidate, "retry", retryReason, undefined, {
+          contactRequirement: "Een traceerbaar openbaar zakelijk e-mailadres met een geldig MX-record is verplicht.",
+        });
+        await queueValidationRetry({ runId, candidate, reason: retryReason });
+        await finishQueueItem(
+          row.id,
+          candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+          retryReason,
+        );
+        continue;
+      } else if (emailValidation.status === "INVALID") {
+        stats.emailsInvalid += 1;
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", emailValidation.reason);
+        await markValidationRejected(candidate, emailValidation.reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED, emailValidation.reason);
+        continue;
+      } else {
+        candidate = {
+          ...candidate,
+          email: emailValidation.email,
+          emailAddresses: [emailValidation.email],
+          emailSource: emailValidation.source,
+          emailSourceUrl: emailValidation.sourceUrl,
+          emailPubliclyListed: true,
+          emailMxVerified: true,
+          emailVerifiedAt: emailValidation.checkedAt,
+        };
+        stats.emailsFound += 1;
+        stats.emailsExternallyVerified += 1;
+        await sourceRecord(candidate);
+      }
+      const contactComplete = validateStrictLeadBeforeLocation(candidate);
+      if (!contactComplete.valid) {
+        const reason = contactComplete.reasons[0];
+        stats.rejected += 1;
+        stats.cheapRejected += 1;
+        await markDecision(candidate, "rejected", reason, undefined, { reasons: contactComplete.reasons });
+        await markValidationRejected(candidate, reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         continue;
       }
       const basic = validateCandidateBasics(candidate);
       if (!basic.ok) {
         stats.rejected += 1;
-        await markDecision(candidate, "rejected", rejectionCode(basic.reason));
+        stats.cheapRejected += 1;
+        if (basic.reason === "buiten_gebied") stats.wrongLocationRejected += 1;
+        if (["onvolledig", "onvolledige_locatie", "verouderde_bron"].includes(basic.reason)) stats.insufficientDataRejected += 1;
+        await markDecision(candidate, "rejected", rejectionCode(basic.reason), undefined, { basicReason: basic.reason });
+        await markValidationRejected(candidate, rejectionCode(basic.reason));
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
-        continue;
-      }
-      const locationGate = precheckQualifiedLocation(candidate);
-      if (locationGate) {
-        if (locationGate.retry) {
-          if (row.attempts === 0) stats.manualReview += 1;
-          retriedThisBatch += 1;
-          await markDecision(candidate, "retry", locationGate.reason);
-          await finishQueueItem(
-            row.id,
-            candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
-            locationGate.reason,
-          );
-        } else {
-          stats.rejected += 1;
-          await markDecision(candidate, "rejected", locationGate.reason);
-          await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED, locationGate.reason);
-        }
         continue;
       }
       const keys = candidateDedupeKeys(candidate);
-      const knownReason = dedupe.hasOrAdd(keys) ? "duplicate_name_address" : knownReasons.get(candidate.externalPlaceId);
-      if (knownReason) {
-        stats.duplicates += 1; stats.existing += 1;
-        await markDecision(candidate, "duplicate", knownReason);
+      const batchMatch = dedupe.matchOrAdd(keys);
+      const knownMatch = knownReasons.get(candidate.externalPlaceId);
+      if (batchMatch.duplicate || knownMatch) {
+        const match = batchMatch.duplicate
+          ? { reason: "duplicate_batch_strong_identity", matchedExternalId: batchMatch.matchedExternalId, matchedFields: batchMatch.matchedFields }
+          : knownMatch!;
+        if (!batchMatch.duplicate && knownMatch?.disposition === "rejected") stats.rejected += 1;
+        else { stats.duplicates += 1; stats.existing += 1; }
+        stats.cheapRejected += 1;
+        if (knownMatch) stats.cacheHits += 1;
+        await logDuplicateMatch(runId, candidate, match);
+        await markDecision(candidate, knownMatch?.disposition === "rejected" ? "rejected" : "duplicate", match.reason, undefined, {
+          matchedFields: match.matchedFields,
+          matchedLeadId: "leadId" in match ? match.leadId : undefined,
+          matchedCandidateId: "matchedExternalId" in match ? match.matchedExternalId : undefined,
+        });
+        await markValidationRejected(candidate, match.reason);
         await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      locationWork.push({ row, candidate });
+    }
+
+    // Location-count lookups are the slowest pre-website step. Run only the
+
+    // bounded high-score work set concurrently; endpoint-level locks and
+    // circuit breakers still protect every public provider independently.
+    if (locationWork.length && Date.now() >= runDeadline) {
+      await releaseQueueItems(locationWork.map(({ row }) => row.id), "De tienminutentermijn is verstreken vóór de vestigingscontrole.");
+      return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
+    }
+    const locationStarted = Date.now();
+    const locationResults = await Promise.allSettled(locationWork.map(({ candidate }) => verifySingleLocationForRun(runId, candidate)));
+    validationDurationMs += Date.now() - locationStarted;
+    for (let index = 0; index < locationWork.length; index += 1) {
+      const { row } = locationWork[index];
+      const locationResult = locationResults[index];
+      if (locationResult.status === "rejected") {
+        const message = errorMessage(locationResult.reason);
+        retriedThisBatch += 1;
+        await queueValidationRetry({ runId, candidate: locationWork[index].candidate, reason: `LOCATION_CHECK_FAILED: ${message}` });
+        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
+        continue;
+      }
+      const singleLocation = locationResult.value;
+      if (singleLocation.externallyValidated && row.attempts === 0) stats.externallyValidated += 1;
+      const candidate = singleLocation.candidate;
+      await sourceRecord(candidate);
+      if (row.attempts === 0) countSingleLocationDecision(stats, singleLocation.decision);
+      if (singleLocation.decision.status === "MULTIPLE") {
+        stats.rejected += 1;
+        await logSource(runId, candidate.source ?? "OPENSTREETMAP", "INFO", JSON.stringify({
+          jobId: runId,
+          step: "multiple_locations_rejected",
+          sourceRecordId: candidate.externalPlaceId,
+          reason: singleLocation.decision.reason,
+          evidence: singleLocation.decision.evidence,
+        }), candidate.city, candidate.category);
+        await excludeSingleLocation(candidate, singleLocation.decision.reason);
+        await markDecision(candidate, "rejected", singleLocation.decision.reason, undefined, { locationEvidence: singleLocation.decision.evidence, duplicateExternalIds: singleLocation.decision.duplicateExternalIds });
+        await markValidationRejected(candidate, singleLocation.decision.reason);
+        await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
+        continue;
+      }
+      if (singleLocation.decision.status === "UNCERTAIN") {
+        if (row.attempts === 0) stats.manualReview += 1;
+        retriedThisBatch += 1;
+        await markDecision(candidate, "retry", "onzeker_aantal_vestigingen", undefined, { locationEvidence: singleLocation.decision.evidence, retryAttempt: row.attempts + 1 });
+        await queueValidationRetry({ runId, candidate, reason: `onzeker_aantal_vestigingen: ${singleLocation.decision.evidence.join(" ")}` });
+        await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, "onzeker_aantal_vestigingen");
         continue;
       }
       verificationWork.push({ row, candidate });
     }
     await releaseQueueItems(releaseIds, "Doorgeschoven naar de volgende kleine batch.");
 
-    if (isGenerationRunExpired(run.startedAt, 0)) {
-      await releaseQueueItems(verificationWork.map(({ row }) => row.id), "De tienminutendeadline is bereikt vóór deze kandidatencontrole.");
-      verificationWork.length = 0;
-    }
-
     if (verificationWork.length) {
+      if (Date.now() >= runDeadline) {
+        await releaseQueueItems(verificationWork.map(({ row }) => row.id), "De tienminutentermijn is verstreken vóór de websitecontrole.");
+        return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
+      }
       stats.websitesChecked += verificationWork.length;
       await prisma.generationRun.update({ where: { id: runId }, data: {
         ...runData(stats, places, errors, warnings), currentPhase: "Websitebewijs controleren",
-        message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
+        progress: run.progress, message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
       } });
       const validationStarted = Date.now();
-      const verificationResults = await Promise.allSettled(verificationWork.map(({ candidate }) => verifyWebsiteCandidate(candidate)));
+      const verificationResults = await Promise.allSettled(verificationWork.map(({ candidate }) => qualifyWebsiteCandidate(candidate)));
       validationDurationMs += Date.now() - validationStarted;
 
       for (let index = 0; index < verificationWork.length; index += 1) {
@@ -935,83 +2018,84 @@ export async function processGenerationBatch(runId: string) {
           retriedThisBatch += 1;
           errors.push(`${candidate.companyName}: WEBSITE_CHECK_FAILED: ${message}`);
           await markDecision(candidate, "retry", "website_check_failed");
+          await queueValidationRetry({ runId, candidate, reason: `WEBSITE_CHECK_FAILED: ${message}` });
           await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
           continue;
         }
-        if (isGenerationRunExpired(run.startedAt, 0)) {
-          retriedThisBatch += 1;
-          await markDecision(candidate, "retry", "deadline_before_final_checks");
-          await finishQueueItem(row.id, CandidateQueueStatus.PENDING, "De deadline verstreek voordat de resterende controles konden starten.");
-          continue;
-        }
-        let verification = result.value;
-        if (verification.status === "WEBSITE_FOUND" && verification.website) {
-          const inspected = await inspectOwnedWebsite(verification.website);
-          verification = { ...inspected, evidence: [...verification.evidence, ...inspected.evidence] };
-        }
+        const verification = result.value;
         const gate = evaluateNewLeadGate(candidate, verification);
         if (!gate.allowed) {
+
           if (gate.reason === "SKIPPED_HAS_WEBSITE") {
             stats.websitesFound += 1; stats.rejected += 1;
             await excludeCandidate(candidate, verification);
             await markDecision(candidate, "skipped", gate.reason);
+            await markValidationRejected(candidate, gate.reason, verification);
           } else if (gate.reason === "SKIPPED_PERMANENTLY_CLOSED") {
             stats.permanentlyClosed += 1;
             await markDecision(candidate, "skipped", gate.reason);
-          } else {
+            await markValidationRejected(candidate, gate.reason, verification);
+          } else if (gate.reason === "SKIPPED_WEBSITE_UNKNOWN") {
             if (row.attempts === 0) stats.manualReview += 1;
             retriedThisBatch += 1;
             await markDecision(candidate, "retry", gate.reason);
+            await queueValidationRetry({ runId, candidate, verification, reason: `${gate.reason}: ${gate.detail}` });
+            await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, gate.detail);
+            continue;
+          } else {
+            stats.rejected += 1;
+            await markDecision(candidate, "rejected", gate.reason);
+            await markValidationRejected(candidate, gate.reason, verification);
           }
-          const queueStatus = isReviewRetryReason(gate.reason)
-            ? candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING
-            : CandidateQueueStatus.PROCESSED;
-          await finishQueueItem(row.id, queueStatus, gate.detail);
-          continue;
-        }
-        if (isGenerationRunExpired(run.startedAt, 0)) {
-          retriedThisBatch += 1;
-          await markDecision(candidate, "retry", "deadline_before_final_checks");
-          await finishQueueItem(row.id, CandidateQueueStatus.PENDING, "De deadline verstreek vóór de e-mail/MX- en telefooncontrole kon starten.");
+          await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
           continue;
         }
         const databaseStarted = Date.now();
+        stats.validCandidates += 1;
+        stats.databaseInsertAttempts += 1;
         try {
-          await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", heartbeatAt: new Date() } });
-          const saved = await storeNewLead(candidate, verification, runId);
-          if (saved.stored) {
-            stats.stored += 1;
-            if (verification.website) stats.websitesFound += 1;
-            if (verification.status === "WEBSITE_OUTDATED" || verification.status === "WEBSITE_BROKEN") stats.outdatedWebsite += 1;
-            else if (verification.website) stats.improvableWebsite += 1;
-            else { stats.withoutWebsite += 1; stats.noWebsite += 1; }
-            await markDecision(candidate, "stored", verification.status.toLowerCase());
+          await prisma.generationRun.update({ where: { id: runId }, data: { currentPhase: "Resultaat veilig opslaan", progress: run.progress, heartbeatAt: new Date() } });
+          const saved = await stageQualifiedLead(runId, candidate, verification);
+          if (saved.staged) {
+            stats.validDrafts += 1;
+            if (verification.status === "NO_WEBSITE_CONFIRMED") { stats.withoutWebsite += 1; stats.noWebsite += 1; }
+            else if (verification.status === "IMPROVABLE_WEBSITE") stats.improvableWebsite += 1;
+            else stats.outdatedWebsite += 1;
+            await markDecision(candidate, "qualified_draft", verification.status.toLowerCase(), undefined, { websiteStatus: verification.status, websiteConfidence: verification.confidence, websiteEvidence: verification.evidence });
+          } else if (saved.reviewOnly) {
+            if (row.attempts === 0) stats.manualReview += 1;
+            retriedThisBatch += 1;
+            await markDecision(candidate, "retry", saved.reason);
+            await queueValidationRetry({ runId, candidate, verification, reason: saved.reason });
+            await finishQueueItem(
+              row.id,
+              candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
+              saved.reason,
+            );
+            continue;
           } else {
-            if (isReviewRetryReason(saved.reason)) {
-              if (row.attempts === 0) stats.manualReview += 1;
-              retriedThisBatch += 1;
-              await markDecision(candidate, "retry", saved.reason);
-              await finishQueueItem(
-                row.id,
-                candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING,
-                saved.reason,
-              );
-              continue;
-            }
             stats.rejected += 1;
             await markDecision(candidate, "skipped", saved.reason.startsWith("SKIPPED_") ? saved.reason : rejectionCode(saved.reason));
+            await markValidationRejected(candidate, saved.reason, verification);
           }
           await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
         } catch (error) {
-          if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+          stats.databaseInsertFailures += 1;
+          if ((error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") || error instanceof DuplicateIdentityError) {
             stats.duplicates += 1; stats.existing += 1;
-            await markDecision(candidate, "duplicate", "race_condition_duplicate");
+            await markDecision(candidate, "duplicate", "race_condition_duplicate", undefined, databaseErrorEvidence(error));
+            await markValidationRejected(candidate, "race_condition_duplicate", verification);
             await finishQueueItem(row.id, CandidateQueueStatus.PROCESSED);
           } else {
             const message = errorMessage(error);
+            const evidence = databaseErrorEvidence(error);
             retriedThisBatch += 1;
-            errors.push(`${candidate.companyName}: DATABASE_ERROR: ${message}`);
-            await markDecision(candidate, "retry", "database_error");
+            errors.push(`${candidate.companyName}: DATABASE_ERROR ${JSON.stringify(evidence)}`);
+            await logSource(runId, candidate.source ?? "OPENSTREETMAP", "ERROR", JSON.stringify({
+              jobId: runId, step: "lead_insert_failed", sourceRecordId: candidate.externalPlaceId, evidence,
+            }), candidate.city, candidate.category);
+            await markDecision(candidate, "retry", "database_error", undefined, evidence);
+            await queueValidationRetry({ runId, candidate, verification, reason: `DATABASE_ERROR: ${message}` });
             await finishQueueItem(row.id, candidateRetryStatus(row.attempts + 1) === "FAILED" ? CandidateQueueStatus.FAILED : CandidateQueueStatus.PENDING, message);
           }
         } finally { databaseDurationMs += Date.now() - databaseStarted; }
@@ -1022,17 +2106,32 @@ export async function processGenerationBatch(runId: string) {
     if (state.cancelRequested || state.status === JobStatus.CANCELLED) return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De zoekrun is geannuleerd; alle eerder bewaarde resultaten blijven behouden.");
     const [pendingCandidates, retryQueueCount] = await Promise.all([
       prisma.generationCandidate.count({ where: { runId, status: CandidateQueueStatus.PENDING } }),
-      prisma.generationCandidate.count({ where: { runId, status: { in: [CandidateQueueStatus.PENDING, CandidateQueueStatus.FAILED] } } }),
+
+      retryQueueCountForRun(runId),
     ]);
-    if (isGenerationRunExpired(run.startedAt, 0)) {
-      return finishGenerationRun(runId, "De maximale zoektijd van 10 minuten is bereikt.", true);
+    if (Date.now() >= runDeadline) {
+      return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
     }
-    const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
-    if (completionStatus === "COMPLETE" && capacity(stats) >= run.targetCount) {
-      return finishGenerationRun(runId, "Het maximum van 10 volledig gekwalificeerde leads is bereikt.", true);
+    if (capacity(stats) >= run.targetCount) {
+      return finishGenerationRun(runId, `Het maximum van ${run.targetCount} volledig gekwalificeerde kandidaten is bereikt.`);
     }
+    if (stats.checked >= run.maxCandidates) {
+      return finishGenerationRun(runId, candidateBudgetReason(stats, pendingCandidates, run.maxCandidates));
+    }
+    if (shouldStopForSourceOutage(consecutiveSourceFailures, env.GENERATION_MAX_SOURCE_FAILURES) && pendingCandidates === 0) {
+      if (capacity(stats)) return finishGenerationRun(runId, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar.`);
+      return terminalRun(runId, JobStatus.FAILED, stats, places, errors, warnings, `De gratis bedrijfsbronnen zijn na ${consecutiveSourceFailures} opeenvolgende mislukte zoekbatches tijdelijk niet betrouwbaar bereikbaar. Er waren geen volledig geldige concepten om op te slaan; bestaande gegevens zijn behouden.`);
+    }
+    if (run.processedSegments + stats.sourceFailures >= env.GENERATION_MAX_SOURCE_CALLS && pendingCandidates === 0) {
+      if (capacity(stats)) return finishGenerationRun(runId, "De veiligheidsgrens voor bronbatches is bereikt.");
+      const status = capacity(stats) ? JobStatus.PARTIALLY_COMPLETED : JobStatus.COMPLETE;
+      return terminalRun(runId, status, stats, places, errors, warnings, `${run.processedSegments + stats.sourceFailures} begrensde zoekbatches zijn uitgevoerd. ${stats.checked} kandidaten zijn gecontroleerd en ${stats.stored} gekwalificeerde concepten zijn veilig bewaard; de veiligheidsgrens van deze run is bereikt terwijl overige zoekstrategieën voor een volgende run beschikbaar blijven.`);
+    }
+    const completionStatus = generationCompletionStatus({ usable: capacity(stats), target: run.targetCount, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS, pendingCandidates });
     if (completionStatus) {
-      return finishGenerationRun(runId, "De beschikbare zoekruimte voor deze run is verwerkt.", true);
+      if (capacity(stats)) return finishGenerationRun(runId, "De beschikbare zoekruimte voor deze run is verwerkt.");
+      const status = completionStatus === "PARTIALLY_COMPLETED" ? JobStatus.PARTIALLY_COMPLETED : completionStatus === "FAILED" ? JobStatus.FAILED : JobStatus.COMPLETE;
+      return terminalRun(runId, status, stats, places, errors, warnings, `${stats.stored} van de gewenste ${run.targetCount} volledig gekwalificeerde concepten gevonden. De ingestelde maximale zoekomvang van ${env.GENERATION_MAX_SOURCE_CALLS} succesvol opgehaalde segmenten is verwerkt; ${stats.manualReview} onzekere kandidaten blijven in de PostgreSQL-retryqueue.`);
     }
 
     const durationMs = Date.now() - batchStartedAt;
@@ -1044,7 +2143,7 @@ export async function processGenerationBatch(runId: string) {
     return prisma.generationRun.update({ where: { id: runId }, data: {
       ...runData(stats, places, errors, warnings), status: JobStatus.RUNNING,
       pendingCandidates, retryQueueCount, retriedCandidates: { increment: retriedThisBatch }, lastBatchDurationMs: durationMs,
-      progress: progressFor(stats, run.targetCount, run.processedSegments, env.GENERATION_MAX_SOURCE_CALLS),
+      progress: Math.max(run.progress, generationProgress({ stored: stats.validDrafts, target: run.targetCount, candidatesReserved: run.candidatesReserved, candidatesChecked: stats.checked, maxCandidates: run.maxCandidates, processedSegments: run.processedSegments, sourceFailures: stats.sourceFailures, maxSegments: env.GENERATION_MAX_SOURCE_CALLS })),
       currentPhase: isBatchDeadlineNear(deadline, Date.now(), 1_000) ? "Batch veilig gepauzeerd" : "Zoekbatch afgerond",
       message: isBatchDeadlineNear(deadline, Date.now(), 1_000)
         ? "De huidige batch is vóór de serverless deadline veilig gepauzeerd; de volgende batch wordt automatisch gestart."
@@ -1052,6 +2151,18 @@ export async function processGenerationBatch(runId: string) {
     } });
   } catch (error) {
     errors.push(errorMessage(error));
+    if (isGenerationRunExpired(run.startedAt, env.GENERATION_MAX_RUN_MINUTES)) {
+      return prisma.generationRun.update({
+        where: { id: runId },
+        data: {
+          ...runData(stats, places, errors, warnings),
+          status: JobStatus.PENDING,
+          currentPhase: "Eindopslag opnieuw proberen",
+          message: `De database kon de eindopslag nog niet voltooien; alle niet-opgeslagen concepten zijn behouden. ${errorMessage(error)}`,
+          heartbeatAt: new Date(),
+        },
+      });
+    }
     return terminalRun(runId, JobStatus.FAILED, stats, places, errors, warnings, `De job kan technisch niet verder: ${errorMessage(error)}`);
   } finally {
     await lock.release();
@@ -1066,83 +2177,69 @@ export async function runLeadGeneration(runId: string) {
 }
 
 export async function runGenerationWatchdog(now = new Date()) {
-  const watchdogLock = await acquireJobLock("lead-generation-watchdog", 70_000);
-  if (!watchdogLock) return { active: true, processed: false, reason: "watchdog_already_running" };
+  const watchdogLock = await acquireJobLock("generation-watchdog", 4 * 60_000);
+  if (!watchdogLock) return { active: true, processed: false, reason: "watchdog_locked" };
   try {
     const task = await ensureLeadfinderTask();
-    if (!task.enabled) return { active: false, processed: false, reason: "task_paused", taskName: task.name };
+    if (!task.enabled) return { active: false, processed: false, reason: "paused" };
+
     await markStaleGenerationRuns(now);
     const activeRuns = await prisma.generationRun.findMany({
       where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } },
-      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }, { id: "asc" }],
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
     });
-    let active = activeRuns[0] ?? null;
-    const duplicates = activeRuns.slice(1);
-    if (duplicates.length) {
+    let active = activeRuns[0];
+    if (activeRuns.length > 1) {
+      const duplicateIds = activeRuns.slice(1).map(({ id }) => id);
       await prisma.generationRun.updateMany({
-        where: { id: { in: duplicates.map(({ id }) => id) } },
+        where: { id: { in: duplicateIds } },
         data: {
           status: JobStatus.CANCELLED,
           cancelRequested: true,
           continuousRequested: false,
-          progress: 100,
           currentPhase: "Dubbele achtergrondrun opgeruimd",
-          message: "Veilig beëindigd omdat één permanente Leadfinder-taak alle zoekbatches verwerkt.",
-          stopReason: "Dubbele achtergrondrun veilig beëindigd.",
+          message: "Veilig beëindigd; de kandidaten blijven bewaard voor de permanente taak.",
+          stopReason: "Overlappende achtergrondrun veilig beëindigd.",
           finishedAt: now,
-          heartbeatAt: now,
         },
       });
     }
-    if (!active) {
-      active = await createGenerationRun({ continuousRequested: true });
-    } else if (!active.continuousRequested || active.cancelRequested) {
+    if (!active) active = await createGenerationRun({ continuousRequested: true });
+    else if (!active.continuousRequested || active.cancelRequested) {
       active = await prisma.generationRun.update({
         where: { id: active.id },
         data: { continuousRequested: true, cancelRequested: false },
       });
     }
+
     await prisma.leadfinderTask.update({
       where: { id: LEADFINDER_TASK_ID },
       data: { status: "RUNNING", currentRunId: active.id, lastRunId: active.id, lastHeartbeatAt: now, lastError: null },
     });
-    if (isGenerationRunExpired(active.startedAt, 0, now)) {
-      const finished = await finishGenerationRun(active.id, "De maximale zoektijd van 10 minuten is bereikt.");
-      await prisma.generationRun.update({ where: { id: finished.id }, data: { continuousRequested: false } });
-      const next = await createGenerationRun({ continuousRequested: true });
-      await prisma.leadfinderTask.update({
-        where: { id: LEADFINDER_TASK_ID },
-        data: { status: "RUNNING", currentRunId: next.id, lastRunId: next.id, lastHeartbeatAt: now },
-      });
-      return { active: true, processed: true, runId: next.id, status: next.status, taskName: task.name, duplicatesRemoved: duplicates.length };
-    }
-    const run = await processGenerationBatch(active.id);
+
+    const run = isGenerationRunExpired(active.startedAt, serverEnv().GENERATION_MAX_RUN_MINUTES, now)
+      ? await finishGenerationRun(active.id, `De zoekrun van ${serverEnv().GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`)
+      : await processGenerationBatch(active.id);
+
     if (terminalStatuses.has(run.status)) {
-      await prisma.generationRun.update({ where: { id: run.id }, data: { continuousRequested: false } });
       const next = await createGenerationRun({ continuousRequested: true });
       await prisma.leadfinderTask.update({
         where: { id: LEADFINDER_TASK_ID },
-        data: { status: "RUNNING", currentRunId: next.id, lastRunId: next.id, lastHeartbeatAt: new Date(), lastError: null },
+        data: { status: "ACTIVE", currentRunId: next.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
       });
-      return { active: true, processed: true, runId: next.id, status: next.status, taskName: task.name, duplicatesRemoved: duplicates.length };
+      return { active: true, processed: true, runId: run.id, status: run.status, nextRunId: next.id };
     }
+
     await prisma.leadfinderTask.update({
       where: { id: LEADFINDER_TASK_ID },
       data: { status: "RUNNING", currentRunId: run.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
     });
-    return {
-      active: true,
-      processed: true,
-      runId: run.id,
-      status: run.status,
-      taskName: task.name,
-      duplicatesRemoved: duplicates.length,
-    };
+    return { active: true, processed: true, runId: run.id, status: run.status };
   } catch (error) {
-    await prisma.leadfinderTask.updateMany({
+    await prisma.leadfinderTask.update({
       where: { id: LEADFINDER_TASK_ID },
       data: { status: "ERROR", lastHeartbeatAt: new Date(), lastError: errorMessage(error) },
-    });
+    }).catch(() => undefined);
     throw error;
   } finally {
     await watchdogLock.release();

@@ -1,8 +1,9 @@
+
 import { z } from "zod";
 import { pipelineStatuses } from "./pipeline";
 
 export const leadStatuses = pipelineStatuses;
-export const websiteStatuses = ["NO_WEBSITE_CONFIRMED","NO_WEBSITE_LIKELY","SOCIAL_ONLY","WEBSITE_FOUND","WEBSITE_OUTDATED","WEBSITE_BROKEN","MANUAL_REVIEW_REQUIRED","IMPROVABLE_WEBSITE","UNKNOWN"] as const;
+export const websiteStatuses = ["NO_WEBSITE_CONFIRMED","NO_WEBSITE_LIKELY","SOCIAL_ONLY","WEBSITE_FOUND","WEBSITE_OUTDATED","WEBSITE_BROKEN","IMPROVABLE_WEBSITE","MANUAL_REVIEW_REQUIRED","UNKNOWN"] as const;
 export const sortOptions = ["confidence_desc","opportunity_desc","newest","oldest","checked_desc","city","category","status","contacts_desc"] as const;
 
 export const leadFilterSchema = z.object({
@@ -11,7 +12,7 @@ export const leadFilterSchema = z.object({
   status: z.enum(leadStatuses).optional(), leadType: z.enum(["NO_WEBSITE","OUTDATED_WEBSITE","IMPROVABLE_WEBSITE"]).optional(),
   websiteStatus: z.enum(websiteStatuses).optional(), source: z.enum(["OPENSTREETMAP","OPEN_DATA","PUBLIC_WEBSITE","MANUAL","GOOGLE_PLACES"]).optional(),
   businessStatus: z.enum(["OPERATIONAL","CLOSED_TEMPORARILY","CLOSED_PERMANENTLY","UNKNOWN","FUTURE_OPENING"]).optional(),
-  filtered: z.enum(["yes"]).optional(), hasPhone: z.enum(["yes","no"]).optional(), hasEmail: z.enum(["yes","no"]).optional(),
+  filtered: z.enum(["yes"]).optional(), googleReview: z.enum(["pending","confirmed"]).optional(), hasPhone: z.enum(["yes","no"]).optional(), hasEmail: z.enum(["yes","no"]).optional(),
   minScore: z.coerce.number().int().min(0).max(100).optional(), maxScore: z.coerce.number().int().min(0).max(100).optional(),
   minConfidence: z.coerce.number().int().min(0).max(100).optional(), called: z.enum(["yes","no"]).optional(), issue: z.string().trim().max(60).optional(),
   foundAfter: z.coerce.date().optional(), foundBefore: z.coerce.date().optional(), newOnly: z.enum(["yes"]).optional(), verifiedBefore: z.coerce.date().optional(),

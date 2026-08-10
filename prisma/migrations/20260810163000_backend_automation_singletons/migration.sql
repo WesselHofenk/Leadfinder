@@ -18,45 +18,55 @@ CREATE UNIQUE INDEX IF NOT EXISTS "LeadfinderTask_name_key" ON "LeadfinderTask"(
 
 INSERT INTO "LeadfinderTask" ("id", "name", "enabled", "status", "updatedAt")
 VALUES ('leadfinder-continuous', 'Leadfinder doorlopend zoeken', true, 'ACTIVE', CURRENT_TIMESTAMP)
-ON CONFLICT ("id") DO UPDATE SET
-  "name" = EXCLUDED."name",
-  "updatedAt" = CURRENT_TIMESTAMP;
+ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name", "updatedAt" = CURRENT_TIMESTAMP;
 
-CREATE TABLE IF NOT EXISTS "ColdEmailTask" (
-  "id" TEXT NOT NULL,
-  "name" TEXT NOT NULL,
-  "enabled" BOOLEAN NOT NULL DEFAULT true,
-  "status" TEXT NOT NULL DEFAULT 'ACTIVE',
-  "timeZone" TEXT NOT NULL DEFAULT 'Europe/Amsterdam',
-  "windowStartHour" INTEGER NOT NULL DEFAULT 9,
-  "windowEndHour" INTEGER NOT NULL DEFAULT 17,
-  "rampStartDate" TEXT NOT NULL DEFAULT '2026-08-10',
-  "startDailyLimit" INTEGER NOT NULL DEFAULT 20,
-  "weeklyIncrement" INTEGER NOT NULL DEFAULT 10,
-  "maximumDailyLimit" INTEGER NOT NULL DEFAULT 100,
-  "lastHeartbeatAt" TIMESTAMP(3),
-  "lastSuccessfulSentAt" TIMESTAMP(3),
-  "lastError" TEXT,
-  "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT "ColdEmailTask_pkey" PRIMARY KEY ("id"),
-  CONSTRAINT "ColdEmailTask_singleton" CHECK ("id" = 'cold-email-continuous')
-);
+ALTER TABLE "ColdEmailCampaign"
+  ADD COLUMN IF NOT EXISTS "name" TEXT NOT NULL DEFAULT 'Cold emails automatisch versturen',
+  ADD COLUMN IF NOT EXISTS "enabled" BOOLEAN NOT NULL DEFAULT true,
+  ADD COLUMN IF NOT EXISTS "status" TEXT NOT NULL DEFAULT 'ACTIVE',
+  ADD COLUMN IF NOT EXISTS "lastHeartbeatAt" TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "lastSuccessfulSentAt" TIMESTAMP(3);
 
-CREATE UNIQUE INDEX IF NOT EXISTS "ColdEmailTask_name_key" ON "ColdEmailTask"("name");
+INSERT INTO "ColdEmailCampaign" (
+  "id", "name", "enabled", "status", "startDayKey", "templateSequence", "createdAt", "updatedAt"
+)
+VALUES (
+  'sitora-cold-email', 'Cold emails automatisch versturen', true, 'ACTIVE', '2026-08-10', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+)
+ON CONFLICT ("id") DO NOTHING;
 
-INSERT INTO "ColdEmailTask" ("id", "name", "enabled", "status", "updatedAt")
-VALUES ('cold-email-continuous', 'Cold emails automatisch versturen', true, 'ACTIVE', CURRENT_TIMESTAMP)
-ON CONFLICT ("id") DO UPDATE SET
-  "name" = EXCLUDED."name",
-  "updatedAt" = CURRENT_TIMESTAMP;
+UPDATE "ColdEmailCampaign"
+SET "templateSequence" = GREATEST(
+  "templateSequence",
+  COALESCE((SELECT MAX("templateSequence") FROM "ColdEmailCampaign"), 0)
+)
+WHERE "id" = 'sitora-cold-email';
 
-ALTER TABLE "OutreachEmail"
-  ADD COLUMN IF NOT EXISTS "attemptCount" INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS "nextAttemptAt" TIMESTAMP(3),
-  ADD COLUMN IF NOT EXISTS "providerAcceptedAt" TIMESTAMP(3),
-  ADD COLUMN IF NOT EXISTS "archivedAt" TIMESTAMP(3),
-  ADD COLUMN IF NOT EXISTS "sentMailbox" TEXT;
+UPDATE "ColdEmail"
+SET "campaignId" = 'sitora-cold-email'
+WHERE "campaignId" IS NOT NULL AND "campaignId" <> 'sitora-cold-email';
+
+DELETE FROM "ColdEmailRun" WHERE "campaignId" <> 'sitora-cold-email';
+DELETE FROM "ColdEmailCampaign" WHERE "id" <> 'sitora-cold-email';
+
+UPDATE "ColdEmailCampaign"
+SET
+  "name" = 'Cold emails automatisch versturen',
+  "enabled" = true,
+  "status" = 'ACTIVE',
+  "startDayKey" = '2026-08-10',
+  "updatedAt" = CURRENT_TIMESTAMP
+WHERE "id" = 'sitora-cold-email';
+
+CREATE UNIQUE INDEX IF NOT EXISTS "ColdEmailCampaign_name_key" ON "ColdEmailCampaign"("name");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ColdEmailCampaign_singleton') THEN
+    ALTER TABLE "ColdEmailCampaign"
+      ADD CONSTRAINT "ColdEmailCampaign_singleton" CHECK ("id" = 'sitora-cold-email');
+  END IF;
+END $$;
 
 WITH ranked_active AS (
   SELECT "id", ROW_NUMBER() OVER (ORDER BY "updatedAt" DESC, "createdAt" DESC, "id") AS position

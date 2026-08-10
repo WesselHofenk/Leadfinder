@@ -1,41 +1,32 @@
+
 import React from "react";
 import Link from "next/link";
+import { ExternalLink } from "lucide-react";
 import { prisma } from "@/lib/prisma";
-import { pipelineStages } from "@/lib/leads/pipeline";
-import { PipelineBoard, type PipelineLead } from "@/components/pipeline-board";
+import { toManualPipelineOptions } from "@/lib/leads/pipeline";
+import { QuickStatus } from "@/components/lead-actions";
+import { visibleLeadWhere } from "@/lib/leads/blocked-location";
 
 export default async function PipelinePage() {
-  const groups = await Promise.all(pipelineStages.map(async ({ status, label }) => {
-    const [records, total] = await prisma.$transaction([
-      prisma.lead.findMany({ where: { status, isSuppressed: false }, orderBy: { updatedAt: "desc" }, take: 50 }),
-      prisma.lead.count({ where: { status, isSuppressed: false } }),
+  const stages = await prisma.pipelineStage.findMany({ where: { isActive: true }, orderBy: { position: "asc" } });
+  const groups = await Promise.all(stages.map(async (stage) => {
+    const [items, total] = await prisma.$transaction([
+      prisma.lead.findMany({ where: visibleLeadWhere({ pipelineStageId: stage.id, isActive: true, isFiltered: false, isSuppressed: false }), orderBy: { updatedAt: "desc" }, take: 50 }),
+      prisma.lead.count({ where: visibleLeadWhere({ pipelineStageId: stage.id, isActive: true, isFiltered: false, isSuppressed: false }) }),
     ]);
-    const items: PipelineLead[] = records.map((lead) => ({
-      id: lead.id,
-      companyName: lead.companyName,
-      category: lead.category,
-      city: lead.city,
-      country: lead.country,
-      streetAddress: lead.streetAddress,
-      postalCode: lead.postalCode,
-      email: lead.email,
-      normalizedPhoneNumber: lead.normalizedPhoneNumber,
-      googleMapsUrl: lead.googleMapsUrl,
-      websiteUrl: lead.websiteUrl,
-      websiteStatus: lead.websiteStatus,
-      websiteStatusReason: lead.websiteStatusReason,
-      chatbotStatus: lead.chatbotStatus,
-      chatbotStatusReason: lead.chatbotStatusReason,
-      leadType: lead.leadType,
-      opportunityScore: lead.opportunityScore,
-      websiteConfidence: lead.websiteConfidence,
-      lastVerifiedAt: new Date(lead.lastVerifiedAt ?? lead.updatedAt ?? Date.now()).toISOString(),
-      status: lead.status,
-    }));
-    return { status, label, items, total };
+    return { items, total };
   }));
+
   return <div className="content pipeline-page">
-    <header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">Nieuwe gekwalificeerde leads verschijnen direct in Nieuw.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header>
-    <PipelineBoard stages={groups}/>
+    <header className="page-head"><div><span className="eyebrow">Verkooppipeline</span><h1>Leadopvolging</h1><p className="muted">{stages.length} vaste fases uit PostgreSQL. Iedere wijziging wordt als activiteit opgeslagen.</p></div><Link className="button button-secondary" href="/leads">Alle leads</Link></header>
+    <div className="pipeline-grid" role="region" aria-label={`Pipeline met ${stages.length} horizontaal scrollbare fases`} tabIndex={0}>
+      {stages.map((stage, index) => <section className="pipeline-column" key={stage.id} data-stage-slug={stage.slug} data-stage-position={stage.position}>
+        <div className="pipeline-title"><strong>{stage.name}</strong><span className="badge">{groups[index].total}</span></div>
+        <div className="pipeline-list">
+          {groups[index].items.map((lead) => <article className="pipeline-card" key={lead.id}><div className="pipeline-card-head"><div><strong>{lead.companyName}</strong><p className="small muted">{lead.category.replaceAll("_", " ")} · {lead.city}</p></div><Link href={`/leads/${lead.id}`} aria-label={`Open ${lead.companyName}`}><ExternalLink size={15}/></Link></div>{lead.normalizedPhoneNumber||lead.phoneNumber?<a className="small text-link" href={`tel:${lead.normalizedPhoneNumber||lead.phoneNumber}`}>{lead.normalizedPhoneNumber||lead.phoneNumber}</a>:<span className="small muted">Geen telefoonnummer</span>}<span className="small muted">{lead.formattedAddress||lead.streetAddress}</span><QuickStatus leadId={lead.id} stageSlug={stage.slug} stages={toManualPipelineOptions(stages, stage.slug)}/></article>)}
+          {!groups[index].total && <div className="empty small">Geen leads in deze fase.</div>}
+        </div>
+      </section>)}
+    </div>
   </div>;
 }

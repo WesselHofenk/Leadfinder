@@ -6,16 +6,16 @@ describe("doorlopende leadgeneratie", () => {
   it("bewaart de Start/Stop-keuze duurzaam en hervat via de watchdog", () => {
     const schema = readFileSync(resolve("prisma/schema.prisma"), "utf8");
     const source = readFileSync(resolve("lib/jobs/generation.ts"), "utf8");
-    expect(schema).toContain("continuousRequested Boolean");
-    expect(source).toContain("where: { continuousRequested: true }");
+    expect(schema).toContain("continuousRequested");
+    expect(schema).toContain("model LeadfinderTask");
     expect(source).toContain("createGenerationRun({ continuousRequested: true })");
   });
 
   it("publiceert een gekwalificeerde lead direct in Nieuw", () => {
     const source = readFileSync(resolve("lib/jobs/generation.ts"), "utf8");
-    expect(source).toContain("await storeNewLead(candidate, verification, runId)");
-    expect(source).toContain("stats.stored += 1");
-    expect(source).toContain('status: "NEW"');
+    expect(source).toContain("await stageQualifiedLead(runId, candidate, verification)");
+    expect(source).toContain("publishQualifiedDrafts");
+    expect(source).toContain("NEW_PIPELINE_STAGE_ID");
   });
 
   it("toont één duidelijke singleton-taak zonder browserworker", () => {

@@ -1,32 +1,74 @@
+
 import { describe, expect, it } from "vitest";
-import { hasRequiredDigitalGap, inspectDigitalHtml } from "@/lib/leads/digital-qualification";
 
-describe("objectieve digitale kwalificatie", () => {
-  it("markeert een website pas verouderd bij minimaal twee objectieve problemen", () => {
-    const oneIssue = inspectDigitalHtml("https://bedrijf.nl", "<html><head><meta name='viewport' content='width=device-width'></head><body>Welkom</body></html>");
-    expect(oneIssue.objectiveIssues).toHaveLength(1);
-    expect(oneIssue.status).toBe("WEBSITE_FOUND");
+import { classifyOwnedWebsite } from "@/lib/leads/digital-qualification";
+import type { WebsiteAnalysisResult } from "@/lib/website/analyze";
+import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
-    const outdated = inspectDigitalHtml("http://bedrijf.nl", "<html><body><img src='kapot.jpg'><footer>© 2019</footer></body></html>");
-    expect(outdated.objectiveIssues?.length).toBeGreaterThanOrEqual(2);
-    expect(outdated.status).toBe("WEBSITE_OUTDATED");
-    expect(hasRequiredDigitalGap(outdated)).toBe(true);
+const source: WebsiteVerificationResult = {
+  status: "WEBSITE_FOUND",
+  confidence: 100,
+  website: "https://voorbeeld.nl",
+  reason: "Website in bron",
+  evidence: [],
+};
+
+function analysis(overrides: Partial<WebsiteAnalysisResult> = {}): WebsiteAnalysisResult {
+  return {
+    websiteUrl: "https://voorbeeld.nl",
+    opportunityScore: 20,
+    mobileScore: 90,
+    desktopScore: 90,
+    conversionQualityScore: 80,
+    classification: "USABLE",
+    isReachable: true,
+    isMobileFriendly: true,
+    hasContactForm: true,
+    hasClearCta: true,
+    hasBrokenLinks: false,
+    brokenLinkCount: 0,
+    hasViewportMeta: true,
+    hasOutdatedCopyright: false,
+    hasPlaceholderContent: false,
+    loadTimeMs: 200,
+    hasHttps: true,
+    hasInvalidSsl: false,
+    hasBrokenImages: false,
+    brokenImageCount: 0,
+    hasLegacyTechnology: false,
+    hasTinyText: false,
+    httpStatus: 200,
+    failureKind: null,
+    reasons: [],
+    rawSignals: {},
+    ...overrides,
+  };
+}
+
+describe("digitale websitekwalificatie", () => {
+  it("laat een bruikbare website niet als lead door", () => {
+    expect(classifyOwnedWebsite(source, analysis()).status).toBe("WEBSITE_FOUND");
   });
 
-  it("controleert zichtbare chatinterface én bekende widgets/scripts", () => {
-    const withWidget = inspectDigitalHtml("https://bedrijf.nl", "<meta name='viewport' content='width=device-width'><a href='/contact'>Contact</a><script src='https://client.crisp.chat/l.js'></script>");
-    expect(withWidget.chatbotStatus).toBe("PRESENT");
-    expect(withWidget.evidence.some((item) => item.checkType === "CHATBOT_INTERFACE_AND_SCRIPT" && item.result === "PRESENT")).toBe(true);
-
-    const withoutWidget = inspectDigitalHtml("https://bedrijf.nl", "<meta name='viewport' content='width=device-width'><a href='/contact'>Contact</a>");
-    expect(withoutWidget.chatbotStatus).toBe("NOT_PRESENT");
-    expect(withoutWidget.reason).toContain("geen zichtbare chatbot");
-    expect(hasRequiredDigitalGap(withoutWidget)).toBe(true);
+  it("kwalificeert aantoonbaar verouderde en meervoudig verbeterbare websites", () => {
+    const reasons = [
+      { code: "NO_VIEWPORT", label: "Geen mobiele viewport", weight: 20 },
+      { code: "NO_CTA", label: "Geen duidelijke actieknop", weight: 15 },
+    ];
+    expect(classifyOwnedWebsite(source, analysis({ classification: "OUTDATED", opportunityScore: 85, reasons })).status).toBe("WEBSITE_OUTDATED");
+    expect(classifyOwnedWebsite(source, analysis({ classification: "IMPROVABLE", opportunityScore: 60, reasons })).status).toBe("IMPROVABLE_WEBSITE");
   });
 
-  it("kwalificeert een defecte website maar faalt gesloten of onzekere controles elders dicht", () => {
-    const broken = inspectDigitalHtml("https://bedrijf.nl", "", 503);
-    expect(broken.status).toBe("WEBSITE_BROKEN");
-    expect(hasRequiredDigitalGap(broken)).toBe(true);
+  it("beschouwt één timeout nooit als bewijs van een kapotte website", () => {
+    expect(classifyOwnedWebsite(source, analysis({
+      isReachable: false,
+      failureKind: "timeout",
+      httpStatus: null,
+    })).status).toBe("UNKNOWN");
+  });
+
+  it("kwalificeert een blijvende serverfout of ongeldig certificaat als kapot", () => {
+    expect(classifyOwnedWebsite(source, analysis({ isReachable: false, httpStatus: 503 })).status).toBe("WEBSITE_BROKEN");
+    expect(classifyOwnedWebsite(source, analysis({ isReachable: false, hasInvalidSsl: true, failureKind: "invalid_ssl" })).status).toBe("WEBSITE_BROKEN");
   });
 });

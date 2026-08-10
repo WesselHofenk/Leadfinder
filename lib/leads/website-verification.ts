@@ -1,4 +1,5 @@
 import { resolveAny } from "node:dns/promises";
+import { assertPublicUrl } from "@/lib/website/url-safety";
 import type { Candidate } from "./eligibility";
 import { normalizeEmails, normalizeText } from "./normalization";
 import { determineWebsiteStatus, extractWebsiteEntries, isNonOwnedWebsite, normalizeWebsite } from "./website";
@@ -10,6 +11,7 @@ export type LocalWebsiteStatus =
   | "WEBSITE_FOUND"
   | "WEBSITE_OUTDATED"
   | "WEBSITE_BROKEN"
+  | "IMPROVABLE_WEBSITE"
   | "MANUAL_REVIEW_REQUIRED"
   | "UNKNOWN";
 
@@ -27,15 +29,13 @@ export type WebsiteVerificationResult = {
 
 const legalForms = /\b(bv|b\.v\.?|vof|v\.o\.f\.?|nv|n\.v\.?|eenmanszaak|cv|maatschap)\b/gi;
 const weakNameTokens = new Set(["de", "den", "der", "het", "the", "van", "voor", "en", "and", "bij", "by"]);
-const descriptorTokens = new Set([
-  "opticien", "opticiens", "kapper", "kapsalon", "salon", "restaurant", "cafe", "winkel", "shop", "store",
-  "praktijk", "studio", "centrum", "center", "services", "service", "bedrijf", "bedrijven",
-]);
 const publicEmailDomains = new Set([
   "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.nl", "live.com", "live.nl", "yahoo.com",
   "icloud.com", "proton.me", "protonmail.com", "ziggo.nl", "kpnmail.nl", "planet.nl", "xs4all.nl", "telenet.be", "skynet.be",
 ]);
-const strongAbsenceFreshnessMs = 2 * 365.25 * 24 * 60 * 60 * 1000;
+// Eligibility already rejects OSM records older than six years. Requiring a
+// second, unrelated two-year cutoff caused valid records to stay in retry forever.
+const strongAbsenceFreshnessMs = 6 * 365.25 * 24 * 60 * 60 * 1000;
 
 function websiteValues(candidate: Candidate) {
   return extractWebsiteEntries(candidate).map(({ rawValue }) => rawValue);
@@ -45,25 +45,22 @@ function words(value?: string) {
   return normalizeText(value ?? "").split(" ").filter(Boolean);
 }
 
-function identityTerms(candidate: Candidate) {
-  const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
-  const company = words(candidate.companyName.replace(legalForms, ""));
-  const brand = [...words(candidate.brand), ...words(candidate.operator)];
-  return [...new Set([...brand, ...company].filter((token) =>
-    token.length >= 4 && !weakNameTokens.has(token) && !descriptorTokens.has(token) && !locations.has(token),
-  ))];
-}
-
 /** Domain candidates are intentionally broad: short brand domains such as pearle.nl must be checked too. */
 export function candidateDomains(candidate: Candidate) {
   const countrySuffix = candidate.country.toUpperCase() === "BE" ? "be" : "nl";
   const locations = new Set([...words(candidate.city), ...words(candidate.municipality), ...words(candidate.province)]);
   const companyWords = words(candidate.companyName.replace(legalForms, "")).filter((token) => !locations.has(token));
-  const terms = identityTerms(candidate);
+  const exactCompanyWords = companyWords.filter((token) => !weakNameTokens.has(token));
+  const explicitBrandRoots = [words(candidate.brand).join(""), words(candidate.operator).join("")];
+  // A responding domain for only the first word of a multi-word company is
+  // not proof of ownership (`gladys.nl` need not belong to "Gladys
+  // Internacional Hair"). Probe short roots only for an explicit brand or a
+  // genuinely one-word company; otherwise keep the complete business name.
+  const oneWordCompanyRoot = companyWords.length === 1 ? companyWords[0] : "";
   const roots = [
-    words(candidate.brand).join(""), words(candidate.operator).join(""), terms[0], terms.slice(0, 2).join(""),
-    companyWords.filter((token) => !weakNameTokens.has(token)).join(""), companyWords.join(""),
-    companyWords.filter((token) => !weakNameTokens.has(token)).join("-"), companyWords.join("-"),
+    ...explicitBrandRoots, oneWordCompanyRoot,
+    exactCompanyWords.join(""), companyWords.join(""),
+    exactCompanyWords.join("-"), companyWords.join("-"),
   ].filter((root): root is string => Boolean(root && root.length >= 4 && root.length <= 63 && /[a-z]/.test(root)));
   const emailDomains = normalizeEmails([candidate.email, ...(candidate.emailAddresses ?? [])])
     .map((email) => email.split("@")[1]).filter((domain) => domain && !publicEmailDomains.has(domain));
@@ -74,7 +71,13 @@ export function candidateDomains(candidate: Candidate) {
 export function hasStrongAutomaticAbsenceEvidence(candidate: Candidate, now = Date.now()) {
   const updatedAt = candidate.sourceUpdatedAt ? Date.parse(candidate.sourceUpdatedAt) : Number.NaN;
   const recent = Number.isFinite(updatedAt) && updatedAt <= now + 86_400_000 && now - updatedAt <= strongAbsenceFreshnessMs;
-  return candidate.source === "OPENSTREETMAP" && recent && Boolean(candidate.activitySignals?.length);
+  const mappedLocation = Number.isFinite(candidate.latitude) && Number.isFinite(candidate.longitude)
+    && Boolean(candidate.city?.trim()) && normalizeText(candidate.city) !== "onbekend";
+  return candidate.source === "OPENSTREETMAP"
+    && candidate.sourceWebsiteFieldsChecked === true
+    && recent
+    && mappedLocation
+    && Boolean(candidate.companyName?.trim());
 }
 
 function dnsAbsent(error: unknown) {
@@ -95,14 +98,15 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number) {
 async function requestWithRedirects(url: string, method: "HEAD" | "GET", fetchImpl: typeof fetch, maxRedirects = 3) {
   let current = url;
   for (let redirect = 0; redirect <= maxRedirects; redirect += 1) {
-    const response = await fetchImpl(current, {
+    const safeUrl = await assertPublicUrl(current);
+    const response = await fetchImpl(safeUrl, {
       method, redirect: "manual", signal: AbortSignal.timeout(2_500),
       headers: { "User-Agent": "LeadfinderSitora/4.0 local-website-verification" },
     });
     if (response.status < 300 || response.status >= 400) return response;
     const location = response.headers.get("location");
     if (!location || redirect === maxRedirects) return response;
-    current = new URL(location, current).toString();
+    current = (await assertPublicUrl(new URL(location, safeUrl).toString())).toString();
   }
   throw new Error("redirect_limit");
 }
@@ -186,7 +190,9 @@ export async function verifyWebsiteCandidate(candidate: Candidate): Promise<Webs
     status: "NO_WEBSITE_CONFIRMED", confidence: explicitAbsence ? 90 : 84, website: null,
     reason: explicitAbsence
       ? "De openbare bron markeert de website expliciet als afwezig en alle begrensde domeincontroles waren negatief."
-      : "Een recent en contacteerbaar bedrijfsrecord bevat geen website; alle uitgebreide bedrijfs-, merk-, plaats- en e-maildomeincontroles waren negatief.",
+      : normalized.length
+        ? "De bron bevat alleen een sociaal of extern profiel, geen eigen website; alle plausibele bedrijfsdomeinen zijn negatief gecontroleerd."
+        : "Een recent openbaar bedrijfsrecord bevat geen website; alle uitgebreide bedrijfs-, merk-, plaats- en e-maildomeincontroles waren negatief.",
     evidence: [...externalEvidence, { checkType: "SOURCE_WEBSITE", result: explicitAbsence ? "ABSENT_CONFIRMED" : "ABSENT_AFTER_STRONG_CHECKS", confidence: explicitAbsence ? 90 : 84,
       shortExplanation: explicitAbsence ? "Expliciete bronwaarde voor geen website." : "Niet alleen een leeg veld: recente bronmetadata, aanvullende activiteitssignalen en uitgebreide domeincontroles ondersteunen de afwezigheid." },
       ...checks.map((check) => ({ checkType: "DOMAIN_PROBE", result: "NOT_FOUND", confidence: explicitAbsence ? 90 : 84, evidenceUrl: `https://${check.domain}`, shortExplanation: "Plausibele domeinkandidaat bestaat niet." }))],

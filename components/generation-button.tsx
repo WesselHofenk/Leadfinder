@@ -1,3 +1,4 @@
+
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -78,6 +79,7 @@ export function GenerationButton() {
 
   return <section className="generation-control generation-task-card" aria-label="Leadfinder-taakstatus">
     <div className="generation-task-head">
+
       <span className={`status-dot ${enabled ? "status-dot-active" : ""}`} aria-hidden="true"/>
       <div>
         <strong>{task?.name ?? "Leadfinder doorlopend zoeken"}</strong>

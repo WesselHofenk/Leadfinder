@@ -4,6 +4,12 @@ import { describe, expect, it } from "vitest";
 
 const migration = readFileSync(resolve("prisma/migrations/20260716163000_seven_stage_sales_pipeline/migration.sql"), "utf8");
 const notInterestedMigration = readFileSync(resolve("prisma/migrations/20260716170000_add_not_interested_pipeline_status/migration.sql"), "utf8");
+const relationalMigration = readFileSync(resolve("prisma/migrations/20260716210000_relational_pipeline_stages/migration.sql"), "utf8");
+const emailedStageMigration = readFileSync(resolve("prisma/migrations/20260716234500_add_emailed_pipeline_stage/migration.sql"), "utf8");
+const callbackRequestStageMigration = readFileSync(resolve("prisma/migrations/20260716235900_add_callback_request_pipeline_stage/migration.sql"), "utf8");
+const dutchLeadRecoveryMigration = readFileSync(resolve("prisma/migrations/20260717001000_restore_dutch_leads/migration.sql"), "utf8");
+const sixStageMigration = readFileSync(resolve("prisma/migrations/20260723210000_six_stage_pipeline/migration.sql"), "utf8");
+const legacyStatusRepairMigration = readFileSync(resolve("prisma/migrations/20260809212000_repair_legacy_lead_status_drift/migration.sql"), "utf8");
 
 describe("veilige pipeline-datamigratie", () => {
   it.each([
@@ -24,5 +30,98 @@ describe("veilige pipeline-datamigratie", () => {
   it("voegt Niet geïnteresseerd toe zonder bestaande leads te wijzigen of verwijderen", () => {
     expect(notInterestedMigration).toContain("ADD VALUE IF NOT EXISTS 'NOT_INTERESTED'");
     expect(notInterestedMigration).not.toMatch(/UPDATE|DELETE\s+FROM|TRUNCATE/i);
+  });
+  it("maakt exact acht canonieke relationele fases in een transactie", () => {
+    expect(relationalMigration).toMatch(/^BEGIN;/);
+    expect(relationalMigration.trim()).toMatch(/COMMIT;$/);
+    for (const slug of ["nieuw","belletje-1","belletje-2","belletje-3","belletje-4","ingepland","deal","geen-interesse"]) expect(relationalMigration).toContain(`'${slug}'`);
+    expect(relationalMigration).toContain("active_stages <> 8");
+  });
+
+  it("bewaakt het leadaantal en verwijdert of overschrijft geen lead", () => {
+    expect(relationalMigration).toContain("before_total <> after_total");
+    expect(relationalMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(relationalMigration).toContain('CREATE TABLE IF NOT EXISTS "PipelineMigrationAudit"');
+  });
+
+  it("voegt Gemaild veilig op positie 6 toe zonder bestaande leads te wijzigen", () => {
+    expect(emailedStageMigration).toMatch(/^BEGIN;/);
+    expect(emailedStageMigration.trim()).toMatch(/COMMIT;$/);
+    expect(emailedStageMigration).toContain("('pipeline-gemaild', 'gemaild', 'Gemaild', 6");
+    expect(emailedStageMigration).toContain("lead_count_before <> lead_count_after");
+    expect(emailedStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(emailedStageMigration).toContain("WHEN 'ingepland' THEN 7");
+    expect(emailedStageMigration).toContain("WHEN 'geen-interesse' THEN 9");
+  });
+
+  it("voegt Terugbel verzoek veilig op positie 10 toe zonder bestaande leads te wijzigen", () => {
+    expect(callbackRequestStageMigration).toMatch(/^BEGIN;/);
+    expect(callbackRequestStageMigration.trim()).toMatch(/COMMIT;$/);
+    expect(callbackRequestStageMigration).toContain("('pipeline-terugbel-verzoek', 'terugbel-verzoek', 'Terugbel verzoek', 10");
+    expect(callbackRequestStageMigration).toContain("lead_count_before <> lead_count_after");
+    expect(callbackRequestStageMigration).not.toMatch(/UPDATE\s+"Lead"|DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+    expect(callbackRequestStageMigration).toContain("callback_stage_count <> 1");
+  });
+
+  it("herstelt alleen vooraf geback-upte Nederlandse leads transactioneel en idempotent", () => {
+    expect(dutchLeadRecoveryMigration).toMatch(/^BEGIN;/);
+    expect(dutchLeadRecoveryMigration.trim()).toMatch(/COMMIT;$/);
+    expect(dutchLeadRecoveryMigration).toContain("recovery_backup_20260716_165500");
+    expect(dutchLeadRecoveryMigration).toContain('CREATE TEMP TABLE "_DutchLeadRecoveryCandidates"');
+    expect(dutchLeadRecoveryMigration).toContain('"isActive" = true');
+    expect(dutchLeadRecoveryMigration).toContain('"isFiltered" = false');
+    expect(dutchLeadRecoveryMigration).toContain('"isSuppressed" = false');
+    expect(dutchLeadRecoveryMigration).toContain('ON CONFLICT ("recoveryKey") DO NOTHING');
+    expect(dutchLeadRecoveryMigration).toContain("foreign_before IS DISTINCT FROM foreign_after");
+    expect(dutchLeadRecoveryMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+  });
+
+  it("migreert naar exact zes actieve fases zonder leads te verwijderen", () => {
+    expect(sixStageMigration).toMatch(/^BEGIN;/);
+    expect(sixStageMigration.trim()).toMatch(/COMMIT;$/);
+    for (const [slug, position] of [
+      ["nieuw", 1],
+      ["belletje-1", 2],
+      ["belletje-2", 3],
+      ["gemaild", 4],
+      ["geen-interesse", 5],
+      ["klant", 6],
+    ] as const) {
+      expect(sixStageMigration).toContain(`('${slug}', ${position})`);
+    }
+    expect(sixStageMigration).toContain("active_stages <> 6");
+    expect(sixStageMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
+  });
+
+  it("bewaart leadaantal en historie en documenteert iedere fasemigratie", () => {
+    expect(sixStageMigration).toContain("before_total <> after_total");
+    expect(sixStageMigration).toContain('INSERT INTO "LeadActivity"');
+    expect(sixStageMigration).toContain("PIPELINE_STAGE_MIGRATED");
+    expect(sixStageMigration).toContain('INSERT INTO "PipelineMigrationAudit"');
+  });
+
+  it("migreert alle oude fasen naar de best passende nieuwe fase", () => {
+    for (const [oldStage, target] of [
+      ["belletje-3", "pipeline-belletje-1"],
+      ["ingepland", "pipeline-belletje-2"],
+      ["terugbel-verzoek", "pipeline-belletje-2"],
+      ["belletje-4", "pipeline-gemaild"],
+      ["deal", "pipeline-klant"],
+      ["niet-interessant", "pipeline-geen-interesse"],
+    ] as const) {
+      expect(sixStageMigration).toContain(`'${oldStage}'`);
+      expect(sixStageMigration).toContain(`'${target}'`);
+    }
+  });
+
+  it("herstelt EMAILED transactioneel naar de canonieke fase zonder leads te verwijderen", () => {
+    expect(legacyStatusRepairMigration).toMatch(/^BEGIN;/);
+    expect(legacyStatusRepairMigration.trim()).toMatch(/COMMIT;$/);
+    expect(legacyStatusRepairMigration).toContain("WHEN \"status\"::TEXT = 'EMAILED' THEN 'pipeline-gemaild'");
+    expect(legacyStatusRepairMigration).toContain("WHEN \"status\"::TEXT = 'EMAILED' THEN 'QUOTE_SENT'::\"LeadStatus\"");
+    expect(legacyStatusRepairMigration).toContain("total_before <> total_after");
+    expect(legacyStatusRepairMigration).toContain("invalid_after <> 0");
+    expect(legacyStatusRepairMigration).toContain('CONSTRAINT "Lead_status_canonical_check"');
+    expect(legacyStatusRepairMigration).not.toMatch(/DELETE\s+FROM\s+"Lead"|TRUNCATE/i);
   });
 });

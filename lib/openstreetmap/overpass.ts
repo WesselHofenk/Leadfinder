@@ -1,3 +1,4 @@
+
 import "server-only";
 
 import type { Candidate } from "@/lib/leads/eligibility";
@@ -29,6 +30,7 @@ export type OverpassEvent = {
 type SearchParams = {
   endpoints: string[];
   country: string;
+  city?: string;
   latitude: number;
   longitude: number;
   radius: number;
@@ -43,60 +45,103 @@ type SearchParams = {
   sleep?: (ms: number) => Promise<void>;
   random?: () => number;
   onEvent?: (event: OverpassEvent) => void | Promise<void>;
+  queryOverride?: string;
+  queryTypeOverride?: string;
+  tileLabelOverride?: string;
 };
 
-export type OverpassElementStrategy = "node" | "way" | "relation";
+export type OverpassElementStrategy = "node" | "way" | "relation" | "nwr";
+export type OverpassContactStrategy =
+  | "phone" | "contact:phone" | "mobile" | "contact:mobile" | "telephone" | "contact:telephone";
+export type OverpassSearchMode = "qualified-first" | "phone-discovery";
 
 const permanentSignals = ["disused", "abandoned", "demolished", "removed", "razed", "was"];
 const tileOffsets = Array.from({ length: 5 }, (_, row) => Array.from({ length: 5 }, (_, column) => [row - 2, column - 2] as const))
   .flat().sort(([rowA, columnA], [rowB, columnB]) => (rowA ** 2 + columnA ** 2) - (rowB ** 2 + columnB ** 2) || rowA - rowB || columnA - columnB);
 export const OSM_TILE_COUNT = tileOffsets.length;
-// De gratis publieke servers beantwoorden node-queries betrouwbaar binnen de
-// serverless limiet. Zware way/relation-queries hielden verse vondsten tegen.
-const elementStrategies: readonly OverpassElementStrategy[] = ["node"];
-export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * elementStrategies.length;
+const elementStrategies: readonly OverpassElementStrategy[] = ["node", "way", "relation"];
+// A usable public phone number is the required contact route. Each indexed tag
+// gets its own small request so one expensive key/category combination cannot
+// block the rest of the run on a public Overpass host.
+const contactStrategies: readonly OverpassContactStrategy[] = [
+  "phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone",
+];
+const strategiesPerTile = 1 + elementStrategies.length * contactStrategies.length;
+export const OSM_SEARCH_CURSOR_COUNT = OSM_TILE_COUNT * strategiesPerTile;
+
+export function initialOverpassSearchCursor(country: string, city: string, category: string) {
+  void country;
+  void city;
+  void category;
+  // Most named local businesses in OSM are mapped as nodes. New combinations
+  // start with the common `phone` tag and rotate independently through the
+  // other public-phone keys.
+  return 0;
+}
+
 
 export function overpassSearchPlan(cursor = 0) {
   const normalized = ((cursor % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
-  // Productie doorzoekt de lichte node-tegels, zodat iedere batch binnen de
-  // gratis server- en uitvoeringstijd een reële kans op resultaten houdt.
-  const strategyIndex = Math.floor(normalized / OSM_TILE_COUNT);
-  const tileCursor = normalized % OSM_TILE_COUNT;
+  const tileCursor = Math.floor(normalized / strategiesPerTile);
+  const strategyCursor = normalized % strategiesPerTile;
+  if (strategyCursor === 0) {
+    return {
+      cursor: normalized,
+      tileCursor,
+      mode: "qualified-first" as const,
+      strategy: "nwr" as const,
+      contact: "phone+email" as const,
+      id: `t${tileCursor}-qualified-first`,
+    };
+  }
+  const legacyCursor = strategyCursor - 1;
+  const strategyIndex = legacyCursor % elementStrategies.length;
+  const contactIndex = Math.floor(legacyCursor / elementStrategies.length) % contactStrategies.length;
   const strategy = elementStrategies[strategyIndex];
-  return { cursor: normalized, tileCursor, strategy, id: `t${tileCursor}-${strategy}` };
+  const contact = contactStrategies[contactIndex];
+  return {
+    cursor: normalized,
+    tileCursor,
+    mode: "phone-discovery" as const,
+    strategy,
+    contact,
+    id: `t${tileCursor}-${strategy}-${contact.replace(":", "-")}`,
+  };
 }
 
-export function nextOverpassTileCursor(current: number, sourceSucceeded: boolean) {
+export function nextOverpassTileCursor(current: number) {
   const normalized = ((current % OSM_SEARCH_CURSOR_COUNT) + OSM_SEARCH_CURSOR_COUNT) % OSM_SEARCH_CURSOR_COUNT;
-  return sourceSucceeded ? (normalized + 1) % OSM_SEARCH_CURSOR_COUNT : normalized;
+  // A failed query must not pin a search combination to the same expensive tile forever.
+  // The failure is logged separately, so moving on loses no evidence and avoids a retry loop.
+  return (normalized + 1) % OSM_SEARCH_CURSOR_COUNT;
 }
 
 const endpointHealth = new Map<string, { failures: number; openUntil: number }>();
+const endpointLocks = new Map<string, Promise<void>>();
 const circuitFailureThreshold = 2;
 const circuitCooldownMs = 30_000;
 
 export function clearOverpassCircuitState() { endpointHealth.clear(); }
 
+async function withEndpointLock<T>(endpoint: string, task: () => Promise<T>) {
+  const host = new URL(endpoint).host;
+  const previous = endpointLocks.get(host) ?? Promise.resolve();
+  let releaseGate: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+  const tail = previous.catch(() => undefined).then(() => gate);
+  endpointLocks.set(host, tail);
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    releaseGate();
+    if (endpointLocks.get(host) === tail) endpointLocks.delete(host);
+  }
+}
+
 function healthyEndpoints(endpoints: string[], now: number) {
   const available = endpoints.filter((endpoint) => (endpointHealth.get(endpoint)?.openUntil ?? 0) <= now);
   return available.length ? available : endpoints;
-}
-
-export function prioritizeOverpassEndpoints(endpoints: string[]) {
-  const priority = (endpoint: string) => {
-    try {
-      const host = new URL(endpoint).hostname;
-      // De VK-mirror is onafhankelijk van de andere twee providers en reageert
-      // doorgaans binnen het serverless tijdsbudget. overpass-api.de verdeelt
-      // zelf al over zijn z/lz4-machines, dus de directe lz4-host staat laatst.
-      if (host === "maps.mail.ru") return 0;
-      if (host === "overpass.private.coffee") return 1;
-      if (host === "overpass-api.de") return 2;
-      if (host === "lz4.overpass-api.de" || host === "z.overpass-api.de") return 3;
-    } catch { /* De normale URL-validatie meldt ongeldige configuratie. */ }
-    return 4;
-  };
-  return [...endpoints].sort((left, right) => priority(left) - priority(right));
 }
 
 function recordEndpointFailure(endpoint: string, now: number) {
@@ -115,18 +160,35 @@ function closedSignals(tags: Record<string, string>) {
   if (tags.end_date && /^\d{4}/.test(tags.end_date) && Number(tags.end_date.slice(0, 4)) <= new Date().getFullYear()) signals.push("end_date");
   if (["closed", "permanently_closed"].includes(tags.opening_hours?.toLowerCase())) signals.push("opening_hours");
   return signals;
+
 }
 
-function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
+function explicitGoogleProfile(tags: Record<string, string>) {
+  const placeId = tags["google:place_id"] || tags.google_place_id || tags["contact:google:place_id"];
+  const urls = [tags["google:maps"], tags.google_maps, tags["contact:google"], tags["contact:google_maps"], tags["google:business"]]
+    .filter((value): value is string => Boolean(value?.trim()));
+  const profileUrl = urls.find((value) => /^https:\/\/(?:(?:www\.)?(?:google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)|maps\.app\.goo\.gl)(?:\/|\?|$)/i.test(value));
+  return { placeId, profileUrl, verified: Boolean(placeId || profileUrl) };
+}
+
+function candidatesFrom(elements: OsmElement[], country: string, searchCity?: string): Candidate[] {
   const candidates = elements.flatMap((element): Candidate[] => {
     const tags = element.tags ?? {};
     const latitude = element.lat ?? element.center?.lat;
     const longitude = element.lon ?? element.center?.lon;
     if (!tags.name || latitude == null || longitude == null) return [];
-    const street = tags["addr:full"] || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ");
-    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || "Onbekend";
+    const city = tags["addr:city"] || tags["addr:place"] || tags["addr:municipality"] || tags["addr:suburb"] || searchCity || "Onbekend";
+    const street = tags["addr:full"]
+      || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" ")
+      || `${city} (${latitude.toFixed(5)}, ${longitude.toFixed(5)})`;
     const category = tags.shop || tags.craft || tags.office || tags.amenity || tags.tourism || tags.healthcare || "bedrijf";
+    const formattedAddress = [
+      tags["addr:full"] || [tags["addr:street"] || tags["contact:street"], tags["addr:housenumber"]].filter(Boolean).join(" "),
+      [tags["addr:postcode"], city].filter(Boolean).join(" "),
+      (tags["addr:country"] || country).toUpperCase(),
+    ].filter(Boolean).join(", ");
     const closureSignals = closedSignals(tags);
+    const googleProfile = explicitGoogleProfile(tags);
     const rawWebsiteValues = [tags.website, tags["contact:website"], tags.url, tags["contact:url"], tags["operator:website"], tags["brand:website"]].filter((value): value is string => Boolean(value));
     const noWebsiteValues = new Set(["no", "none", "nee", "geen", "n.v.t.", "nvt"]);
     const positiveWebsite = rawWebsiteValues.find((value) => !noWebsiteValues.has(value.trim().toLowerCase()));
@@ -135,13 +197,11 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
     const emailAddresses = [tags.email, tags["contact:email"]].filter((value): value is string => Boolean(value));
     const sourceDates = [element.timestamp, tags.check_date, tags["contact:check_date"], tags["opening_hours:check_date"], tags["survey:date"]]
       .filter((value): value is string => Boolean(value)).map((value) => ({ value, time: Date.parse(value) })).filter(({ time }) => Number.isFinite(time)).sort((a, b) => b.time - a.time);
-    const activitySignals = [
-      "opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date",
-      "phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone",
-      "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram",
-    ]
+    const activitySignals = ["opening_hours", "check_date", "contact:check_date", "opening_hours:check_date", "survey:date", "phone", "contact:phone", "mobile", "contact:mobile", "email", "contact:email", "facebook", "contact:facebook", "instagram", "contact:instagram"]
       .filter((key) => Boolean(tags[key]));
-    const recentActive = Boolean(activitySignals.length && sourceDates[0] && Date.now() - sourceDates[0].time <= 2 * 365.25 * 24 * 60 * 60 * 1000);
+    const socialUrls = [tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]]
+      .filter((value): value is string => Boolean(value));
+    const explicitStatus = [tags.business_status, tags.status, tags["contact:status"]].map((value) => value?.toLowerCase()).find(Boolean);
     return [{
       externalPlaceId: `osm:${element.type}/${element.id}`,
       source: "OPENSTREETMAP",
@@ -151,13 +211,27 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       phoneNumbers,
       email: emailAddresses[0],
       emailAddresses,
+      emailSource: "OPENSTREETMAP",
+      emailSourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+      emailPubliclyListed: emailAddresses.length > 0,
       website: positiveWebsite,
       websiteFields: [tags["contact:url"], tags["operator:website"], tags["brand:website"], tags.facebook, tags.instagram, tags["contact:facebook"], tags["contact:instagram"], tags["contact:linkedin"], tags["contact:tiktok"]],
       websiteAbsenceConfirmed,
-      businessStatus: closureSignals.length || isPermanentlyClosed(tags) ? "CLOSED_PERMANENTLY" : recentActive ? "OPERATIONAL" : "UNKNOWN",
+      sourceWebsiteFieldsChecked: true,
+      businessStatus: closureSignals.length || isPermanentlyClosed(tags)
+        ? "CLOSED_PERMANENTLY"
+        : explicitStatus && /^(operational|open|active|actief|geopend)$/.test(explicitStatus) ? "OPERATIONAL" : "UNKNOWN",
       closureSignals,
       activitySignals,
       rawData: tags,
+      description: tags["description:nl"] || tags.description,
+      contactText: [tags.note, tags.operator, tags["contact:phone"], tags["contact:email"]].filter(Boolean).join(" "),
+      language: tags["name:nl"] || tags["description:nl"] ? "nl" : tags["name:fr"] || tags["description:fr"] ? "fr" : undefined,
+      languageConfidence: tags["name:nl"] || tags["description:nl"] || tags["name:fr"] || tags["description:fr"] ? 95 : undefined,
+      googlePlaceId: googleProfile.placeId,
+      googleBusinessProfileUrl: googleProfile.profileUrl,
+      googleBusinessProfileVerified: googleProfile.verified,
+      socialUrls,
       sourceUpdatedAt: sourceDates[0]?.value,
       country: (tags["addr:country"] || country).toUpperCase(),
       category,
@@ -167,13 +241,22 @@ function candidatesFrom(elements: OsmElement[], country: string): Candidate[] {
       operator: tags.operator,
       province: tags["addr:province"] || tags["addr:state"],
       municipality: tags["addr:municipality"],
+
+      locality: tags["addr:locality"],
+      town: tags["addr:town"],
+      village: tags["addr:village"],
+      suburb: tags["addr:suburb"],
+      district: tags["addr:district"],
+      county: tags["addr:county"],
+      region: tags["addr:region"] || tags["is_in:region"],
       city,
       postalCode: tags["addr:postcode"],
       streetAddress: street,
+      formattedAddress: formattedAddress || undefined,
       houseNumber: tags["addr:housenumber"],
       latitude,
       longitude,
-      googleMapsUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
+      googleMapsUrl: googleProfile.profileUrl || `https://www.openstreetmap.org/${element.type}/${element.id}`,
       sourceUrl: `https://www.openstreetmap.org/${element.type}/${element.id}`,
       fetchedAt: new Date().toISOString(),
     }];
@@ -188,21 +271,22 @@ function normalizedCategory(category = "") {
 export function categoryFilters(category?: string) {
   const value = normalizedCategory(category);
   if (/restaurant|lunchroom|cafe|catering/.test(value)) return ['["amenity"~"^(restaurant|cafe|fast_food|food_court)$"]'];
+  if (/slager|butcher/.test(value)) return ['["shop"="butcher"]'];
   if (/hotel|bed and breakfast/.test(value)) return ['["tourism"~"^(hotel|guest_house|hostel|apartment)$"]'];
-  if (/kapper|schoonheid|nagel|wellness/.test(value)) return ['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]'];
+  if (/kapper|barbier|coiffeur|schoonheid|estheticienne|nagel|wellness/.test(value)) return ['["shop"~"^(hairdresser|beauty|massage|cosmetics)$"]'];
   if (/fysio|personal trainer|coach|opleiding|kinderopvang/.test(value)) return ['["healthcare"]', '["amenity"~"^(doctors|clinic|kindergarten|training)$"]'];
   if (/garage|autobedrijf|rijschool/.test(value)) return ['["shop"~"^(car|car_repair|tyres)$"]', '["amenity"="driving_school"]'];
-  if (/makelaar|boekhouder|consultant/.test(value)) return ['["office"~"^(estate_agent|accountant|consulting|company)$"]'];
-  if (/schilder/.test(value)) return ['["craft"="painter"]'];
-  if (/stukadoor/.test(value)) return ['["craft"="plasterer"]'];
+  if (/makelaar|boekhouder|accountant|comptable|consultant/.test(value)) return ['["office"~"^(estate_agent|accountant|consulting|company)$"]'];
+  if (/schilder|peintre/.test(value)) return ['["craft"="painter"]'];
+  if (/stukadoor|platrier/.test(value)) return ['["craft"="plasterer"]'];
   if (/tegel/.test(value)) return ['["craft"="tiler"]'];
-  if (/dakdekker/.test(value)) return ['["craft"="roofer"]'];
-  if (/loodgieter|installatie/.test(value)) return ['["craft"~"^(plumber|hvac)$"]'];
-  if (/elektricien/.test(value)) return ['["craft"="electrician"]'];
-  if (/hovenier/.test(value)) return ['["craft"~"^(gardener|landscaper)$"]'];
-  if (/fotograaf/.test(value)) return ['["craft"="photographer"]'];
+  if (/dakdekker|couvreur|toiture/.test(value)) return ['["craft"="roofer"]'];
+  if (/loodgieter|plombier|installatie/.test(value)) return ['["craft"~"^(plumber|hvac)$"]'];
+  if (/elektricien|electricien/.test(value)) return ['["craft"="electrician"]'];
+  if (/hovenier|jardinier/.test(value)) return ['["craft"~"^(gardener|landscaper)$"]'];
+  if (/fotograaf|photographe/.test(value)) return ['["craft"="photographer"]'];
   if (/aannemer|klus/.test(value)) return ['["craft"~"^(builder|carpenter|handicraft)$"]', '["office"="company"]'];
-  if (/schoonmaak/.test(value)) return ['["craft"="cleaning"]', '["office"="company"]'];
+  if (/schoonmaak|nettoyage/.test(value)) return ['["craft"="cleaning"]', '["office"="company"]'];
   if (/verhuis/.test(value)) return ['["office"~"^(moving_company|company)$"]'];
   if (/interieur|keuken/.test(value)) return ['["craft"~"^(cabinet_maker|interior_decorator)$"]', '["shop"="kitchen"]'];
   if (/videograaf|drukkerij/.test(value)) return ['["craft"~"^(photographer|printer)$"]', '["office"="company"]'];
@@ -221,32 +305,65 @@ export function overpassTile(latitude: number, longitude: number, radius: number
   return { latitude: latitude + north, longitude: longitude + east, radius: tileRadius, id: `t${index}` };
 }
 
-export function buildOverpassQuery(params: { latitude: number; longitude: number; radius: number; category?: string; timeoutSeconds: number; strategy?: OverpassElementStrategy }) {
+export function buildOverpassQuery(params: {
+  latitude: number;
+  longitude: number;
+  radius: number;
+  category?: string;
+  timeoutSeconds: number;
+  strategy?: OverpassElementStrategy;
+  contact?: OverpassContactStrategy;
+  mode?: OverpassSearchMode;
+  boundingBox?: boolean;
+}) {
   const filters = categoryFilters(params.category);
   const strategy = params.strategy ?? "node";
+  const contact = params.contact ?? "phone";
   const latitudeDelta = params.radius / 111_320;
   const longitudeDelta = params.radius / (111_320 * Math.max(0.2, Math.cos(params.latitude * Math.PI / 180)));
-  const bbox = [
-    params.latitude - latitudeDelta,
-    params.longitude - longitudeDelta,
-    params.latitude + latitudeDelta,
-    params.longitude + longitudeDelta,
-  ].map((value) => value.toFixed(7)).join(",");
-  // Eén contactfilter houdt de response klein zonder de bron te dwingen twee
-  // dure regex-filters te combineren. De intakegate controleert daarna nog
-  // steeds streng of zowel telefoon als een afleverbaar e-mailadres aanwezig zijn.
-  const contactFilter = '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone|email|contact:email)$"~"."]';
-  const statements = filters.map((filter) =>
-    `${strategy}(${bbox})${filter}[name]${contactFilter};`,
-  ).join("");
+  const spatial = params.boundingBox
+
+    ? `(${(params.latitude - latitudeDelta).toFixed(7)},${(params.longitude - longitudeDelta).toFixed(7)},${(params.latitude + latitudeDelta).toFixed(7)},${(params.longitude + longitudeDelta).toFixed(7)})`
+    : `(around:${params.radius},${params.latitude.toFixed(7)},${params.longitude.toFixed(7)})`;
+  const around = `${strategy}${spatial}`;
+  const qualifiedContactFilters = [
+    '[~"^(phone|contact:phone|mobile|contact:mobile|telephone|contact:telephone)$"~"."]',
+    '[~"^(email|contact:email)$"~"."]',
+    '[~"^addr:(full|street)$"~"."]',
+  ].join("");
+  const statements = filters.map((filter) => params.mode === "qualified-first"
+    ? `${around}${filter}[name]${qualifiedContactFilters};`
+    : `${around}${filter}[name]["${contact}"];`).join("");
   const center = strategy === "node" ? "" : " center";
   return `[out:json][timeout:${params.timeoutSeconds}];(${statements});out meta${center} qt;`;
 }
 
+function qlLiteral(value: string) {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/[\r\n]+/g, " ").trim();
+}
+
+export function buildOverpassIdentityQuery(candidate: Candidate, timeoutSeconds = 7) {
+  const raw = candidate.rawData && typeof candidate.rawData === "object" ? candidate.rawData as Record<string, unknown> : {};
+  const contactKeys: OverpassContactStrategy[] = ["phone", "contact:phone", "mobile", "contact:mobile", "telephone", "contact:telephone"];
+  const statements = new Set<string>();
+  // Exact indexed tag lookups inside the Netherlands are materially
+  // cheaper and more complete than the former 250 km around-query.
+  const country = /^(NL|BE)$/i.test(candidate.country) ? candidate.country.toUpperCase() : "NL";
+  const areas = `area["ISO3166-1"="${country}"][admin_level="2"]->.allowedCountries;`;
+  const insideAllowedCountries = "nwr(area.allowedCountries)";
+  statements.add(`${insideAllowedCountries}["name"="${qlLiteral(candidate.companyName)}"];`);
+  for (const key of contactKeys) {
+    const rawValue = typeof raw[key] === "string" ? raw[key].trim() : "";
+    if (rawValue) statements.add(`${insideAllowedCountries}["${key}"="${qlLiteral(rawValue)}"];`);
+  }
+  return `[out:json][timeout:${Math.min(8, Math.max(4, timeoutSeconds))}];${areas}(${[...statements].join("")});out meta center qt;`;
+}
+
 function errorType(error: unknown) {
+  if (error instanceof Error && /hedged_request_cancelled|zoekrun geannuleerd/i.test(error.message)) return "cancelled";
   if (error instanceof SyntaxError) return "invalid_json";
   if (error instanceof Error && /html|content-type/i.test(error.message)) return "invalid_content_type";
-  if (error instanceof Error && /abort|timeout/i.test(`${error.name} ${error.message}`)) return "timeout";
+  if (error instanceof Error && /abort|timeout|reageerde niet binnen/i.test(`${error.name} ${error.message}`)) return "timeout";
   return "network";
 }
 
@@ -267,11 +384,7 @@ async function fetchWithTimeout(fetchImpl: typeof fetch, endpoint: string, query
   try {
     return await fetchImpl(endpoint, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "Accept": "application/json",
-        "User-Agent": "SitoraLeadfinder/4.1 (public-business-discovery; info@sitora.nl)",
-      },
+      headers: { "Content-Type": "application/x-www-form-urlencoded", "User-Agent": "SitoraLeadfinder/4.0 (public-business-discovery)" },
       body: new URLSearchParams({ data: query }),
       signal: controller.signal,
       cache: "no-store",
@@ -290,6 +403,7 @@ async function readBoundedText(response: Response, maxBytes: number) {
   const chunks: Uint8Array[] = [];
   let received = 0;
   try {
+
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
@@ -311,56 +425,112 @@ export async function searchOverpass(params: SearchParams) {
   if (!Number.isFinite(params.latitude) || !Number.isFinite(params.longitude) || Math.abs(params.latitude) > 90 || Math.abs(params.longitude) > 180) {
     throw new Error("De locatie kon niet worden gevonden of bevat ongeldige coördinaten.");
   }
-  const configuredEndpoints = prioritizeOverpassEndpoints(
-    [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))],
-  );
+  const configuredEndpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
   const endpoints = healthyEndpoints(configuredEndpoints, Date.now());
   if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
-  const timeoutMs = Math.min(15_000, Math.max(4_000, params.timeoutMs ?? 10_000));
-  const totalTimeoutMs = Math.min(40_000, Math.max(8_000, params.totalTimeoutMs ?? 28_000));
+  const timeoutMs = Math.min(15_000, Math.max(2_500, params.timeoutMs ?? 10_000));
+  const totalTimeoutMs = Math.min(18_000, Math.max(4_000, params.totalTimeoutMs ?? 18_000));
   const maxResponseBytes = Math.min(4_000_000, Math.max(100_000, params.maxResponseBytes ?? 2_000_000));
-  const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 1));
+  const retries = Math.min(2, Math.max(1, params.retriesPerEndpoint ?? 2));
   const plan = overpassSearchPlan(params.tileCursor);
-  const tile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
-  const queryType = `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}`;
-  const query = buildOverpassQuery({ ...tile, category: params.category, strategy: plan.strategy, timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1) });
+  const baseTile = overpassTile(params.latitude, params.longitude, params.radius, plan.tileCursor);
+  const tile = plan.mode === "qualified-first"
+    ? { ...baseTile, radius: Math.min(1_600, baseTile.radius) }
+    : baseTile;
+  const queryType = params.queryTypeOverride ?? (plan.mode === "qualified-first"
+    ? `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:qualified-first`
+    : `${normalizedCategory(params.category) || "alle_bruikbare_bedrijven"}:${plan.strategy}:${plan.contact}`);
+  const query = params.queryOverride ?? buildOverpassQuery({
+    ...tile,
+    category: params.category,
+    strategy: plan.strategy,
+    contact: plan.mode === "phone-discovery" ? plan.contact : undefined,
+    mode: plan.mode,
+    boundingBox: false,
+    timeoutSeconds: Math.max(5, Math.floor(timeoutMs / 1000) - 1),
+  });
+  const tileLabel = params.tileLabelOverride ?? plan.id;
   const fetchImpl = params.fetchImpl ?? fetch;
   const sleep = params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms)));
   const random = params.random ?? Math.random;
   const deadline = Date.now() + totalTimeoutMs;
   let lastError = new Error("OpenStreetMap is niet bereikbaar.");
 
-  for (const endpoint of endpoints) {
+  for (let endpointIndex = 0; endpointIndex < endpoints.length; endpointIndex += 1) {
+    const endpoint = endpoints[endpointIndex];
     for (let attempt = 1; attempt <= retries; attempt += 1) {
       if (params.signal?.aborted) throw new Error("De zoekrun is geannuleerd.");
       const remaining = deadline - Date.now();
       if (remaining < 500) throw new Error(`Alle OpenStreetMap-servers bereikten de totale timeout van ${Math.ceil(totalTimeoutMs / 1000)} seconden.`);
+      // Reserve an equal slice for every remaining fallback. Previously the first
+      // three servers consumed all 28 seconds, so the final healthy fallback was
+      // never attempted in production.
+      const endpointsRemaining = endpoints.length - endpointIndex;
+      const fairTimeoutMs = Math.max(1_000, Math.floor(remaining / endpointsRemaining));
       const started = Date.now();
       try {
-        const response = await fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, remaining), params.signal);
+        const response = await withEndpointLock(endpoint, () => fetchWithTimeout(fetchImpl, endpoint, query, Math.min(timeoutMs, fairTimeoutMs), params.signal));
         const raw = await readBoundedText(response, maxResponseBytes);
         if (!response.ok) {
           lastError = new Error(`OpenStreetMap-server antwoordde met HTTP ${response.status}.`);
           recordEndpointFailure(endpoint, Date.now());
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, statusCode: response.status, errorType: `http_${response.status}`, message: lastError.message });
           if (!isRetryableStatus(response.status)) break;
         } else {
           const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
           if (!contentType.includes("json") || /^\s*</.test(raw)) throw new Error("OpenStreetMap gaf HTML of een ongeldig content-type terug.");
           const data = JSON.parse(raw) as { elements?: OsmElement[] };
           if (!Array.isArray(data.elements)) throw new SyntaxError("OpenStreetMap-response bevat geen geldige elementenlijst.");
-          const candidates = candidatesFrom(data.elements, params.country);
+          const candidates = candidatesFrom(data.elements, params.country, params.city);
           recordEndpointSuccess(endpoint);
-          await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
-          return { candidates, endpoint, query, tile: { ...tile, id: plan.id }, queryType };
+          await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, statusCode: response.status, resultCount: candidates.length, message: `${candidates.length} openbare bedrijfsvermeldingen ontvangen.` });
+
+          return { candidates, endpoint, query, tile: { ...tile, id: tileLabel }, queryType };
         }
       } catch (error) {
         lastError = error instanceof Error ? error : lastError;
-        recordEndpointFailure(endpoint, Date.now());
-        await emitEvent(params.onEvent, { endpoint, queryType, tile: plan.id, attempt, durationMs: Date.now() - started, errorType: errorType(error), message: lastError.message });
+        const failureType = errorType(error);
+        if (failureType !== "cancelled") recordEndpointFailure(endpoint, Date.now());
+        await emitEvent(params.onEvent, { endpoint, queryType, tile: tileLabel, attempt, durationMs: Date.now() - started, errorType: failureType, message: lastError.message });
+        if (failureType === "cancelled") throw lastError;
+        // A timeout consumed this host's fair share; retrying it would starve the
+        // independent fallback. Fast HTTP failures can still use normal retries.
+        if (failureType === "timeout") break;
       }
       if (attempt < retries && deadline - Date.now() > 500) await sleep(Math.min(backoffDelayMs(attempt - 1, random() * 250), Math.max(0, deadline - Date.now() - 250)));
     }
   }
   throw new Error(`Alle OpenStreetMap-servers zijn mislukt. Laatste fout: ${lastError.message}`);
+}
+
+export async function searchOverpassHedged(params: SearchParams & { hedgeDelayMs?: number }) {
+  const endpoints = [...new Set(params.endpoints.map((endpoint) => endpoint.trim()).filter(Boolean))];
+  if (!endpoints.length) throw new Error("Er zijn geen OpenStreetMap-servers geconfigureerd.");
+  if (endpoints.length === 1) return searchOverpass({ ...params, endpoints });
+
+  const hedgeDelayMs = Math.min(3_000, Math.max(250, params.hedgeDelayMs ?? 1_250));
+  const controllers = endpoints.map(() => new AbortController());
+  const parentAbort = () => controllers.forEach((controller) => controller.abort(params.signal?.reason ?? new Error("De zoekrun is geannuleerd.")));
+  params.signal?.addEventListener("abort", parentAbort, { once: true });
+  let winner = false;
+
+  const attempts = endpoints.map(async (endpoint, index) => {
+    if (index) await (params.sleep ?? ((ms: number) => new Promise((resolve) => setTimeout(resolve, ms))))(index * hedgeDelayMs);
+    if (winner) throw new Error("hedged_request_cancelled");
+    return searchOverpass({ ...params, endpoints: [endpoint], signal: controllers[index].signal });
+  });
+
+  try {
+    const result = await Promise.any(attempts);
+    winner = true;
+    controllers.forEach((controller) => controller.abort(new Error("hedged_request_cancelled")));
+    return result;
+  } catch (error) {
+    const messages = error instanceof AggregateError
+      ? error.errors.map((item) => item instanceof Error ? item.message : String(item))
+      : [error instanceof Error ? error.message : String(error)];
+    throw new Error(`Alle onafhankelijke OpenStreetMap-fallbacks zijn mislukt. ${messages.join(" | ")}`);
+  } finally {
+    params.signal?.removeEventListener("abort", parentAbort);
+  }
 }

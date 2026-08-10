@@ -19,6 +19,12 @@
     "db:migrate:deploy": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:smoke": "tsx scripts/smoke-database.ts",
+    "generation:diagnose": "tsx scripts/diagnose-generation-run.ts",
+    "generation:e2e-qualified": "node --conditions=react-server --import tsx scripts/e2e-qualified-lead.ts",
+    "generation:e2e-source-outage": "node --conditions=react-server --import tsx scripts/e2e-source-outage.ts",
+    "generation:e2e-two-runs": "node --conditions=react-server --import tsx scripts/e2e-two-generation-runs.ts",
+    "cold-email:batch": "node --conditions=react-server --import tsx scripts/send-cold-email-batch.ts",
+    "db:inspect-target": "tsx scripts/inspect-database-target.ts",
     "db:repair-websites": "tsx scripts/repair-website-statuses.ts",
     "db:backup:sqlite": "tsx scripts/backup-local.ts",
     "db:restore:sqlite": "tsx scripts/restore-local.ts",
@@ -27,7 +33,10 @@
   },
   "dependencies": {
     "@prisma/client": "6.19.0",
+    "@vercel/queue": "0.4.0",
     "bcryptjs": "3.0.2",
+    "date-fns": "^4.4.0",
+    "date-fns-tz": "^3.2.0",
     "exceljs": "4.4.0",
     "imapflow": "^1.6.5",
     "lucide-react": "^0.468.0",
@@ -35,6 +44,7 @@
     "nodemailer": "^9.0.3",
     "react": "^19.0.0",
     "react-dom": "^19.2.7",
+    "server-only": "0.0.1",
     "zod": "^3.24.2"
   },
   "devDependencies": {

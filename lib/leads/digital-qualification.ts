@@ -1,76 +1,77 @@
-import type { Evidence, WebsiteVerificationResult } from "./website-verification";
 
-const chatbotPatterns = [
-  /intercom/i, /crisp\.chat/i, /tawk\.to/i, /drift\.com/i, /livechat/i, /chatwoot/i,
-  /zendesk.*(chat|messenger)/i, /hubspot.*conversations/i, /freshchat/i,
-  /aria-label=["'][^"']*(chat|bericht)/i, />\s*(chat met ons|start chat|live chat)\s*</i,
-];
+import type { Candidate } from "./eligibility";
+import type { WebsiteAnalysisResult } from "@/lib/website/analyze";
+import { verifyWebsiteCandidate, type Evidence, type WebsiteVerificationResult } from "./website-verification";
 
-export function inspectDigitalHtml(url: string, html: string, statusCode = 200): WebsiteVerificationResult {
-  const issues: string[] = [];
-  if (!url.startsWith("https://")) issues.push("Geen beveiligde HTTPS-verbinding");
-  if (statusCode >= 400) issues.push(`Website reageert met HTTP ${statusCode}`);
-  if (!/<meta[^>]+name=["']viewport["']/i.test(html)) issues.push("Geen mobiele viewportconfiguratie");
-  if (!/(contact|offerte|boek|reserveer|afspraak|bel ons|mailto:|tel:)/i.test(html)) issues.push("Geen duidelijke contact-, boekings- of offerteactie");
-  const years = [...html.matchAll(/(?:©|copyright)\s*(20\d{2})/gi)].map((match) => Number(match[1]));
-  if (years.length && Math.max(...years) < new Date().getFullYear() - 2) issues.push("Duidelijk verouderde copyright- of inhoudsdatum");
-  if (/<img\b(?![^>]*\balt=)[^>]*>/i.test(html)) issues.push("Afbeeldingen zonder alternatieve tekst");
+function analysisEvidence(result: WebsiteAnalysisResult): Evidence[] {
+  return result.reasons.map((reason) => ({
+    checkType: reason.code,
+    result: "FOUND",
+    confidence: 90,
+    evidenceUrl: result.websiteUrl,
+    shortExplanation: reason.label,
+  }));
+}
 
-  const chatbotPresent = chatbotPatterns.some((pattern) => pattern.test(html));
-  const evidence: Evidence[] = [
-    ...issues.map((issue) => ({ checkType: "OBJECTIVE_WEBSITE_ISSUE", result: "FOUND", confidence: 90, evidenceUrl: url, shortExplanation: issue })),
-    {
-      checkType: "CHATBOT_INTERFACE_AND_SCRIPT",
-      result: chatbotPresent ? "PRESENT" : "NOT_PRESENT",
-      confidence: 88,
-      evidenceUrl: url,
-      shortExplanation: chatbotPresent
-        ? "Een zichtbare chatindicatie of bekende chatwidget/script-signatuur is aangetroffen."
-        : "Zowel zichtbare chatlabels als bekende widget- en scriptsignaturen zijn gecontroleerd en niet aangetroffen.",
-    },
-  ];
-  const outdated = issues.length >= 2;
+export function classifyOwnedWebsite(
+  source: WebsiteVerificationResult,
+  analysis: WebsiteAnalysisResult,
+): WebsiteVerificationResult {
+  const evidence = [...source.evidence, ...analysisEvidence(analysis)];
+  const repeatedHttpFailure = analysis.httpStatus === 404
+    || analysis.httpStatus === 410
+    || Boolean(analysis.httpStatus && analysis.httpStatus >= 500);
+  if (!analysis.isReachable) {
+    if (analysis.hasInvalidSsl || repeatedHttpFailure) {
+      return {
+        status: "WEBSITE_BROKEN",
+        confidence: 92,
+        website: source.website,
+        reason: analysis.hasInvalidSsl
+          ? "De eigen website heeft na herhaalde controle een ongeldig TLS-certificaat."
+          : `De eigen website bleef na herhaalde controle antwoorden met HTTP ${analysis.httpStatus}.`,
+        evidence,
+      };
+    }
+    return {
+      status: "UNKNOWN",
+      confidence: 35,
+      website: source.website,
+      reason: "De website was tijdelijk niet betrouwbaar te controleren; één timeout of blokkade geldt niet als bewijs van een kapotte website.",
+      evidence,
+    };
+  }
+  if (analysis.classification === "OUTDATED") {
+    return {
+      status: "WEBSITE_OUTDATED",
+      confidence: 92,
+      website: source.website,
+      reason: `De eigen website heeft aantoonbare verouderingssignalen (${analysis.opportunityScore}/100): ${analysis.reasons.map(({ label }) => label).join("; ")}.`,
+      evidence,
+    };
+  }
+  if (analysis.classification === "IMPROVABLE" && analysis.reasons.length >= 2) {
+    return {
+      status: "IMPROVABLE_WEBSITE",
+      confidence: 86,
+      website: source.website,
+      reason: `De eigen website heeft meerdere concrete verbeterpunten (${analysis.opportunityScore}/100): ${analysis.reasons.map(({ label }) => label).join("; ")}.`,
+      evidence,
+    };
+  }
   return {
-    status: statusCode >= 400 ? "WEBSITE_BROKEN" : outdated ? "WEBSITE_OUTDATED" : "WEBSITE_FOUND",
-    confidence: statusCode >= 400 ? 95 : 88,
-    website: url,
-    chatbotStatus: chatbotPresent ? "PRESENT" : "NOT_PRESENT",
-    chatbotReason: evidence.at(-1)?.shortExplanation,
-    objectiveIssues: issues,
-    reason: outdated
-      ? `Verouderde of slecht functionerende website op basis van ${issues.length} objectieve problemen: ${issues.join("; ")}.`
-      : chatbotPresent
-        ? "Website functioneert zonder twee aangetoonde verouderingsproblemen en bevat een chatfunctie."
-        : "Website gecontroleerd: geen zichtbare chatbot en geen bekende chatwidget of chatscript aangetroffen.",
+    status: "WEBSITE_FOUND",
+    confidence: 92,
+    website: source.website,
+    reason: "De eigen website is bereikbaar en heeft onvoldoende objectief bewijs voor een verouderde, kapotte of duidelijk verbeterbare classificatie.",
     evidence,
   };
 }
 
-export async function inspectOwnedWebsite(url: string, fetchImpl: typeof fetch = fetch): Promise<WebsiteVerificationResult> {
-  try {
-    const response = await fetchImpl(url, {
-      redirect: "follow",
-      signal: AbortSignal.timeout(5_000),
-      headers: { "User-Agent": "LeadfinderSitora/5.0 digital-qualification" },
-    });
-    const html = (await response.text()).slice(0, 1_000_000);
-    return inspectDigitalHtml(response.url || url, html, response.status);
-  } catch {
-    return {
-      status: "MANUAL_REVIEW_REQUIRED",
-      confidence: 35,
-      website: url,
-      chatbotStatus: "UNKNOWN",
-      chatbotReason: "De interface en scripts konden niet betrouwbaar worden opgehaald.",
-      objectiveIssues: [],
-      reason: "Websitecontrole mislukte of werd geblokkeerd; digitale kwalificatie blijft onbekend.",
-      evidence: [{ checkType: "WEBSITE_FETCH", result: "UNKNOWN", confidence: 35, evidenceUrl: url, shortExplanation: "Geen betrouwbare HTTP/HTML-respons ontvangen." }],
-    };
-  }
-}
-
-export function hasRequiredDigitalGap(result: Pick<WebsiteVerificationResult, "status" | "chatbotStatus"> & { evidence?: Evidence[] }) {
-  return ["NO_WEBSITE_CONFIRMED", "WEBSITE_OUTDATED", "WEBSITE_BROKEN"].includes(result.status)
-    || (result.status === "SOCIAL_ONLY" && Boolean(result.evidence?.length))
-    || result.chatbotStatus === "NOT_PRESENT";
+export async function qualifyWebsiteCandidate(candidate: Candidate): Promise<WebsiteVerificationResult> {
+  const source = await verifyWebsiteCandidate(candidate);
+  if (source.status !== "WEBSITE_FOUND" || !source.website) return source;
+  const { analyzeWebsite } = await import("@/lib/website/analyze");
+  const analysis = await analyzeWebsite(source.website);
+  return classifyOwnedWebsite(source, analysis);
 }

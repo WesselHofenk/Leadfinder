@@ -1,12 +1,32 @@
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { pipelineStatuses } from "@/lib/leads/pipeline";
 
 const { leadState, tx, prismaMock } = vi.hoisted(() => {
-  const leadState = { id: "lead-1", companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true, status: "NEW" };
+  const stages = [
+    ["pipeline-nieuw", "nieuw", "Nieuw"], ["pipeline-belletje-1", "belletje-1", "Belletje 1"],
+    ["pipeline-belletje-2", "belletje-2", "Belletje 2"], ["pipeline-gemaild", "gemaild", "Gemaild"],
+    ["pipeline-geen-interesse", "geen-interesse", "Geen interesse"], ["pipeline-klant", "klant", "Klant"],
+  ].map(([id, slug, name]) => ({ id, slug, name }));
+  const leadState = {
+    id: "lead-1", companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567",
+    opportunityScore: 91, isActive: true, pipelineStageId: "pipeline-nieuw",
+    pipelineStage: { id: "pipeline-nieuw", slug: "nieuw", name: "Nieuw" },
+  };
   const tx = {
     lead: {
       findUniqueOrThrow: vi.fn(async () => leadState),
-      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => Object.assign(leadState, data)),
+      update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => {
+        Object.assign(leadState, data);
+        const stage = stages.find((item) => item.id === data.pipelineStageId)!;
+        leadState.pipelineStage = stage;
+        return leadState;
+      }),
+    },
+    pipelineStage: {
+      findFirstOrThrow: vi.fn(async ({ where }: { where: { slug: string } }) => {
+        return stages.find((item) => item.slug === where.slug)!;
+      }),
     },
     leadHistory: { create: vi.fn(async () => ({})) },
     leadActivity: { create: vi.fn(async () => ({})) },
@@ -19,14 +39,24 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 import { updateManualLeadFields } from "@/lib/leads/service";
 
 describe("persistente pipelinewijzigingen", () => {
-  beforeEach(() => { leadState.status = "NEW"; vi.clearAllMocks(); });
+  beforeEach(() => {
+    leadState.pipelineStageId = "pipeline-nieuw";
+    leadState.pipelineStage = { id: "pipeline-nieuw", slug: "nieuw", name: "Nieuw" };
+    vi.clearAllMocks();
+  });
 
-  it("kan een bestaande lead naar iedere fase verplaatsen zonder andere gegevens te verliezen", async () => {
-    for (const status of pipelineStatuses) {
-      await updateManualLeadFields("lead-1", "user-1", { status });
-      expect(leadState.status).toBe(status);
+  it("kan een bestaande lead naar iedere handmatige fase verplaatsen zonder andere gegevens te verliezen", async () => {
+    for (const pipelineStage of pipelineStatuses.filter((stage) => stage !== "gemaild")) {
+      await updateManualLeadFields("lead-1", "user-1", { pipelineStage });
+      expect(leadState.pipelineStage.slug).toBe(pipelineStage);
       expect(leadState).toMatchObject({ companyName: "Bestaande lead", notes: "Belangrijke notitie", phoneNumber: "+31201234567", opportunityScore: 91, isActive: true });
     }
-    expect(tx.lead.update).toHaveBeenCalledTimes(9);
+    expect(tx.lead.update).toHaveBeenCalledTimes(5);
+  });
+
+  it("weigert de fase Gemaild zonder bevestigde verzending", async () => {
+    await expect(updateManualLeadFields("lead-1", "user-1", { pipelineStage: "gemaild" }))
+      .rejects.toThrow("uitsluitend na een bevestigde e-mailverzending");
+    expect(tx.lead.update).not.toHaveBeenCalled();
   });
 });

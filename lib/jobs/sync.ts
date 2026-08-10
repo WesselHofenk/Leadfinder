@@ -1,7 +1,30 @@
+
 import { prisma } from "@/lib/prisma";
 import type { Candidate } from "@/lib/leads/eligibility";
 import { verifyWebsiteCandidate } from "@/lib/leads/website-verification";
+import { createGenerationRun, markStaleGenerationRuns, processGenerationBatch } from "./generation";
 import { acquireJobLock } from "./lock";
+import { isBlockedLocation, visibleLeadWhere } from "@/lib/leads/blocked-location";
+
+export async function runDiscoveryJob() {
+  await markStaleGenerationRuns();
+  const active = await prisma.generationRun.findFirst({ where: { status: { in: ["PENDING", "RUNNING"] } } });
+  const run = active ?? await createGenerationRun();
+  const deadline = Date.now() + 250_000;
+  let current = run;
+  do {
+    current = await processGenerationBatch(run.id);
+  } while (["PENDING", "RUNNING"].includes(current.status) && Date.now() < deadline);
+  return {
+    skipped: false,
+    runId: run.id,
+    status: current.status,
+    found: current.candidatesFound,
+    qualified: current.stored,
+    sourceFailures: current.sourceFailures,
+    continuationRequired: ["PENDING", "RUNNING"].includes(current.status),
+  };
+}
 
 export async function reverifyStaleLeads() {
   const lock = await acquireJobLock("local-reverify");
@@ -9,7 +32,7 @@ export async function reverifyStaleLeads() {
   try {
     const staleBefore = new Date(Date.now() - 30 * 86_400_000);
     const stale = await prisma.lead.findMany({
-      where: { isSuppressed: false, lastVerifiedAt: { lte: staleBefore } },
+      where: visibleLeadWhere({ isSuppressed: false, lastVerifiedAt: { lte: staleBefore } }),
       include: { sourceRecords: { orderBy: { fetchedAt: "desc" }, take: 1 } },
       take: 20,
       orderBy: { lastVerifiedAt: "asc" },
@@ -18,6 +41,11 @@ export async function reverifyStaleLeads() {
     for (const lead of stale) {
       const payload = lead.sourceRecords[0]?.payload as Candidate | null;
       if (!payload) { unavailable += 1; continue; }
+      if (isBlockedLocation(payload as Candidate & Record<string, unknown>)) {
+        await prisma.lead.update({ where: { id: lead.id }, data: { isSuppressed: true, isActive: false, isFiltered: true, filterReason: "BLOCKED_LOCATION" } });
+        unavailable += 1;
+        continue;
+      }
       const result = await verifyWebsiteCandidate(payload);
       const checkedAt = new Date();
       const hasWebsite = result.status === "WEBSITE_FOUND";

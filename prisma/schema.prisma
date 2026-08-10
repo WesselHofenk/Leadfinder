@@ -13,9 +13,8 @@ enum UserRole {
   USER
 }
 
-enum LeadStatus {
+enum LegacyLeadStatus {
   NEW
-  EMAILED
   VOICEMAIL
   CALL_BACK
   INTERESTED
@@ -23,12 +22,8 @@ enum LeadStatus {
   QUOTE_SENT
   CUSTOMER
   NOT_INTERESTED
-}
 
-enum OutreachEmailStatus {
-  RESERVED
-  SENT
-  FAILED
+  @@map("LeadStatus")
 }
 
 enum LeadType {
@@ -76,6 +71,17 @@ enum CandidateQueueStatus {
   FAILED
 }
 
+enum ValidationCandidateStatus {
+  PENDING_VALIDATION
+  RETRY_SCHEDULED
+  VALIDATING
+  RETRY_REQUIRED
+  VALIDATED
+  REJECTED
+  PROMOTED_TO_LEAD
+  EXHAUSTED
+}
+
 enum JobType {
   DISCOVERY
   REVERIFY
@@ -98,12 +104,12 @@ enum WebsiteStatus {
   WEBSITE_FOUND
   WEBSITE_OUTDATED
   WEBSITE_BROKEN
+  IMPROVABLE_WEBSITE
   MANUAL_REVIEW_REQUIRED
   NO_OWN_WEBSITE
   OWN_WEBSITE
   OUTDATED
   IMPROVABLE
-  IMPROVABLE_WEBSITE
   UNKNOWN
 }
 
@@ -115,19 +121,18 @@ enum ContactValidationStatus {
   UNKNOWN
 }
 
-enum ChatbotStatus {
-  PRESENT
-  NOT_PRESENT
-  UNKNOWN
+enum ColdEmailStatus {
+  PENDING
+  SENDING
+  SENT_PENDING_ARCHIVE
+  SENT
+  FAILED
+  CANCELLED
 }
 
-enum ChainStatus {
-  INDEPENDENT
-  SMALL_GROUP
-  FRANCHISE
-  LARGE_CHAIN
-  CORPORATE
-  UNKNOWN
+enum ColdEmailTemplate {
+  A
+  B
 }
 
 model User {
@@ -164,11 +169,15 @@ model Lead {
   normalizedCompanyName         String
   contactPersonName             String?
   email                         String?
+  emailSource                   String?
+  emailSourceUrl                String?
+  emailMxVerified               Boolean                 @default(false)
+  emailVerifiedAt               DateTime?
   emailValidationStatus         ContactValidationStatus @default(PENDING)
   emailValidationSource         String?
   emailValidatedAt              DateTime?
   phoneNumber                   String
-  normalizedPhoneNumber         String                  @unique
+  normalizedPhoneNumber         String?                 @unique
   internationalPhoneNumber      String?
   phoneValidationStatus         ContactValidationStatus @default(PENDING)
   phoneValidationSource         String?
@@ -181,6 +190,7 @@ model Lead {
   city                          String
   postalCode                    String?
   streetAddress                 String
+  formattedAddress              String?
   houseNumber                   String?
   normalizedAddress             String
   latitude                      Decimal                 @db.Decimal(10, 7)
@@ -193,20 +203,19 @@ model Lead {
   websiteStatusReason           String?
   websiteConfidence             Int                     @default(0)
   websiteSource                 String?
-  chatbotStatus                 ChatbotStatus           @default(UNKNOWN)
-  chatbotStatusReason           String?
-  chainStatus                   ChainStatus             @default(UNKNOWN)
-  branchCount                   Int?
-  qualificationReason           String?
-  batchId                       String?
-  dedupeFingerprint             String?                 @unique
   sourceUrl                     String?
   sourceFetchedAt               DateTime?
   googlePlaceId                 String?                 @unique
+  googleBusinessProfileUrl      String?
+  googleBusinessProfileVerified Boolean                 @default(false)
+  googleBusinessVerifiedAt      DateTime?
   googleWebsiteCheckAttemptedAt DateTime?
   googleWebsiteVerifiedAt       DateTime?
   googleWebsitePresent          Boolean?
   employeeCount                 Int?
+  qualificationReason           String?
+  batchId                       String?
+  dedupeFingerprint             String?                 @unique
   leadType                      LeadType                @default(NO_WEBSITE)
   opportunityScore              Int                     @default(0)
   conversionQualityScore        Int?
@@ -215,6 +224,15 @@ model Lead {
   doNotContact                  Boolean                 @default(false)
   lastWebsiteAnalysisAt         DateTime?
   businessStatus                BusinessStatus
+  statusConfidence              Int                     @default(0)
+  language                      String?
+  languageConfidence            Int                     @default(0)
+  regionLanguage                String?
+  verificationSource            String?
+  singleLocationVerified        Boolean                 @default(false)
+  singleLocationReason          String?
+  singleLocationVerifiedAt      DateTime?
+  socialUrls                    Json                    @default("[]")
   source                        LeadSource              @default(OPENSTREETMAP)
   confidenceScore               Int                     @default(50)
   confidenceLevel               ConfidenceLevel         @default(MEDIUM)
@@ -224,7 +242,9 @@ model Lead {
   lastVerifiedAt                DateTime                @default(now())
   createdAt                     DateTime                @default(now())
   updatedAt                     DateTime                @updatedAt
-  status                        LeadStatus              @default(NEW)
+  legacyStatus                  LegacyLeadStatus        @default(NEW) @map("status")
+  pipelineStageId               String                  @default("pipeline-nieuw")
+  pipelineStage                 PipelineStage           @relation(fields: [pipelineStageId], references: [id], onDelete: Restrict)
   notes                         String                  @default("")
   lastContactAt                 DateTime?
   nextFollowUpAt                DateTime?
@@ -241,7 +261,7 @@ model Lead {
   evidence                      VerificationEvidence[]
   sourceRecords                 SourceRecord[]
   activities                    LeadActivity[]
-  outreachEmail                 OutreachEmail?
+  coldEmails                    ColdEmail[]
 
   @@unique([normalizedCompanyName, normalizedAddress], map: "lead_name_address_unique")
   @@unique([normalizedCompanyName, latitude, longitude], map: "lead_name_coordinates_unique")
@@ -258,91 +278,247 @@ model Lead {
   @@index([nextFollowUpAt])
   @@index([googleWebsitePresent, googleWebsiteVerifiedAt])
   @@index([googleWebsiteCheckAttemptedAt])
-  @@index([status, isFiltered, leadType])
+  @@index([language, country, province])
+  @@index([pipelineStageId, isFiltered, leadType])
   @@index([opportunityScore])
   @@index([lastVerifiedAt])
   @@index([batchId])
 }
 
-model OutreachEmail {
-  id             String              @id @default(cuid())
-  leadId         String              @unique
-  lead           Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  status         OutreachEmailStatus @default(RESERVED)
-  recipientEmail String              @unique
-  companyName    String
-  subject        String
-  body           String
-  dateKey        String
-  messageId      String?
-  lastError      String?
-  attemptCount   Int                 @default(0)
-  nextAttemptAt  DateTime?
-  providerAcceptedAt DateTime?
-  archivedAt     DateTime?
-  sentMailbox    String?
-  reservedAt     DateTime            @default(now())
-  sentAt         DateTime?
-  createdAt      DateTime            @default(now())
-  updatedAt      DateTime            @updatedAt
+model ColdEmail {
+  id                   String             @id @default(cuid())
+  leadId               String
+  lead                 Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaignId           String?
+  campaign             ColdEmailCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignDayKey       String?
+  templateKey          ColdEmailTemplate?
+  dedupeKey            String?            @unique
+  recipientDedupeKey   String?            @unique
+  createdById          String?
+  batchKey             String?
+  fromAddress          String             @default("info@sitora.nl")
+  recipient            String
+  subject              String
+  bodyText             String
+  scheduledFor         DateTime
+  allowOutsideWindow   Boolean            @default(false)
+  status               ColdEmailStatus    @default(PENDING)
+  attempts             Int                @default(0)
+  archiveAttempts      Int                @default(0)
+  messageId            String?
+  rawMessageBase64     String?
+  smtpAcceptedAt       DateTime?
+  archivedAt           DateTime?
+  sentFolder           String?
+  sentUid              String?
+  sentItemsConfirmedAt DateTime?
+  failureCategory      String?
+  lastError            String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
-  @@index([dateKey, status])
-  @@index([status, reservedAt])
+  @@unique([batchKey, leadId])
+  @@index([status, scheduledFor])
+  @@index([leadId, createdAt])
+  @@index([smtpAcceptedAt, archivedAt])
+  @@index([campaignId, campaignDayKey, status])
+  @@index([messageId])
+}
+
+model ColdEmailCampaign {
+  id                String         @id
+  name              String         @unique @default("Cold emails automatisch versturen")
+  enabled           Boolean        @default(true)
+  status            String         @default("ACTIVE")
+  startDayKey       String
+  templateSequence  Int            @default(0)
+  pausedUntil       DateTime?
+  lastProviderError String?
+  lastHeartbeatAt   DateTime?
+  lastSuccessfulSentAt DateTime?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  emails            ColdEmail[]
+  runs              ColdEmailRun[]
+}
+
+model ColdEmailRun {
+  id                 String            @id @default(cuid())
+  campaignId         String
+  campaign           ColdEmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  dayKey             String
+  weekNumber         Int
+  dailyLimit         Int
+  scheduled          Int               @default(0)
+  successful         Int               @default(0)
+  failed             Int               @default(0)
+  movedToEmailed     Int               @default(0)
+  sentItemsConfirmed Int               @default(0)
+  remainingNewLeads  Int               @default(0)
+  status             String            @default("RUNNING")
+  startedAt          DateTime          @default(now())
+  finishedAt         DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@unique([campaignId, dayKey])
+  @@index([dayKey, status])
+}
+
+model PipelineStage {
+  id        String   @id
+  slug      String   @unique
+  name      String
+  position  Int
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  leads     Lead[]
+
+  @@index([isActive, position])
+}
+
+model PipelineMigrationAudit {
+  migrationKey       String   @id
+  totalBefore        Int
+  totalAfter         Int
+  migratedLeads      Int
+  unknownStages      Int
+  distributionBefore Json
+  distributionAfter  Json
+  createdAt          DateTime @default(now())
+}
+
+model DutchLeadRecoveryAudit {
+  id                   String   @id
+  recoveryKey          String   @unique
+  totalBefore          Int
+  totalAfter           Int
+  recognizedDutchLeads Int
+  validPipelineStatus  Int
+  fallbackToNieuw      Int
+  restored             Int
+  duplicateGroups      Int
+  unresolved           Int
+  distributionBefore   Json
+  distributionAfter    Json
+  backupSchema         String
+  createdAt            DateTime @default(now())
+}
+
+model BlockedLocationCleanupAudit {
+  id            String   @id
+  cleanupKey    String   @unique
+  totalChecked  Int
+  brusselsFound Int
+  ghentFound    Int
+  removed       Int
+  reasons       Json
+  backupTable   String
+  createdAt     DateTime @default(now())
+}
+
+model BlockedLocationLeadBackup {
+  id              String   @id
+  cleanupRunId    String
+  originalLeadId  String
+  area            String
+  reason          String
+  leadSnapshot    Json
+  relatedSnapshot Json
+  createdAt       DateTime @default(now())
+
+  @@unique([cleanupRunId, originalLeadId])
+  @@index([cleanupRunId, area])
 }
 
 model GenerationRun {
-  id                  String                @id @default(cuid())
-  status              JobStatus             @default(PENDING)
-  targetCount         Int                   @default(50)
-  candidatesFound     Int                   @default(0)
-  candidatesChecked   Int                   @default(0)
-  withoutWebsite      Int                   @default(0)
-  duplicates          Int                   @default(0)
-  rejected            Int                   @default(0)
-  stored              Int                   @default(0)
-  validDrafts         Int                   @default(0)
-  manualReview        Int                   @default(0)
-  websitesChecked     Int                   @default(0)
-  websitesFound       Int                   @default(0)
-  permanentlyClosed   Int                   @default(0)
-  temporarilyClosed   Int                   @default(0)
-  noWebsite           Int                   @default(0)
-  outdatedWebsite     Int                   @default(0)
-  improvableWebsite   Int                   @default(0)
-  sourceFailures      Int                   @default(0)
-  estimatedCostCents  Int                   @default(0)
-  placesUsed          Json                  @default("[]")
-  branchesUsed        Json                  @default("[]")
-  apiErrors           Json                  @default("[]")
-  exhausted           Boolean               @default(false)
-  cancelRequested     Boolean               @default(false)
-  continuousRequested Boolean               @default(false)
-  progress            Int                   @default(0)
-  message             String?
-  heartbeatAt         DateTime?
-  processedSegments   Int                   @default(0)
-  batchNumber         Int                   @default(0)
-  pendingCandidates   Int                   @default(0)
-  retryQueueCount     Int                   @default(0)
-  retriedCandidates   Int                   @default(0)
-  lastBatchDurationMs Int?
-  existingLeads       Int                   @default(0)
-  currentPhase        String                @default("Wachten")
-  currentSource       String?
-  currentRegion       String?
-  currentTile         String?
-  currentCategory     String?
-  continuationCursor  String?
-  lastError           String?
-  stopReason          String?
-  warnings            Json                  @default("[]")
-  startedAt           DateTime?
-  finishedAt          DateTime?
-  createdAt           DateTime              @default(now())
-  updatedAt           DateTime              @updatedAt
-  logs                SourceLog[]
-  candidates          GenerationCandidate[]
-  qualifiedDrafts     QualifiedLeadDraft[]
+  id                         String                @id @default(cuid())
+  status                     JobStatus             @default(PENDING)
+  targetCount                Int                   @default(50)
+  maxCandidates              Int                   @default(200)
+  candidatesReserved         Int                   @default(0)
+  candidatesFound            Int                   @default(0)
+  candidatesChecked          Int                   @default(0)
+  cheapRejected              Int                   @default(0)
+  externallyValidated        Int                   @default(0)
+  cacheHits                  Int                   @default(0)
+  withoutWebsite             Int                   @default(0)
+  duplicates                 Int                   @default(0)
+  rejected                   Int                   @default(0)
+  stored                     Int                   @default(0)
+  validDrafts                Int                   @default(0)
+  manualReview               Int                   @default(0)
+  websitesChecked            Int                   @default(0)
+  websitesFound              Int                   @default(0)
+  permanentlyClosed          Int                   @default(0)
+  temporarilyClosed          Int                   @default(0)
+  noWebsite                  Int                   @default(0)
+  outdatedWebsite            Int                   @default(0)
+  improvableWebsite          Int                   @default(0)
+  sourceFailures             Int                   @default(0)
+  sourceRequests             Int                   @default(0)
+  sourceSuccesses            Int                   @default(0)
+  sourceEmptyResponses       Int                   @default(0)
+  sourceTechnicalErrors      Int                   @default(0)
+  consecutiveSourceFailures  Int                   @default(0)
+  blockedBrussels            Int                   @default(0)
+  blockedGhent               Int                   @default(0)
+  invalidPhone               Int                   @default(0)
+  wrongLocationRejected      Int                   @default(0)
+  insufficientDataRejected   Int                   @default(0)
+  validCandidates            Int                   @default(0)
+  databaseInsertAttempts     Int                   @default(0)
+  databaseInsertFailures     Int                   @default(0)
+  totalDurationMs            Int?
+  emailsFound                Int                   @default(0)
+  emailsMissing              Int                   @default(0)
+  emailsInvalid              Int                   @default(0)
+  emailRetries               Int                   @default(0)
+  emailsExternallyVerified   Int                   @default(0)
+  languageRejected           Int                   @default(0)
+  multipleLocationsRejected  Int                   @default(0)
+  chainRejected              Int                   @default(0)
+  franchiseRejected          Int                   @default(0)
+  sameNameMultipleAddresses  Int                   @default(0)
+  samePhoneMultipleAddresses Int                   @default(0)
+  locationCountUncertain     Int                   @default(0)
+  duplicateListingsMerged    Int                   @default(0)
+  estimatedCostCents         Int                   @default(0)
+  placesUsed                 Json                  @default("[]")
+  branchesUsed               Json                  @default("[]")
+  apiErrors                  Json                  @default("[]")
+  exhausted                  Boolean               @default(false)
+  cancelRequested            Boolean               @default(false)
+  continuousRequested        Boolean               @default(false)
+  progress                   Int                   @default(0)
+  message                    String?
+  heartbeatAt                DateTime?
+  processedSegments          Int                   @default(0)
+  batchNumber                Int                   @default(0)
+  pendingCandidates          Int                   @default(0)
+  retryQueueCount            Int                   @default(0)
+  retriedCandidates          Int                   @default(0)
+  lastBatchDurationMs        Int?
+  existingLeads              Int                   @default(0)
+  currentPhase               String                @default("Wachten")
+  currentSource              String?
+  currentRegion              String?
+  currentTile                String?
+  currentCategory            String?
+  continuationCursor         String?
+  remainingSegments          Int?
+  lastError                  String?
+  stopReason                 String?
+  warnings                   Json                  @default("[]")
+  startedAt                  DateTime?
+  finishedAt                 DateTime?
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime              @updatedAt
+  logs                       SourceLog[]
+  candidates                 GenerationCandidate[]
+  qualifiedDrafts            QualifiedLeadDraft[]
 
   @@index([status, createdAt])
   @@index([status, updatedAt])
@@ -362,25 +538,6 @@ model LeadfinderTask {
   updatedAt       DateTime @updatedAt
 }
 
-model ColdEmailTask {
-  id                   String   @id
-  name                 String   @unique
-  enabled              Boolean  @default(true)
-  status               String   @default("ACTIVE")
-  timeZone             String   @default("Europe/Amsterdam")
-  windowStartHour      Int      @default(9)
-  windowEndHour        Int      @default(17)
-  rampStartDate        String   @default("2026-08-10")
-  startDailyLimit      Int      @default(20)
-  weeklyIncrement      Int      @default(10)
-  maximumDailyLimit    Int      @default(100)
-  lastHeartbeatAt      DateTime?
-  lastSuccessfulSentAt DateTime?
-  lastError            String?
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-}
-
 model QualifiedLeadDraft {
   id          String        @id @default(cuid())
   runId       String
@@ -388,8 +545,8 @@ model QualifiedLeadDraft {
   fingerprint String        @unique
   payload     Json
   validatedAt DateTime?
-  updatedAt   DateTime      @updatedAt
   createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 
   @@index([runId, createdAt])
   @@index([runId, validatedAt])
@@ -403,17 +560,66 @@ model GenerationCandidate {
   sourceRecordId String
   segment        String
   payload        Json
+  qualityScore   Int                  @default(0)
   status         CandidateQueueStatus @default(PENDING)
   attempts       Int                  @default(0)
   lastError      String?
   claimedAt      DateTime?
+  leaseOwner     String?
+  leaseExpiresAt DateTime?
+  nextEligibleAt DateTime             @default(now())
   processedAt    DateTime?
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
 
   @@unique([runId, source, sourceRecordId])
-  @@index([runId, status, createdAt])
+  @@index([runId, status, qualityScore, createdAt])
   @@index([status, claimedAt])
+  @@index([status, leaseExpiresAt])
+  @@index([status, nextEligibleAt])
+}
+
+model ValidationCandidate {
+  id                   String    @id @default(cuid())
+  originRunId          String?
+  source               String
+  sourceRecordId       String
+  companyName          String
+  streetAddress        String
+  city                 String
+  country              String
+  phone                String?
+  email                String?
+  possibleWebsite      String?
+  websiteStatus        String
+  businessStatus       String
+  identityConfidence   Int       @default(0)
+  locationConfidence   Int       @default(0)
+  websiteConfidence    Int       @default(0)
+  businessConfidence   Int       @default(0)
+  totalConfidence      Int       @default(0)
+  failureReason        String
+  retryCount           Int       @default(0)
+  maxRetries           Int       @default(5)
+  nextRetryAt          DateTime
+  lastErrorCode        String?
+  lastErrorMessage     String?
+  lastProvider         String?
+  lastCheckedAt        DateTime?
+  payload              Json
+  verificationEvidence Json?
+  promotedLeadId       String?
+  validatedAt          DateTime?
+  rejectedAt           DateTime?
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  status ValidationCandidateStatus @default(RETRY_REQUIRED)
+
+  @@unique([source, sourceRecordId])
+  @@index([status, nextRetryAt])
+  @@index([originRunId, createdAt])
+  @@index([promotedLeadId])
 }
 
 model WebsiteAnalysis {
@@ -566,23 +772,72 @@ model JobLock {
 }
 
 model SearchCombination {
-  id              String    @id @default(cuid())
-  country         String
-  city            String
-  category        String
-  source          String
-  useCount        Int       @default(0)
-  candidatesFound Int       @default(0)
-  validLeads      Int       @default(0)
-  lastUsedAt      DateTime?
-  lastError       String?
-  tileCursor      Int       @default(0)
-  lastTile        String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  country            String
+  city               String
+  category           String
+  source             String
+  region             String?
+  searchTerm         String?
+  provider           String?
+  useCount           Int       @default(0)
+  candidatesFound    Int       @default(0)
+  candidatesChecked  Int       @default(0)
+  rejectedCandidates Int       @default(0)
+  retryCandidates    Int       @default(0)
+  validLeads         Int       @default(0)
+  errorCount         Int       @default(0)
+  totalDurationMs    BigInt    @default(0)
+  averageDurationMs  Int       @default(0)
+  lastUsedAt         DateTime?
+  nextEligibleAt     DateTime  @default(now())
+  lastSuccessAt      DateTime?
+  lastError          String?
+  tileCursor         Int       @default(0)
+  lastTile           String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   @@unique([country, city, category, source])
   @@index([lastUsedAt, source])
+  @@index([nextEligibleAt, source])
+}
+
+model SourceProviderHealth {
+  provider            String    @id
+  consecutiveFailures Int       @default(0)
+  totalFailures       Int       @default(0)
+  totalSuccesses      Int       @default(0)
+  unhealthyUntil      DateTime?
+  lastErrorCode       String?
+  lastErrorMessage    String?
+  lastDurationMs      Int?
+  averageDurationMs   Int       @default(0)
+  lastCheckedAt       DateTime?
+  lastSuccessAt       DateTime?
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([unhealthyUntil, consecutiveFailures])
+}
+
+model GeocodingCache {
+  cacheKey         String   @id
+  latitude         Decimal  @db.Decimal(10, 7)
+  longitude        Decimal  @db.Decimal(10, 7)
+  formattedAddress String
+  street           String?
+  houseNumber      String?
+  postalCode       String?
+  city             String
+  municipality     String?
+  province         String?
+  country          String
+  provider         String   @default("NOMINATIM")
+  fetchedAt        DateTime @default(now())
+  expiresAt        DateTime
+
+  @@index([expiresAt])
 }
 
 model DuplicateFingerprint {
@@ -633,10 +888,13 @@ model SourceRecord {
   rawName           String?
   rawAddress        String?
   rawPhone          String?
+  rawEmail          String?
+  rawEmailSource    String?
   rawWebsite        String?
   rawBusinessStatus String?
   decision          String?
   reasonCode        String?
+  decisionEvidence  Json?
   processedAt       DateTime?
   payload           Json?
 

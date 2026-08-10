@@ -51,9 +51,13 @@ describe("fail-closed save-gate voor uitsluitend nieuwe leads", () => {
     expect(evaluateNewLeadGate({ companyName: "Nieuwe lead" }, unknown)).toMatchObject({ allowed: false, reason: "SKIPPED_WEBSITE_UNKNOWN" });
   });
 
-  it("sluit een expliciet bedrijfsdomein direct uit zonder netwerkbezoek", () => {
-    expect(determineIntakeWebsiteStatus({ details: { website_url: "bruna.nl" } }, unknown)).toMatchObject({ status: "HAS_WEBSITE", website: "https://bruna.nl" });
-    expect(evaluateNewLeadGate({ website: "bruna.nl" }, unknown)).toMatchObject({ allowed: false, reason: "SKIPPED_HAS_WEBSITE" });
+  it("vereist een betrouwbare kwaliteitscontrole voor een expliciet bedrijfsdomein", () => {
+    expect(determineIntakeWebsiteStatus({ details: { website_url: "bruna.nl" } }, unknown)).toMatchObject({ status: "UNKNOWN" });
+    expect(evaluateNewLeadGate({ website: "bruna.nl" }, unknown)).toMatchObject({ allowed: false, reason: "SKIPPED_WEBSITE_UNKNOWN" });
+    expect(evaluateNewLeadGate(
+      { website: "bruna.nl" },
+      { status: "WEBSITE_FOUND", website: "https://bruna.nl", reason: "Goed bruikbaar" },
+    )).toMatchObject({ allowed: false, reason: "SKIPPED_HAS_WEBSITE" });
   });
 
   it("sluit permanent gesloten bedrijven uit vóór alle andere beslissingen", () => {

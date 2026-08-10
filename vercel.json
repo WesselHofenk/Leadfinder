@@ -6,7 +6,18 @@
   "functions": {
     "app/api/generation/route.ts": { "maxDuration": 60 },
     "app/api/cron/generation/route.ts": { "maxDuration": 60 },
-    "app/api/cron/outreach/route.ts": { "maxDuration": 300 },
+    "app/api/cron/outreach/route.ts": { "maxDuration": 60 },
+    "app/api/queues/cold-email/route.ts": {
+      "maxDuration": 60,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "cold-email-delivery",
+          "retryAfterSeconds": 30,
+          "initialDelaySeconds": 0
+        }
+      ]
+    },
     "app/api/cron/reverify/route.ts": { "maxDuration": 300 },
     "app/api/cron/analyze/route.ts": { "maxDuration": 300 }
   }

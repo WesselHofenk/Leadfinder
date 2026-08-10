@@ -1,4 +1,4 @@
-import { JobStatus, OutreachEmailStatus } from "@prisma/client";
+import { JobStatus } from "@prisma/client";
 
 import { prisma } from "../lib/prisma";
 
@@ -21,32 +21,32 @@ async function main() {
     availableLeads,
   ] = await Promise.all([
     prisma.leadfinderTask.findMany({ orderBy: { createdAt: "asc" } }),
-    prisma.coldEmailTask.findMany({ orderBy: { createdAt: "asc" } }),
+    prisma.coldEmailCampaign.findMany({ orderBy: { createdAt: "asc" } }),
     prisma.generationRun.findMany({
       where: { status: { in: [JobStatus.PENDING, JobStatus.RUNNING] } },
       select: { id: true, status: true, continuousRequested: true, heartbeatAt: true, updatedAt: true },
       orderBy: { updatedAt: "desc" },
     }),
     prisma.jobLock.findMany({
-      where: { name: { in: ["generation-watchdog", "generation", "daily-cold-outreach"] } },
+      where: { OR: [{ name: { contains: "generation" } }, { name: { contains: "cold-email" } }] },
       orderBy: { name: "asc" },
     }),
-    prisma.outreachEmail.count({ where: { dateKey: localDateKey, status: OutreachEmailStatus.SENT } }),
-    prisma.outreachEmail.count({
-      where: { status: OutreachEmailStatus.RESERVED, providerAcceptedAt: { not: null }, archivedAt: null },
+    prisma.coldEmail.count({ where: { campaignDayKey: localDateKey, smtpAcceptedAt: { not: null } } }),
+    prisma.coldEmail.count({
+      where: { status: "SENT_PENDING_ARCHIVE", smtpAcceptedAt: { not: null }, sentItemsConfirmedAt: null },
     }),
-    prisma.outreachEmail.count({
-      where: { status: OutreachEmailStatus.FAILED, messageId: null, attemptCount: { lt: 5 } },
+    prisma.coldEmail.count({
+      where: { status: "FAILED", smtpAcceptedAt: null, attempts: { lt: 3 } },
     }),
     prisma.lead.count({
       where: {
-        status: "NEW",
         isActive: true,
         isFiltered: false,
         isSuppressed: false,
         doNotContact: false,
         email: { not: null },
-        outreachEmail: null,
+        pipelineStage: { is: { slug: "nieuw" } },
+        coldEmails: { none: { status: { not: "CANCELLED" } } },
       },
     }),
   ]);
@@ -55,7 +55,7 @@ async function main() {
     && leadfinderTasks[0]?.id === "leadfinder-continuous"
     && leadfinderTasks[0]?.name === "Leadfinder doorlopend zoeken"
     && coldEmailTasks.length === 1
-    && coldEmailTasks[0]?.id === "cold-email-continuous"
+    && coldEmailTasks[0]?.id === "sitora-cold-email"
     && activeRuns.length <= 1;
 
   console.log(JSON.stringify({

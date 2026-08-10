@@ -1,6 +1,6 @@
 import { Clock3, MailCheck } from "lucide-react";
 
-import type { getColdEmailTaskSnapshot } from "@/lib/jobs/outreach";
+import type { getColdEmailTaskSnapshot } from "@/lib/jobs/cold-email-task";
 
 type Snapshot = Awaited<ReturnType<typeof getColdEmailTaskSnapshot>>;
 

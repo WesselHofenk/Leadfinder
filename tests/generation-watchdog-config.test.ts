@@ -3,19 +3,20 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("doorlopende generatieconfiguratie", () => {
-  it("heeft geen vaste totale looptijdlimiet", () => {
+  it("begrensst iedere run maar laat de permanente taak daarna doorlopen", () => {
     const env = readFileSync(resolve("lib/env.ts"), "utf8");
     const example = readFileSync(resolve(".env.example"), "utf8");
     const vercel = JSON.parse(readFileSync(resolve("vercel.json"), "utf8")) as { env?: Record<string, string> };
-    expect(env).not.toContain("GENERATION_MAX_RUN_MINUTES");
-    expect(example).not.toContain("GENERATION_MAX_RUN_MINUTES");
+    expect(env).toContain("GENERATION_MAX_RUN_MINUTES");
+    expect(example).toContain("GENERATION_MAX_RUN_MINUTES");
     expect(vercel.env).toBeUndefined();
   });
 
-  it("behoudt de batchlimiet zonder een totale zoekdeadline", () => {
+  it("start na een begrensde run automatisch de volgende singletonrun", () => {
     const source = readFileSync(resolve("lib/jobs/generation.ts"), "utf8");
     expect(source).toContain("GENERATION_BATCH_DURATION_SECONDS");
-    expect(source).not.toContain("GENERATION_MAX_RUN_MINUTES");
+    expect(source).toContain("GENERATION_MAX_RUN_MINUTES");
+    expect(source).toContain("createGenerationRun({ continuousRequested: true })");
   });
 
   it("heeft een onafhankelijke cronroute die de watchdog uitvoert", () => {
