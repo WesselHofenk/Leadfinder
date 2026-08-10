@@ -29,13 +29,23 @@ export async function triggerColdEmailWorker(emailId: string, scheduledFor: Date
 export async function handleColdEmailQueueMessage(message: { emailId: string }) {
   const { deliverColdEmail } = await import("./service");
   try {
-    await deliverColdEmail(message.emailId);
+    const delivered = await deliverColdEmail(message.emailId);
+    if (["PENDING", "FAILED"].includes(delivered.status) && delivered.attempts < 3 && delivered.scheduledFor > new Date()) {
+      await triggerColdEmailWorker(delivered.id, delivered.scheduledFor, delivered.attempts);
+    }
   } catch (error) {
     const email = await prisma.coldEmail.findUnique({ where: { id: message.emailId } });
     if (email?.status === "FAILED" && email.attempts < 3) {
       await triggerColdEmailWorker(email.id, email.scheduledFor, email.attempts);
       return;
     }
+    if (email?.status === "FAILED" && email.attempts >= 3) return;
     throw error;
+  } finally {
+    const email = await prisma.coldEmail.findUnique({ where: { id: message.emailId } }).catch(() => null);
+    if (email && (["SENT", "CANCELLED"].includes(email.status) || (email.status === "FAILED" && email.attempts >= 3))) {
+      const { ensureDailyColdEmailBatch } = await import("./campaign");
+      await ensureDailyColdEmailBatch(new Date()).catch(() => undefined);
+    }
   }
 }

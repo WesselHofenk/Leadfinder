@@ -42,24 +42,57 @@ export async function sendCompiledColdEmail(config: ColdEmailConfig, recipient: 
   return result;
 }
 
-export async function appendToSentItems(config: ColdEmailConfig, raw: Buffer, sentAt: Date) {
-  const client = new ImapFlow({
+function createImapClient(config: ColdEmailConfig) {
+  return new ImapFlow({
     host: config.MAIL_IMAP_HOST,
     port: config.MAIL_IMAP_PORT,
     secure: config.MAIL_IMAP_SECURE,
     auth: { user: config.MAIL_USERNAME, pass: config.MAIL_PASSWORD },
     logger: false,
   });
+}
+
+async function sentFolderFor(client: ImapFlow, configuredFolder?: string) {
+  const mailboxes = await client.list();
+  const sentFolder = configuredFolder
+    || mailboxes.find((mailbox) => mailbox.specialUse === "\\Sent")?.path
+    || mailboxes.find((mailbox) => /^(sent|sent items|verzonden|verzonden items)$/i.test(mailbox.path))?.path;
+  if (!sentFolder) throw new Error("De map Verzonden items is niet gevonden op de mailserver.");
+  return sentFolder;
+}
+
+export async function findSentItemByMessageId(config: ColdEmailConfig, messageId: string) {
+  const client = createImapClient(config);
   await client.connect();
   try {
-    const mailboxes = await client.list();
-    const sentFolder = config.MAIL_SENT_FOLDER
-      || mailboxes.find((mailbox) => mailbox.specialUse === "\\Sent")?.path
-      || mailboxes.find((mailbox) => /^(sent|sent items|verzonden|verzonden items)$/i.test(mailbox.path))?.path;
-    if (!sentFolder) throw new Error("De map Verzonden items is niet gevonden op de mailserver.");
+    const folder = await sentFolderFor(client, config.MAIL_SENT_FOLDER);
+    await client.mailboxOpen(folder);
+    const existing = await client.search({ header: { "message-id": messageId } }, { uid: true });
+    if (!existing || existing.length === 0) return null;
+    return { folder, uid: String(existing[existing.length - 1]) };
+  } finally {
+    await client.logout().catch(() => undefined);
+  }
+}
+
+export async function appendToSentItems(
+  config: ColdEmailConfig,
+  raw: Buffer,
+  sentAt: Date,
+  messageId: string,
+) {
+  const client = createImapClient(config);
+  await client.connect();
+  try {
+    const sentFolder = await sentFolderFor(client, config.MAIL_SENT_FOLDER);
+    await client.mailboxOpen(sentFolder);
+    const existing = await client.search({ header: { "message-id": messageId } }, { uid: true });
+    if (existing && existing.length > 0) {
+      return { folder: sentFolder, uid: String(existing[existing.length - 1]), alreadyPresent: true };
+    }
     const result = await client.append(sentFolder, raw, ["\\Seen"], sentAt);
     if (!result) throw new Error("De archiefkopie is niet door de mailserver bevestigd.");
-    return { folder: sentFolder, uid: result.uid };
+    return { folder: sentFolder, uid: result.uid ? String(result.uid) : null, alreadyPresent: false };
   } finally {
     await client.logout().catch(() => undefined);
   }

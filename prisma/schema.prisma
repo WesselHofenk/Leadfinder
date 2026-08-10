@@ -130,6 +130,11 @@ enum ColdEmailStatus {
   CANCELLED
 }
 
+enum ColdEmailTemplate {
+  A
+  B
+}
+
 model User {
   id           String        @id @default(cuid())
   email        String        @unique
@@ -281,32 +286,79 @@ model Lead {
 }
 
 model ColdEmail {
-  id                 String          @id @default(cuid())
-  leadId             String
-  lead               Lead            @relation(fields: [leadId], references: [id], onDelete: Cascade)
-  createdById        String?
-  batchKey           String?
-  fromAddress        String          @default("info@sitora.nl")
-  recipient          String
-  subject            String
-  bodyText           String
-  scheduledFor       DateTime
-  allowOutsideWindow Boolean         @default(false)
-  status             ColdEmailStatus @default(PENDING)
-  attempts           Int             @default(0)
-  archiveAttempts    Int             @default(0)
-  messageId          String?
-  rawMessageBase64   String?
-  smtpAcceptedAt     DateTime?
-  archivedAt         DateTime?
-  lastError          String?
-  createdAt          DateTime        @default(now())
-  updatedAt          DateTime        @updatedAt
+  id                   String             @id @default(cuid())
+  leadId               String
+  lead                 Lead               @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  campaignId           String?
+  campaign             ColdEmailCampaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignDayKey       String?
+  templateKey          ColdEmailTemplate?
+  dedupeKey            String?            @unique
+  recipientDedupeKey   String?            @unique
+  createdById          String?
+  batchKey             String?
+  fromAddress          String             @default("info@sitora.nl")
+  recipient            String
+  subject              String
+  bodyText             String
+  scheduledFor         DateTime
+  allowOutsideWindow   Boolean            @default(false)
+  status               ColdEmailStatus    @default(PENDING)
+  attempts             Int                @default(0)
+  archiveAttempts      Int                @default(0)
+  messageId            String?
+  rawMessageBase64     String?
+  smtpAcceptedAt       DateTime?
+  archivedAt           DateTime?
+  sentFolder           String?
+  sentUid              String?
+  sentItemsConfirmedAt DateTime?
+  failureCategory      String?
+  lastError            String?
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
 
   @@unique([batchKey, leadId])
   @@index([status, scheduledFor])
   @@index([leadId, createdAt])
   @@index([smtpAcceptedAt, archivedAt])
+  @@index([campaignId, campaignDayKey, status])
+  @@index([messageId])
+}
+
+model ColdEmailCampaign {
+  id                String         @id
+  startDayKey       String
+  templateSequence  Int            @default(0)
+  pausedUntil       DateTime?
+  lastProviderError String?
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  emails            ColdEmail[]
+  runs              ColdEmailRun[]
+}
+
+model ColdEmailRun {
+  id                 String            @id @default(cuid())
+  campaignId         String
+  campaign           ColdEmailCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  dayKey             String
+  weekNumber         Int
+  dailyLimit         Int
+  scheduled          Int               @default(0)
+  successful         Int               @default(0)
+  failed             Int               @default(0)
+  movedToEmailed     Int               @default(0)
+  sentItemsConfirmed Int               @default(0)
+  remainingNewLeads  Int               @default(0)
+  status             String            @default("RUNNING")
+  startedAt          DateTime          @default(now())
+  finishedAt         DateTime?
+  createdAt          DateTime          @default(now())
+  updatedAt          DateTime          @updatedAt
+
+  @@unique([campaignId, dayKey])
+  @@index([dayKey, status])
 }
 
 model PipelineStage {

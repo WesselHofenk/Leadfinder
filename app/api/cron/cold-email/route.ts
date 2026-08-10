@@ -14,8 +14,8 @@ export async function GET(request: NextRequest) {
   try {
     const now = new Date();
     const recovery = await rescheduleStaleColdEmails(now);
-    const campaign = await ensureDailyColdEmailBatch(now);
     const delivery = await processColdEmailQueue(now);
+    const campaign = await ensureDailyColdEmailBatch(now);
     const result = { recovery, campaign, delivery };
     console.log(JSON.stringify({ step: "cold_email_cron", ...result }));
     return NextResponse.json(result);

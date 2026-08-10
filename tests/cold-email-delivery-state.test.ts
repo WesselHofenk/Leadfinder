@@ -3,10 +3,15 @@ import { fromZonedTime } from "date-fns-tz";
 
 vi.mock("server-only", () => ({}));
 
-const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, prismaMock } = vi.hoisted(() => {
+const { state, appendToSentItems, compileColdEmail, findSentItemByMessageId, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, prismaMock, acquireJobLock } = vi.hoisted(() => {
   const state = {
     id: "mail-1",
     leadId: "lead-1",
+    campaignId: "sitora-cold-email",
+    campaignDayKey: "2026-08-04",
+    templateKey: "A",
+    dedupeKey: "lead:lead-1",
+    recipientDedupeKey: "recipient:info@bedrijf.nl",
     createdById: "user-1",
     fromAddress: "info@sitora.nl",
     recipient: "info@bedrijf.nl",
@@ -21,11 +26,16 @@ const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, asser
     rawMessageBase64: null as string | null,
     smtpAcceptedAt: null as Date | null,
     archivedAt: null as Date | null,
+    sentFolder: null as string | null,
+    sentUid: null as string | null,
+    sentItemsConfirmedAt: null as Date | null,
+    failureCategory: null as string | null,
     lastError: null as string | null,
     createdAt: new Date("2026-08-03T10:00:00.000Z"),
     updatedAt: new Date("2026-08-03T10:00:00.000Z"),
   };
   const appendToSentItems = vi.fn();
+  const findSentItemByMessageId = vi.fn(async () => null);
   const compileColdEmail = vi.fn(async () => ({ raw: Buffer.from("raw-message"), messageId: "<mail-1@sitora.nl>" }));
   const sendCompiledColdEmail = vi.fn(async () => ({ accepted: ["info@bedrijf.nl"] }));
   const assertRecipientDomainCanReceiveMail = vi.fn(async () => undefined);
@@ -41,31 +51,57 @@ const { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, asser
     return { ...state };
   };
   const coldEmailUpdate = vi.fn(async ({ data }: { data: Record<string, unknown> }) => applyUpdate(data));
+  const claimUpdateMany = vi.fn(async () => {
+    if (!["PENDING", "FAILED"].includes(state.status) || state.attempts >= 3 || state.smtpAcceptedAt) return { count: 0 };
+    state.status = "SENDING";
+    state.attempts += 1;
+    return { count: 1 };
+  });
   const tx = {
-    coldEmail: { findUniqueOrThrow: vi.fn(async () => ({ ...state })), update: coldEmailUpdate },
+    coldEmail: {
+      findUniqueOrThrow: vi.fn(async () => ({
+        ...state,
+        lead: {
+          id: "lead-1",
+          companyName: "Bedrijf BV",
+          email: "info@bedrijf.nl",
+          isActive: true,
+          isFiltered: false,
+          isSuppressed: false,
+          doNotContact: false,
+          pipelineStage: { id: "pipeline-nieuw", slug: "nieuw" },
+        },
+      })),
+      update: coldEmailUpdate,
+      updateMany: claimUpdateMany,
+    },
     pipelineStage: { findFirstOrThrow: vi.fn(async () => ({ id: "pipeline-gemaild", slug: "gemaild" })) },
-    lead: { update: leadUpdate },
+    lead: {
+      update: leadUpdate,
+      findUniqueOrThrow: vi.fn(async () => ({ companyName: "Bedrijf BV", pipelineStage: { slug: "nieuw" } })),
+    },
+    coldEmailCampaign: { upsert: vi.fn(async () => ({ id: "sitora-cold-email", startDayKey: "2026-08-04", templateSequence: 0, pausedUntil: null })) },
     leadActivity: { create: vi.fn(async () => ({})) },
     leadHistory: { create: vi.fn(async () => ({})) },
   };
   const prismaMock = {
     coldEmail: {
       findUniqueOrThrow: vi.fn(async () => ({ ...state })),
-      updateMany: vi.fn(async () => {
-        if (!["PENDING", "FAILED"].includes(state.status) || state.attempts >= 3 || state.smtpAcceptedAt) return { count: 0 };
-        state.status = "SENDING";
-        state.attempts += 1;
-        return { count: 1 };
-      }),
+      updateMany: claimUpdateMany,
       update: coldEmailUpdate,
+    },
+    coldEmailCampaign: {
+      upsert: vi.fn(async () => ({ id: "sitora-cold-email", startDayKey: "2026-08-04", templateSequence: 0, pausedUntil: null })),
+      update: vi.fn(async () => ({})),
     },
     $transaction: vi.fn(async (callback: (value: typeof tx) => unknown) => callback(tx)),
   };
-  return { state, appendToSentItems, compileColdEmail, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, coldEmailUpdate, prismaMock };
+  const acquireJobLock = vi.fn(async () => ({ release: vi.fn(async () => ({ count: 1 })) }));
+  return { state, appendToSentItems, compileColdEmail, findSentItemByMessageId, sendCompiledColdEmail, assertRecipientDomainCanReceiveMail, leadUpdate, coldEmailUpdate, prismaMock, acquireJobLock };
 });
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
-vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock: vi.fn() }));
+vi.mock("@/lib/jobs/lock", () => ({ acquireJobLock }));
 vi.mock("@/lib/email/config", () => ({ coldEmailConfig: () => ({
   COLD_EMAIL_FROM_ADDRESS: "info@sitora.nl",
   COLD_EMAIL_FROM_NAME: "Sitora",
@@ -82,7 +118,7 @@ vi.mock("@/lib/email/config", () => ({ coldEmailConfig: () => ({
   MAIL_BOUNCE_ADDRESS: undefined,
   MAIL_SENT_FOLDER: undefined,
 }) }));
-vi.mock("@/lib/email/delivery", () => ({ appendToSentItems, compileColdEmail, sendCompiledColdEmail }));
+vi.mock("@/lib/email/delivery", () => ({ appendToSentItems, compileColdEmail, findSentItemByMessageId, sendCompiledColdEmail }));
 vi.mock("@/lib/email/recipient-validation", () => ({
   assertRecipientDomainCanReceiveMail,
   UndeliverableRecipientDomainError: class UndeliverableRecipientDomainError extends Error {
@@ -100,7 +136,8 @@ describe("cold-email verzendstatus", () => {
   beforeEach(() => {
     Object.assign(state, {
       status: "PENDING", attempts: 0, archiveAttempts: 0, messageId: null,
-      rawMessageBase64: null, smtpAcceptedAt: null, archivedAt: null, lastError: null,
+      rawMessageBase64: null, smtpAcceptedAt: null, archivedAt: null, sentFolder: null,
+      sentUid: null, sentItemsConfirmedAt: null, failureCategory: null, lastError: null,
     });
     vi.clearAllMocks();
     assertRecipientDomainCanReceiveMail.mockResolvedValue(undefined);

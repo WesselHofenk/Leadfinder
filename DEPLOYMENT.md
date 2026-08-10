@@ -32,7 +32,9 @@ Cold e-mail werkt pas nadat de volgende waarden als beveiligde Vercel-variabelen
 - `MAIL_USERNAME=info@sitora.nl` en `MAIL_PASSWORD=<mailboxwachtwoord>`;
 - `MAIL_SENT_FOLDER`: alleen invullen wanneer de IMAP-server de map met speciaal gebruik `Sent` niet publiceert.
 
-De cronroute controleert iedere vijf minuten de wachtrij. De applicatie verstuurt vanaf de startdatum uitsluitend binnen 09:00–17:00 Nederlandse tijd. Na SMTP-acceptatie wordt dezelfde RFC822-mail via IMAP in Verzonden items geplaatst. Alleen daarna gaat de lead automatisch naar `Gemaild`. Een mislukte IMAP-poging verstuurt de mail niet opnieuw, maar probeert uitsluitend de archiefkopie opnieuw op te slaan.
+De dagelijkse Vercel-cron start om 08:00 UTC de duurzame wachtrij; de applicatie zelf bewaakt 09:00–17:00 Nederlandse tijd en Vercel Queue activeert ieder individueel verzendmoment. De eerste campagne-run slaat de ingestelde startdatum duurzaam in PostgreSQL op. Het daglimiet begint bij 20, stijgt iedere zeven kalenderdagen met 10 en blijft vanaf week 9 op 100 staan.
+
+De automatische campagne gebruikt uitsluitend leads in `Nieuw` en bewaart de A/B-volgorde, reserveringen, dagsamenvattingen en deduplicatiesleutels in PostgreSQL. Na SMTP-acceptatie zoekt de applicatie eerst op Message-ID in de echte IMAP-map Verzonden items en voegt alleen een kopie toe wanneer de provider dat niet al heeft gedaan. Alleen na IMAP-bevestiging gaat de lead naar `Gemaild`. Een mislukte IMAP-poging verstuurt de mail niet opnieuw, maar probeert uitsluitend de archiefkopie opnieuw op te slaan.
 
 ## Veilig migreren
 
