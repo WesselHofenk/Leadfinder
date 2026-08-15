@@ -60,7 +60,10 @@ export async function getLeadfinderTaskSnapshot() {
             : /ophalen|zoeken/i.test(run.currentPhase)
               ? "SEARCHING"
               : "WAITING";
-  return { task, run, operationalStatus, workerHealthy, candidateOutcomes };
+  const visibleRun = run && attemptedCandidates.length > run.candidatesChecked
+    ? { ...run, candidatesChecked: attemptedCandidates.length }
+    : run;
+  return { task, run: visibleRun, operationalStatus, workerHealthy, candidateOutcomes };
 }
 
 export async function stopLeadfinderTask() {

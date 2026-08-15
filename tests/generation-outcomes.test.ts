@@ -59,4 +59,18 @@ describe("traceerbare kandidaatuitkomsten", () => {
     });
     expect(snapshot.candidateOutcomes.total).toBe(snapshot.run?.candidatesChecked);
   });
+
+  it("toont tijdens een actieve batch nooit meer uitkomsten dan gecontroleerde kandidaten", async () => {
+    prismaMocks.runFindUnique.mockResolvedValue({
+      id: "run-1", status: "RUNNING", pendingCandidates: 0, currentPhase: "Kandidaten valideren",
+      candidatesChecked: 4,
+    });
+    prismaMocks.candidatesFindMany.mockResolvedValue(Array.from({ length: 8 }, (_, index) => ({
+      source: "OPENSTREETMAP", sourceRecordId: String(index + 1), status: "PROCESSING",
+    })));
+    prismaMocks.sourceRecordsFindMany.mockResolvedValue([]);
+    const snapshot = await getLeadfinderTaskSnapshot();
+    expect(snapshot.run?.candidatesChecked).toBe(8);
+    expect(snapshot.candidateOutcomes.total).toBe(8);
+  });
 });
