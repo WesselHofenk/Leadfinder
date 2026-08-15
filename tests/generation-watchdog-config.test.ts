@@ -19,16 +19,15 @@ describe("doorlopende generatieconfiguratie", () => {
     expect(source).toContain("createGenerationRun({ continuousRequested: true })");
   });
 
-  it("heeft een onafhankelijke cronroute die de watchdog uitvoert", () => {
-    const route = readFileSync(resolve("app/api/cron/generation/route.ts"), "utf8");
-    const vercel = JSON.parse(readFileSync(resolve("vercel.json"), "utf8")) as { crons?: Array<{ path: string; schedule: string }> };
+  it("gebruikt na een handmatige start een duurzame queue en geen generatiecron", () => {
+    const route = readFileSync(resolve("app/api/queues/generation/route.ts"), "utf8");
+    const vercel = readFileSync(resolve("vercel.json"), "utf8");
     const scheduler = readFileSync(resolve(".github/workflows/backend-automations.yml"), "utf8");
-    expect(route).toContain("runGenerationWatchdog");
-    expect(route).toContain("CRON_SECRET");
-    expect(vercel.crons).toBeUndefined();
-    expect(scheduler).toContain('cron: "*/5 * * * *"');
+    expect(route).toContain("handleGenerationQueueMessage");
+    expect(vercel).toContain('"topic": "lead-generation"');
+    expect(scheduler).not.toContain('cron: "*/5 * * * *"');
     expect(scheduler).toContain('cron: "*/15 * * * *"');
-    expect(scheduler.match(/api\/cron\/generation/g)).toHaveLength(1);
+    expect(scheduler).not.toContain("api/cron/generation");
     expect(scheduler.match(/api\/cron\/outreach/g)).toHaveLength(1);
     expect(scheduler).not.toContain("api/cron/sync");
     expect(scheduler).not.toMatch(/api\/cron\/outreach\//);

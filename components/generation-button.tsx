@@ -21,7 +21,11 @@ type Run = {
   candidatesFound: number;
   candidatesChecked: number;
   stored: number;
+  validDrafts: number;
   duplicates: number;
+  rejected: number;
+  manualReview: number;
+  permanentlyClosed: number;
   sourceFailures: number;
   pendingCandidates: number;
   currentPhase: string;
@@ -31,7 +35,19 @@ type Run = {
   batchNumber: number;
 };
 
-type Snapshot = { task: LeadfinderTask; run: Run | null };
+type OperationalStatus = "STARTING" | "SEARCHING" | "PROCESSING" | "WAITING" | "RECOVERING" | "PAUSED" | "ERROR";
+type CandidateOutcomes = { qualified: number; rejected: number; duplicates: number; retrying: number; failed: number; processing: number; total: number };
+type Snapshot = { task: LeadfinderTask; run: Run | null; operationalStatus: OperationalStatus; workerHealthy: boolean; candidateOutcomes: CandidateOutcomes };
+
+const statusLabel: Record<OperationalStatus, string> = {
+  STARTING: "Starten",
+  SEARCHING: "Nieuwe kandidaten zoeken",
+  PROCESSING: "Kandidaten verwerken",
+  WAITING: "Volgende batch ingepland",
+  RECOVERING: "Worker herstellen",
+  PAUSED: "Gepauzeerd",
+  ERROR: "Actie vereist",
+};
 
 export function GenerationButton() {
   const router = useRouter();
@@ -66,15 +82,17 @@ export function GenerationButton() {
     if (!response?.ok) setMessage("De taakstatus kon niet worden bijgewerkt.");
     else {
       const data = await response.json() as Snapshot & { message?: string };
-      setSnapshot({ task: data.task, run: data.run });
-      setMessage(data.message ?? (enabled ? "De Leadfinder is gepauzeerd." : "De Leadfinder wordt door de backend hervat."));
+      setSnapshot(data);
+      setMessage(data.message ?? (enabled ? "De Leadfinder is gepauzeerd." : "De Leadfinder is gestart."));
     }
     setBusy(false);
   }
 
   const task = snapshot?.task;
   const run = snapshot?.run;
-  const enabled = task?.enabled ?? true;
+  const enabled = task?.enabled ?? false;
+  const operationalStatus = snapshot?.operationalStatus ?? (enabled ? "STARTING" : "PAUSED");
+  const outcomes = snapshot?.candidateOutcomes;
   const progress = Math.max(0, Math.min(100, run?.progress ?? 0));
 
   return <section className="generation-control generation-task-card" aria-label="Leadfinder-taakstatus">
@@ -83,23 +101,27 @@ export function GenerationButton() {
       <span className={`status-dot ${enabled ? "status-dot-active" : ""}`} aria-hidden="true"/>
       <div>
         <strong>{task?.name ?? "Leadfinder doorlopend zoeken"}</strong>
-        <span>{enabled ? "Actief · backend draait zelfstandig" : "Gepauzeerd"}</span>
+        <span>{statusLabel[operationalStatus]}</span>
       </div>
       <Radar size={18}/>
     </div>
     <button className="button button-secondary generation-task-toggle" onClick={toggle} disabled={busy || !snapshot}>
-      {enabled ? <Pause size={14}/> : <Play size={14}/>} {enabled ? "Pauzeren" : "Hervatten"}
+      {enabled ? <Pause size={14}/> : <Play size={14}/>} {enabled ? "Pauzeren" : "Starten / hervatten"}
     </button>
     {run && <div className="generation-task-details" aria-live="polite">
       <div className="generation-progress-head"><span>{run.currentPhase || "Wachten op backendbatch"}</span><strong>{Math.round(progress)}%</strong></div>
       <div className="progress"><span style={{ width: `${progress}%` }}/></div>
-      <p className="generation-source-note">{[run.currentSource, run.currentRegion, run.currentCategory].filter(Boolean).join(" · ") || "Backendwatchdog actief"} · batch {run.batchNumber}</p>
-      <p className="generation-source-note">{run.message || "De volgende zoekbatch wordt automatisch door de server gestart."}</p>
+      <p className="generation-source-note">{[run.currentSource, run.currentRegion, run.currentCategory].filter(Boolean).join(" · ") || statusLabel[operationalStatus]} · batch {run.batchNumber}</p>
+      <p className="generation-source-note">{run.message || "De volgende zoekbatch is duurzaam ingepland."}</p>
       <div className="generation-metrics">
         <Metric label="Kandidaten" value={run.candidatesFound}/><Metric label="Gecontroleerd" value={run.candidatesChecked}/>
-        <Metric label="Nieuw" value={run.stored} strong/><Metric label="Duplicaten" value={run.duplicates}/>
+        <Metric label="Nieuw" value={run.stored} strong/><Metric label="Gekwalificeerd" value={outcomes?.qualified ?? run.validDrafts}/>
+        <Metric label="Afgewezen" value={outcomes?.rejected ?? 0}/><Metric label="Duplicaten" value={outcomes?.duplicates ?? 0}/>
+        <Metric label="Hercontrole" value={outcomes?.retrying ?? 0}/><Metric label="Mislukt" value={outcomes?.failed ?? 0}/>
+        <Metric label="In verwerking" value={outcomes?.processing ?? 0}/>
         <Metric label="Wachtrij" value={run.pendingCandidates}/><Metric label="Bronfouten" value={run.sourceFailures}/>
       </div>
+      {run.candidatesChecked > 0 && <p className="generation-source-note">{outcomes?.total ?? 0} van {run.candidatesChecked} gecontroleerde kandidaten hebben een traceerbare uitkomst.</p>}
     </div>}
     {task?.lastError && <p className="alert" role="alert">{task.lastError}</p>}
     {message && <p className="small muted" role="status">{message}</p>}

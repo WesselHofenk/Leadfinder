@@ -2,7 +2,6 @@ name: Sitora backend automations
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
     - cron: "*/15 * * * *"
     - cron: "43 2 * * *"
     - cron: "7 3 * * *"
@@ -12,20 +11,6 @@ permissions:
   contents: read
 
 jobs:
-  leadfinder:
-    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/5 * * * *'
-    runs-on: ubuntu-latest
-    concurrency:
-      group: sitora-leadfinder-backend
-      cancel-in-progress: false
-    steps:
-      - name: Houd de permanente Leadfinder actief
-        run: >-
-          curl --fail-with-body --silent --show-error
-          --retry 2 --retry-all-errors
-          --header "Authorization: Bearer ${{ secrets.SITORA_CRON_SECRET }}"
-          https://leadfindersitora.nl/api/cron/generation
-
   cold-email:
     if: github.event_name == 'workflow_dispatch' || github.event.schedule == '*/15 * * * *'
     runs-on: ubuntu-latest

@@ -527,8 +527,8 @@ model GenerationRun {
 model LeadfinderTask {
   id              String   @id
   name            String   @unique
-  enabled         Boolean  @default(true)
-  status          String   @default("ACTIVE")
+  enabled         Boolean  @default(false)
+  status          String   @default("PAUSED")
   currentRunId    String?
   lastRunId       String?
   lastHeartbeatAt DateTime?

@@ -3,11 +3,12 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("doorlopende leadgeneratie", () => {
-  it("bewaart de Start/Stop-keuze duurzaam en hervat via de watchdog", () => {
+  it("staat standaard stil en bewaart de handmatige Start/Stop-keuze duurzaam", () => {
     const schema = readFileSync(resolve("prisma/schema.prisma"), "utf8");
     const source = readFileSync(resolve("lib/jobs/generation.ts"), "utf8");
     expect(schema).toContain("continuousRequested");
     expect(schema).toContain("model LeadfinderTask");
+    expect(schema).toMatch(/enabled\s+Boolean\s+@default\(false\)/);
     expect(source).toContain("createGenerationRun({ continuousRequested: true })");
   });
 
@@ -18,10 +19,12 @@ describe("doorlopende leadgeneratie", () => {
     expect(source).toContain("NEW_PIPELINE_STAGE_ID");
   });
 
-  it("toont één duidelijke singleton-taak zonder browserworker", () => {
+  it("toont één duidelijke singleton-taak met echte operationele toestanden", () => {
     const component = readFileSync(resolve("components/generation-button.tsx"), "utf8");
     expect(component.match(/Leadfinder doorlopend zoeken/g)).toHaveLength(1);
     expect(component).not.toContain('method: "PATCH"');
-    expect(component).toContain("backend draait zelfstandig");
+    expect(component).toContain("Nieuwe kandidaten zoeken");
+    expect(component).toContain("Worker herstellen");
+    expect(component).toContain("traceerbare uitkomst");
   });
 });

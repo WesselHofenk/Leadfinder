@@ -2204,6 +2204,7 @@ export async function runGenerationWatchdog(now = new Date()) {
         },
       });
     }
+    const recovering = Boolean(active && (active.status === JobStatus.PENDING || now.getTime() - active.updatedAt.getTime() > serverEnv().GENERATION_WATCHDOG_SECONDS * 1_000));
     if (!active) active = await createGenerationRun({ continuousRequested: true });
     else if (!active.continuousRequested || active.cancelRequested) {
       active = await prisma.generationRun.update({
@@ -2212,10 +2213,11 @@ export async function runGenerationWatchdog(now = new Date()) {
       });
     }
 
-    await prisma.leadfinderTask.update({
-      where: { id: LEADFINDER_TASK_ID },
-      data: { status: "RUNNING", currentRunId: active.id, lastRunId: active.id, lastHeartbeatAt: now, lastError: null },
+    const claimedTask = await prisma.leadfinderTask.updateMany({
+      where: { id: LEADFINDER_TASK_ID, enabled: true },
+      data: { status: recovering ? "RECOVERING" : "SEARCHING", currentRunId: active.id, lastRunId: active.id, lastHeartbeatAt: now, lastError: null },
     });
+    if (!claimedTask.count) return { active: false, processed: false, reason: "paused" };
 
     const run = isGenerationRunExpired(active.startedAt, serverEnv().GENERATION_MAX_RUN_MINUTES, now)
       ? await finishGenerationRun(active.id, `De zoekrun van ${serverEnv().GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`)
@@ -2223,21 +2225,30 @@ export async function runGenerationWatchdog(now = new Date()) {
 
     if (terminalStatuses.has(run.status)) {
       const next = await createGenerationRun({ continuousRequested: true });
-      await prisma.leadfinderTask.update({
-        where: { id: LEADFINDER_TASK_ID },
-        data: { status: "ACTIVE", currentRunId: next.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
+      const continued = await prisma.leadfinderTask.updateMany({
+        where: { id: LEADFINDER_TASK_ID, enabled: true },
+        data: { status: "SEARCHING", currentRunId: next.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
       });
+      if (!continued.count) {
+        await prisma.generationRun.update({ where: { id: next.id }, data: {
+          status: JobStatus.CANCELLED, cancelRequested: true, continuousRequested: false,
+          currentPhase: "Gepauzeerd", message: "De Leadfinder is gepauzeerd voordat de volgende run begon.",
+          stopReason: "Handmatige pauze behouden.", finishedAt: new Date(), heartbeatAt: new Date(),
+        } });
+        return { active: false, processed: true, runId: run.id, status: run.status, reason: "paused" };
+      }
       return { active: true, processed: true, runId: run.id, status: run.status, nextRunId: next.id };
     }
 
-    await prisma.leadfinderTask.update({
-      where: { id: LEADFINDER_TASK_ID },
-      data: { status: "RUNNING", currentRunId: run.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
+    const continued = await prisma.leadfinderTask.updateMany({
+      where: { id: LEADFINDER_TASK_ID, enabled: true },
+      data: { status: run.pendingCandidates > 0 ? "PROCESSING" : "SEARCHING", currentRunId: run.id, lastRunId: run.id, lastHeartbeatAt: new Date(), lastError: null },
     });
+    if (!continued.count) return { active: false, processed: true, runId: run.id, status: run.status, reason: "paused" };
     return { active: true, processed: true, runId: run.id, status: run.status };
   } catch (error) {
-    await prisma.leadfinderTask.update({
-      where: { id: LEADFINDER_TASK_ID },
+    await prisma.leadfinderTask.updateMany({
+      where: { id: LEADFINDER_TASK_ID, enabled: true },
       data: { status: "ERROR", lastHeartbeatAt: new Date(), lastError: errorMessage(error) },
     }).catch(() => undefined);
     throw error;

@@ -5,8 +5,18 @@
   "installCommand": "pnpm install --frozen-lockfile",
   "functions": {
     "app/api/generation/route.ts": { "maxDuration": 60 },
-    "app/api/cron/generation/route.ts": { "maxDuration": 60 },
     "app/api/cron/outreach/route.ts": { "maxDuration": 60 },
+    "app/api/queues/generation/route.ts": {
+      "maxDuration": 60,
+      "experimentalTriggers": [
+        {
+          "type": "queue/v2beta",
+          "topic": "lead-generation",
+          "retryAfterSeconds": 15,
+          "initialDelaySeconds": 0
+        }
+      ]
+    },
     "app/api/queues/cold-email/route.ts": {
       "maxDuration": 60,
       "experimentalTriggers": [
