@@ -6,6 +6,7 @@ import { formatInTimeZone } from "date-fns-tz";
 import { coldEmailConfig } from "@/lib/email/config";
 import { coldEmailCampaignWeek, coldEmailDailyLimit, localDayKey, zonedDayBounds } from "@/lib/email/schedule";
 import { COLD_EMAIL_CAMPAIGN_ID, ensureColdEmailCampaignState } from "@/lib/email/state";
+import { coldEmailEligibleLeadWhere } from "@/lib/email/eligibility";
 import { prisma } from "@/lib/prisma";
 
 export async function getColdEmailTaskSnapshot(now = new Date()) {
@@ -21,17 +22,7 @@ export async function getColdEmailTaskSnapshot(now = new Date()) {
       campaignDayKey: dayKey,
       OR: [{ status: "CANCELLED" }, { status: "FAILED", attempts: { gte: 3 } }],
     } }),
-    prisma.lead.count({ where: {
-      isActive: true,
-      isFiltered: false,
-      isSuppressed: false,
-      doNotContact: false,
-      email: { not: null },
-      emailMxVerified: true,
-      emailValidationStatus: { not: "INVALID" },
-      pipelineStage: { is: { slug: "nieuw" } },
-      coldEmails: { none: { status: { not: "CANCELLED" } } },
-    } }),
+    prisma.lead.count({ where: coldEmailEligibleLeadWhere() }),
     prisma.coldEmail.findFirst({
       where: { smtpAcceptedAt: { not: null } },
       orderBy: { smtpAcceptedAt: "desc" },
@@ -44,6 +35,10 @@ export async function getColdEmailTaskSnapshot(now = new Date()) {
     }),
   ]);
 
+  const dailyLimit = coldEmailDailyLimit(dayKey, campaign.startDayKey);
+  const bottleneckCode = sentToday < dailyLimit && availableLeads === 0 && !nextPending
+    ? "NIEUW_EMPTY"
+    : null;
   return {
     task: {
       ...campaign,
@@ -53,7 +48,7 @@ export async function getColdEmailTaskSnapshot(now = new Date()) {
       lastError: campaign.lastProviderError,
     },
     sentToday,
-    dailyLimit: coldEmailDailyLimit(dayKey, campaign.startDayKey),
+    dailyLimit,
     nextWeekLimit: coldEmailDailyLimit(nextWeekDayKey, campaign.startDayKey),
     weekLevel: coldEmailCampaignWeek(dayKey, campaign.startDayKey),
     availableLeads,
@@ -62,5 +57,9 @@ export async function getColdEmailTaskSnapshot(now = new Date()) {
     nextScheduled: nextPending
       ? formatInTimeZone(nextPending.scheduledFor, config.COLD_EMAIL_TIME_ZONE, "dd-MM-yyyy HH:mm")
       : "Nog niet ingepland",
+    bottleneckCode,
+    bottleneck: bottleneckCode === "NIEUW_EMPTY"
+      ? `Dagdoel gepauzeerd: Nieuw bevat geen verzendbare leads (${sentToday}/${dailyLimit}).`
+      : null,
   };
 }

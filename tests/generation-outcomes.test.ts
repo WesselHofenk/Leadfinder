@@ -6,7 +6,11 @@ const prismaMocks = vi.hoisted(() => ({
   runFindFirst: vi.fn(),
   candidatesFindMany: vi.fn(),
   sourceRecordsFindMany: vi.fn(),
+  leadCount: vi.fn(),
+  leadFindFirst: vi.fn(),
 }));
+
+vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
@@ -14,6 +18,7 @@ vi.mock("@/lib/prisma", () => ({
     generationRun: { findUnique: prismaMocks.runFindUnique, findFirst: prismaMocks.runFindFirst },
     generationCandidate: { findMany: prismaMocks.candidatesFindMany },
     sourceRecord: { findMany: prismaMocks.sourceRecordsFindMany },
+    lead: { count: prismaMocks.leadCount, findFirst: prismaMocks.leadFindFirst },
   },
 }));
 
@@ -30,6 +35,8 @@ describe("traceerbare kandidaatuitkomsten", () => {
       id: "run-1", status: "RUNNING", pendingCandidates: 0, currentPhase: "Zoekbatch afgerond",
       candidatesChecked: 4,
     });
+    prismaMocks.leadCount.mockResolvedValue(0);
+    prismaMocks.leadFindFirst.mockResolvedValue(null);
   });
 
   it("maakt een nieuwe singleton standaard gepauzeerd aan", async () => {
@@ -47,10 +54,10 @@ describe("traceerbare kandidaatuitkomsten", () => {
       { source: "OPENSTREETMAP", sourceRecordId: "4", status: "PENDING" },
     ]);
     prismaMocks.sourceRecordsFindMany.mockResolvedValue([
-      { source: "OPENSTREETMAP", sourceRecordId: "1", decision: "rejected" },
-      { source: "OPENSTREETMAP", sourceRecordId: "2", decision: "skipped" },
-      { source: "OPENSTREETMAP", sourceRecordId: "3", decision: "rejected" },
-      { source: "OPENSTREETMAP", sourceRecordId: "4", decision: "retry" },
+      { source: "OPENSTREETMAP", sourceRecordId: "1", decision: "rejected", reasonCode: "LANGUAGE_NOT_DUTCH" },
+      { source: "OPENSTREETMAP", sourceRecordId: "2", decision: "skipped", reasonCode: "SKIPPED_HAS_WEBSITE" },
+      { source: "OPENSTREETMAP", sourceRecordId: "3", decision: "rejected", reasonCode: "LANGUAGE_NOT_DUTCH" },
+      { source: "OPENSTREETMAP", sourceRecordId: "4", decision: "retry", reasonCode: "STATUS_VERIFICATION_REQUIRED" },
     ]);
 
     const snapshot = await getLeadfinderTaskSnapshot();
@@ -58,6 +65,11 @@ describe("traceerbare kandidaatuitkomsten", () => {
       qualified: 0, rejected: 3, duplicates: 0, retrying: 1, failed: 0, processing: 0, total: 4,
     });
     expect(snapshot.candidateOutcomes.total).toBe(snapshot.run?.candidatesChecked);
+    expect(snapshot.rejectionReasons).toEqual([
+      { code: "LANGUAGE_NOT_DUTCH", count: 2 },
+      { code: "SKIPPED_HAS_WEBSITE", count: 1 },
+    ]);
+    expect(snapshot.leadBuffer).toMatchObject({ eligible: 0, target: 150, needsRefill: true });
   });
 
   it("toont tijdens een actieve batch nooit meer uitkomsten dan gecontroleerde kandidaten", async () => {

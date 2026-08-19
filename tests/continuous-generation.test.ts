@@ -10,6 +10,11 @@ describe("doorlopende leadgeneratie", () => {
     expect(schema).toContain("model LeadfinderTask");
     expect(schema).toMatch(/enabled\s+Boolean\s+@default\(false\)/);
     expect(source).toContain("createGenerationRun({ continuousRequested: true })");
+    expect(source).toContain('reason: "buffer_ready"');
+    expect(source.match(/!await leadfinderSearchAllowed\(runId\)/g)).toHaveLength(3);
+    expect(source).toContain("handmatig gestopt vóór een nieuwe bronzoekopdracht");
+    expect(source).toContain("handmatig gestopt vóór nieuwe vestigingscontroles");
+    expect(source).toContain("handmatig gestopt vóór nieuwe websitecontroles");
   });
 
   it("publiceert een gekwalificeerde lead direct in Nieuw", () => {
@@ -26,5 +31,6 @@ describe("doorlopende leadgeneratie", () => {
     expect(component).toContain("Nieuwe kandidaten zoeken");
     expect(component).toContain("Worker herstellen");
     expect(component).toContain("traceerbare uitkomst");
+    expect(component).toContain("Nieuw-buffer gevuld");
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Candidate } from "@/lib/leads/eligibility";
-import { confirmedActiveStatus, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
+import { canDeferActiveVerificationToWebsite, confirmedActiveStatus, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeLocation } from "@/lib/leads/strict-validation";
 import type { WebsiteVerificationResult } from "@/lib/leads/website-verification";
 
 const noWebsite: WebsiteVerificationResult = {
@@ -129,5 +129,53 @@ describe("centrale strikte leadvalidatie", () => {
     });
     expect(status).toMatchObject({ active: true, status: "likely_active" });
     expect(status.confidence).toBeGreaterThanOrEqual(80);
+  });
+
+  it("stelt alleen de activiteitsbeslissing uit wanneer een officiële website actueel kan worden gecontroleerd", () => {
+    const oldOsm = {
+      ...base,
+      source: "OPENSTREETMAP" as const,
+      externalPlaceId: "osm:node/456",
+      sourceUrl: "https://www.openstreetmap.org/node/456",
+      googleMapsUrl: "https://www.openstreetmap.org/node/456",
+      googlePlaceId: undefined,
+      googleBusinessProfileUrl: undefined,
+      googleBusinessProfileVerified: false,
+      businessStatus: "UNKNOWN",
+      sourceUpdatedAt: "2023-08-01T12:00:00.000Z",
+      activitySignals: ["contact:phone", "contact:email"],
+      website: "https://delokaleschilder.nl",
+    };
+    const preliminary = validateStrictLeadBeforeLocation(oldOsm);
+    expect(preliminary.reasons).toEqual(["BUSINESS_NOT_CONFIRMED_ACTIVE"]);
+    expect(canDeferActiveVerificationToWebsite(oldOsm, preliminary.reasons)).toBe(true);
+    expect(canDeferActiveVerificationToWebsite({ ...oldOsm, website: undefined }, preliminary.reasons)).toBe(false);
+  });
+
+  it("accepteert actuele bereikbare websitekwaliteit als aanvullend activiteitsbewijs, maar geen timeout", () => {
+    const oldOsm = {
+      ...base,
+      source: "OPENSTREETMAP" as const,
+      externalPlaceId: "osm:node/789",
+      sourceUrl: "https://www.openstreetmap.org/node/789",
+      googleMapsUrl: "https://www.openstreetmap.org/node/789",
+      googlePlaceId: undefined,
+      googleBusinessProfileUrl: undefined,
+      googleBusinessProfileVerified: false,
+      businessStatus: "UNKNOWN",
+      sourceUpdatedAt: "2023-08-01T12:00:00.000Z",
+      activitySignals: ["contact:phone", "contact:email"],
+      website: "https://delokaleschilder.nl",
+    };
+    const improvable: WebsiteVerificationResult = {
+      status: "IMPROVABLE_WEBSITE",
+      confidence: 86,
+      website: oldOsm.website,
+      reason: "Meerdere actuele verbeterpunten",
+      evidence: [],
+    };
+    expect(validateStrictLead(oldOsm, improvable)).toMatchObject({ valid: true, reasons: [] });
+    expect(validateStrictLead(oldOsm, { ...improvable, status: "UNKNOWN", confidence: 35 }).reasons)
+      .toContain("BUSINESS_NOT_CONFIRMED_ACTIVE");
   });
 });

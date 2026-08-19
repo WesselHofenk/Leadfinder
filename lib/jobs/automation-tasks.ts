@@ -1,6 +1,7 @@
 import { JobStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
+import { getLeadBufferSnapshot } from "./lead-buffer";
 
 export const LEADFINDER_TASK_ID = "leadfinder-continuous";
 export const LEADFINDER_TASK_NAME = "Leadfinder doorlopend zoeken";
@@ -32,7 +33,7 @@ export async function getLeadfinderTaskSnapshot() {
   }) : [];
   const decisions = attemptedCandidates.length ? await prisma.sourceRecord.findMany({
     where: { OR: attemptedCandidates.map(({ source, sourceRecordId }) => ({ source, sourceRecordId })) },
-    select: { source: true, sourceRecordId: true, decision: true },
+    select: { source: true, sourceRecordId: true, decision: true, reasonCode: true },
   }) : [];
   const decisionByCandidate = new Map(decisions.map((item) => [`${item.source}:${item.sourceRecordId}`, item.decision]));
   const candidateOutcomes = { qualified: 0, rejected: 0, duplicates: 0, retrying: 0, failed: 0, processing: 0, total: attemptedCandidates.length };
@@ -45,10 +46,22 @@ export async function getLeadfinderTaskSnapshot() {
     else if (decision === "retry" || candidate.status === "PENDING") candidateOutcomes.retrying += 1;
     else candidateOutcomes.processing += 1;
   }
+  const rejectionReasonCounts = new Map<string, number>();
+  for (const decision of decisions) {
+    if (!["rejected", "skipped"].includes(decision.decision ?? "") || !decision.reasonCode) continue;
+    rejectionReasonCounts.set(decision.reasonCode, (rejectionReasonCounts.get(decision.reasonCode) ?? 0) + 1);
+  }
+  const rejectionReasons = [...rejectionReasonCounts]
+    .map(([code, count]) => ({ code, count }))
+    .sort((left, right) => right.count - left.count || left.code.localeCompare(right.code))
+    .slice(0, 3);
+  const leadBuffer = await getLeadBufferSnapshot();
   const heartbeatAgeMs = task.lastHeartbeatAt ? Date.now() - task.lastHeartbeatAt.getTime() : null;
   const workerHealthy = Boolean(task.enabled && heartbeatAgeMs !== null && heartbeatAgeMs < 90_000);
   const operationalStatus = !task.enabled
     ? "PAUSED"
+    : task.status === "BUFFER_READY"
+      ? "BUFFER_READY"
     : task.status === "ERROR"
       ? "ERROR"
       : !run
@@ -63,7 +76,7 @@ export async function getLeadfinderTaskSnapshot() {
   const visibleRun = run && attemptedCandidates.length > run.candidatesChecked
     ? { ...run, candidatesChecked: attemptedCandidates.length }
     : run;
-  return { task, run: visibleRun, operationalStatus, workerHealthy, candidateOutcomes };
+  return { task, run: visibleRun, operationalStatus, workerHealthy, candidateOutcomes, rejectionReasons, leadBuffer };
 }
 
 export async function stopLeadfinderTask() {

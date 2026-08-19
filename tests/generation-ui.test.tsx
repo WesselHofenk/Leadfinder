@@ -15,7 +15,8 @@ const run = {
   currentPhase: "Openbare bedrijfsvermeldingen ophalen", currentSource: "OPENSTREETMAP", currentRegion: "Amsterdam, NL", batchNumber: 1,
 };
 const candidateOutcomes = { qualified: 1, rejected: 0, duplicates: 1, retrying: 0, failed: 0, processing: 0, total: 2 };
-const activeSnapshot = { task, run, operationalStatus: "SEARCHING", workerHealthy: true, candidateOutcomes };
+const leadBuffer = { eligible: 12, target: 150, needsRefill: true, lastSuccessfulLeadAt: "2026-08-19T12:00:00.000Z" };
+const activeSnapshot = { task, run, operationalStatus: "SEARCHING", workerHealthy: true, candidateOutcomes, leadBuffer, rejectionReasons: [] };
 
 function json(value: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify(value), { status, headers: { "content-type": "application/json" } }));
@@ -32,6 +33,7 @@ describe("Leadfinder-backendstatus", () => {
     expect(screen.getAllByText("Leadfinder doorlopend zoeken")).toHaveLength(1);
     expect(screen.getByText("Nieuwe kandidaten zoeken")).toBeTruthy();
     expect(screen.getByText("2 van 2 gecontroleerde kandidaten hebben een traceerbare uitkomst.")).toBeTruthy();
+    expect(screen.getByText("12/150")).toBeTruthy();
   });
 
   it("pauzeert alleen de singleton en start geen browserbatch", async () => {

@@ -26,6 +26,7 @@ export function ColdEmailTaskCard({ snapshot }: { snapshot: Snapshot }) {
     </div>
     <p className="generation-source-note"><Clock3 size={13}/> Volgende geplande verzending: {snapshot.nextScheduled}</p>
     <p className="generation-source-note">Laatste succesvolle verzending: {snapshot.lastSuccessfulSentAt ? snapshot.lastSuccessfulSentAt.toLocaleString("nl-NL", { timeZone: task.timeZone }) : "Nog niet beschikbaar"}</p>
+    {snapshot.bottleneck && <p className="generation-source-note" role="status">{snapshot.bottleneck}</p>}
     {task.lastError && <p className="alert" role="alert">{task.lastError}</p>}
   </section>;
 }

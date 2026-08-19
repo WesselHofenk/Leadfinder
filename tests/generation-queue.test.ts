@@ -42,6 +42,12 @@ describe("doorlopende generatiequeue", () => {
     expect(triggerGenerationWorker).not.toHaveBeenCalled();
   });
 
+  it("plant geen lege controlelus wanneer de Nieuw-buffer gevuld is", async () => {
+    runGenerationWatchdog.mockResolvedValue({ active: true, processed: false, reason: "buffer_ready" });
+    await handleGenerationQueueMessage({ taskId: "leadfinder-continuous" }, { messageId: "message-buffer" } as never);
+    expect(triggerGenerationWorker).not.toHaveBeenCalled();
+  });
+
   it("weigert een bericht voor een andere taak", async () => {
     await handleGenerationQueueMessage({ taskId: "other" }, { messageId: "message-3" } as never);
     expect(runGenerationWatchdog).not.toHaveBeenCalled();

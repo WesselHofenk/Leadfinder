@@ -6,6 +6,7 @@ const schema = z.object({
   CRON_SECRET: z.string().min(32).optional(),
   LEAD_GENERATION_TARGET: z.coerce.number().int().min(10).max(50).default(10),
   LEAD_CANDIDATE_BUFFER: z.coerce.number().int().min(50).max(200).default(200),
+  LEAD_NEW_BUFFER_TARGET: z.coerce.number().int().min(50).max(500).default(150),
   OVERPASS_API_URL: z.string().url().default("https://overpass-api.de/api/interpreter"),
   OVERPASS_API_URLS: z.string().default("https://overpass-api.de/api/interpreter,https://lz4.overpass-api.de/api/interpreter,https://overpass.kumi.systems/api/interpreter,https://overpass.private.coffee/api/interpreter"),
   OVERPASS_TIMEOUT_MS: z.coerce.number().int().min(4000).max(15000).default(10000),
