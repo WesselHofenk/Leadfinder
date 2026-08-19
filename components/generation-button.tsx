@@ -35,18 +35,36 @@ type Run = {
   batchNumber: number;
 };
 
-type OperationalStatus = "STARTING" | "SEARCHING" | "PROCESSING" | "WAITING" | "RECOVERING" | "PAUSED" | "ERROR";
+type OperationalStatus = "STARTING" | "SEARCHING" | "PROCESSING" | "WAITING" | "BUFFER_READY" | "RECOVERING" | "PAUSED" | "ERROR";
 type CandidateOutcomes = { qualified: number; rejected: number; duplicates: number; retrying: number; failed: number; processing: number; total: number };
-type Snapshot = { task: LeadfinderTask; run: Run | null; operationalStatus: OperationalStatus; workerHealthy: boolean; candidateOutcomes: CandidateOutcomes };
+type Snapshot = {
+  task: LeadfinderTask;
+  run: Run | null;
+  operationalStatus: OperationalStatus;
+  workerHealthy: boolean;
+  candidateOutcomes: CandidateOutcomes;
+  rejectionReasons: Array<{ code: string; count: number }>;
+  leadBuffer: { eligible: number; target: number; needsRefill: boolean; lastSuccessfulLeadAt: string | null };
+};
 
 const statusLabel: Record<OperationalStatus, string> = {
   STARTING: "Starten",
   SEARCHING: "Nieuwe kandidaten zoeken",
   PROCESSING: "Kandidaten verwerken",
   WAITING: "Volgende batch ingepland",
+  BUFFER_READY: "Nieuw-buffer gevuld",
   RECOVERING: "Worker herstellen",
   PAUSED: "Gepauzeerd",
   ERROR: "Actie vereist",
+};
+
+const rejectionLabel: Record<string, string> = {
+  BUSINESS_NOT_CONFIRMED_ACTIVE: "activiteit niet bevestigd",
+  SKIPPED_HAS_WEBSITE: "website voldoende bruikbaar",
+  LANGUAGE_NOT_DUTCH: "niet aantoonbaar Nederlandstalig",
+  EMAIL_MX_MISSING: "e-maildomein zonder MX",
+  BUSINESS_EMAIL_REQUIRED: "openbaar zakelijk e-mailadres ontbreekt",
+  SINGLE_LOCATION_NOT_CONFIRMED: "één vestiging niet bevestigd",
 };
 
 export function GenerationButton() {
@@ -120,14 +138,17 @@ export function GenerationButton() {
         <Metric label="Hercontrole" value={outcomes?.retrying ?? 0}/><Metric label="Mislukt" value={outcomes?.failed ?? 0}/>
         <Metric label="In verwerking" value={outcomes?.processing ?? 0}/>
         <Metric label="Wachtrij" value={run.pendingCandidates}/><Metric label="Bronfouten" value={run.sourceFailures}/>
+        <Metric label="Nieuw-buffer" value={`${snapshot?.leadBuffer?.eligible ?? 0}/${snapshot?.leadBuffer?.target ?? 150}`}/>
       </div>
       {run.candidatesChecked > 0 && <p className="generation-source-note">{outcomes?.total ?? 0} van {run.candidatesChecked} gecontroleerde kandidaten hebben een traceerbare uitkomst.</p>}
+      {snapshot?.rejectionReasons?.length ? <p className="generation-source-note">Meest voorkomende afwijzingen: {snapshot.rejectionReasons.map(({ code, count }) => `${rejectionLabel[code] ?? code.toLowerCase().replaceAll("_", " ")} (${count})`).join(" · ")}</p> : null}
+      <p className="generation-source-note">Laatste nieuwe verzendbare lead: {snapshot?.leadBuffer?.lastSuccessfulLeadAt ? new Date(snapshot.leadBuffer.lastSuccessfulLeadAt).toLocaleString("nl-NL") : "Nog niet beschikbaar"}</p>
     </div>}
     {task?.lastError && <p className="alert" role="alert">{task.lastError}</p>}
     {message && <p className="small muted" role="status">{message}</p>}
   </section>;
 }
 
-function Metric({ label, value, strong = false }: { label: string; value: number; strong?: boolean }) {
+function Metric({ label, value, strong = false }: { label: string; value: number | string; strong?: boolean }) {
   return <div><span>{label}</span><strong className={strong ? "generation-total" : undefined}>{value}</strong></div>;
 }

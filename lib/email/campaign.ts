@@ -4,10 +4,12 @@ import { fromZonedTime } from "date-fns-tz";
 import { prisma } from "@/lib/prisma";
 import { acquireJobLock } from "@/lib/jobs/lock";
 import { coldEmailConfig } from "./config";
+import { coldEmailEligibleLeadWhere } from "./eligibility";
 import { safeColdEmailError } from "./errors";
 import { ensureColdEmailCampaignState, COLD_EMAIL_CAMPAIGN_ID } from "./state";
 import { coldEmailTemplateForSequence, renderAutomaticColdEmail } from "./templates";
 import { triggerColdEmailWorker } from "./worker";
+import { requestLeadBufferRefill } from "@/lib/jobs/lead-buffer";
 import {
   COLD_EMAIL_MAX_DAILY,
   coldEmailCampaignWeek,
@@ -34,23 +36,9 @@ export function remainingDailyColdEmailCapacity(dailyLimit: number, successful: 
   return Math.max(0, dailyLimit - successful - active);
 }
 
-function eligibleLeadWhere(): Prisma.LeadWhereInput {
-  return {
-    isActive: true,
-    isFiltered: false,
-    isSuppressed: false,
-    doNotContact: false,
-    email: { not: null },
-    emailMxVerified: true,
-    emailValidationStatus: { not: "INVALID" },
-    pipelineStage: { is: { slug: "nieuw" } },
-    coldEmails: { none: {
-      OR: [
-        { smtpAcceptedAt: { not: null } },
-        { status: { in: ["PENDING", "SENDING", "SENT_PENDING_ARCHIVE", "SENT", "FAILED"] } },
-      ],
-    } },
-  };
+export function coldEmailShortageReason(shortage: number, created: number) {
+  if (shortage <= 0) return null;
+  return created === 0 ? "no-eligible-leads" : "insufficient-eligible-leads";
 }
 
 export function remainingColdEmailSlots(
@@ -123,7 +111,7 @@ export async function summarizeColdEmailRun(dayKey: string, now = new Date()) {
       OR: [{ status: "CANCELLED" }, { status: "FAILED", attempts: { gte: smtpRetryLimit } }],
     } }),
     prisma.coldEmail.count({ where: { campaignId: state.id, campaignDayKey: dayKey } }),
-    prisma.lead.count({ where: eligibleLeadWhere() }),
+    prisma.lead.count({ where: coldEmailEligibleLeadWhere() }),
   ]);
   const complete = successful >= dailyLimit || now >= bounds.end;
   const run = await prisma.coldEmailRun.upsert({
@@ -223,7 +211,7 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
       if (!admin) throw new Error("Geen actieve beheerder gevonden voor de verzendaudit.");
 
       const leads = await tx.lead.findMany({
-        where: eligibleLeadWhere(),
+        where: coldEmailEligibleLeadWhere(),
         orderBy: [{ opportunityScore: "desc" }, { firstDiscoveredAt: "asc" }],
         take: Math.min(500, Math.max(slots.length * 5, slots.length)),
         select: {
@@ -287,13 +275,15 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
           data: { templateSequence: { increment: created.length } },
         });
       }
+      const shortage = Math.max(0, dailyLimit - reserved - created.length);
+      const reason = coldEmailShortageReason(shortage, created.length);
       return {
         dayKey,
         dailyLimit,
         created,
         totalForDay: reserved + created.length,
-        shortage: Math.max(0, dailyLimit - reserved - created.length),
-        reason: null,
+        shortage,
+        reason,
       };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
@@ -310,13 +300,16 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
       }
     });
     const summary = await summarizeColdEmailRun(result.dayKey, now);
+    await requestLeadBufferRefill(`generation:email-buffer:${result.dayKey}:${result.totalForDay}`).catch((error) => {
+      console.error(JSON.stringify({ step: "generation_refill_queue_failed", message: safeColdEmailError(error) }));
+    });
     return {
       dayKey: result.dayKey,
       dailyLimit: result.dailyLimit,
       scheduled: result.created.length,
       totalForDay: result.totalForDay,
       shortage: result.shortage,
-      skipped: Boolean(result.reason),
+      skipped: Boolean(result.reason) && result.created.length === 0,
       reason: result.reason,
       summary,
     };

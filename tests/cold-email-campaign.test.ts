@@ -4,6 +4,7 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 vi.mock("server-only", () => ({}));
 import {
   availableColdEmailSlots,
+  coldEmailShortageReason,
   coldEmailBatchDayKey,
   remainingDailyColdEmailCapacity,
   remainingColdEmailSlots,
@@ -57,6 +58,12 @@ describe("automatische dagelijkse cold-emailbatch", () => {
     expect(remainingDailyColdEmailCapacity(20, 18, 0)).toBe(2);
     expect(remainingDailyColdEmailCapacity(20, 18, 2)).toBe(0);
     expect(remainingDailyColdEmailCapacity(20, 20, 0)).toBe(0);
+  });
+
+  it("verklaart een onvervuld dagdoel met de echte leadvoorraad", () => {
+    expect(coldEmailShortageReason(19, 0)).toBe("no-eligible-leads");
+    expect(coldEmailShortageReason(4, 3)).toBe("insufficient-eligible-leads");
+    expect(coldEmailShortageReason(0, 20)).toBeNull();
   });
 
   it("gebruikt exact het onderwerp en personaliseert beide templates", () => {

@@ -149,6 +149,6 @@ export async function analyzeWebsite(websiteUrl: string, options: { quick?: bool
     hasViewportMeta: viewport, hasOutdatedCopyright: outdatedCopyright, hasPlaceholderContent: placeholder, loadTimeMs,
     hasHttps: effectiveHttps, hasInvalidSsl: invalidSsl, hasBrokenImages: html ? brokenImageCount > 0 : null,
     brokenImageCount, hasLegacyTechnology: legacyTechnology, hasTinyText: tinyText,
-    httpStatus, failureKind, reasons: scores.reasons, rawSignals: { fetchError: fetchError || null, httpStatus, failureKind, finalUrl: checkedUrl, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar" },
+    httpStatus, failureKind, reasons: scores.reasons, rawSignals: { quick: options.quick === true, attempts, fetchError: fetchError || null, httpStatus, failureKind, finalUrl: checkedUrl, bytesRead: Buffer.byteLength(html), checkedLinks: html ? Math.min(5, [...html.matchAll(/href=/gi)].length) : 0, checkedImages: html ? Math.min(5, [...html.matchAll(/<img/gi)].length) : 0, horizontalOverflow: "niet betrouwbaar server-side meetbaar" },
   };
 }

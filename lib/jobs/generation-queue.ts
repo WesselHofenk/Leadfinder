@@ -18,6 +18,7 @@ export async function handleGenerationQueueMessage(message: unknown, metadata: M
 
   const result = await runGenerationWatchdog();
   if (!result.active) return;
+  if (result.reason === "buffer_ready") return;
 
   const snapshot = await getLeadfinderTaskSnapshot();
   if (!snapshot.task.enabled || !snapshot.run) return;

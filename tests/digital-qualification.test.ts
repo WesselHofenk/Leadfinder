@@ -71,4 +71,13 @@ describe("digitale websitekwalificatie", () => {
     expect(classifyOwnedWebsite(source, analysis({ isReachable: false, httpStatus: 503 })).status).toBe("WEBSITE_BROKEN");
     expect(classifyOwnedWebsite(source, analysis({ isReachable: false, hasInvalidSsl: true, failureKind: "invalid_ssl" })).status).toBe("WEBSITE_BROKEN");
   });
+
+  it("maakt van één begrensde quick-check geen permanent kapotte website", () => {
+    expect(classifyOwnedWebsite(source, analysis({
+      isReachable: false,
+      httpStatus: 503,
+      failureKind: "network",
+      rawSignals: { quick: true, attempts: 1 },
+    })).status).toBe("UNKNOWN");
+  });
 });

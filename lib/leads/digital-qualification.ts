@@ -18,11 +18,13 @@ export function classifyOwnedWebsite(
   analysis: WebsiteAnalysisResult,
 ): WebsiteVerificationResult {
   const evidence = [...source.evidence, ...analysisEvidence(analysis)];
-  const repeatedHttpFailure = analysis.httpStatus === 404
+  const repeatedHttpFailure = analysis.rawSignals.quick !== true && (
+    analysis.httpStatus === 404
     || analysis.httpStatus === 410
-    || Boolean(analysis.httpStatus && analysis.httpStatus >= 500);
+    || Boolean(analysis.httpStatus && analysis.httpStatus >= 500)
+  );
   if (!analysis.isReachable) {
-    if (analysis.hasInvalidSsl || repeatedHttpFailure) {
+    if ((analysis.hasInvalidSsl && analysis.rawSignals.quick !== true) || repeatedHttpFailure) {
       return {
         status: "WEBSITE_BROKEN",
         confidence: 92,
@@ -68,10 +70,10 @@ export function classifyOwnedWebsite(
   };
 }
 
-export async function qualifyWebsiteCandidate(candidate: Candidate): Promise<WebsiteVerificationResult> {
+export async function qualifyWebsiteCandidate(candidate: Candidate, options: { quick?: boolean } = {}): Promise<WebsiteVerificationResult> {
   const source = await verifyWebsiteCandidate(candidate);
   if (source.status !== "WEBSITE_FOUND" || !source.website) return source;
   const { analyzeWebsite } = await import("@/lib/website/analyze");
-  const analysis = await analyzeWebsite(source.website);
+  const analysis = await analyzeWebsite(source.website, { quick: options.quick });
   return classifyOwnedWebsite(source, analysis);
 }

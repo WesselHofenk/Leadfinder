@@ -4,6 +4,7 @@ import { isPermanentlyClosed, isTemporarilyClosed, normalizeBusinessStatusText }
 import type { WebsiteVerificationResult } from "./website-verification";
 import { detectBlockedLocation } from "./blocked-location";
 import { normalizeEmails, normalizePhones } from "./normalization";
+import { determineWebsiteStatus } from "./website";
 
 export type StrictLeadReason =
   | "BLOCKED_BRUSSELS" | "BLOCKED_GHENT" | "PHONE_REQUIRED" | "EMAIL_REQUIRED" | "NO_PUBLIC_BUSINESS_PROFILE" | "REGION_NOT_ALLOWED" | "LANGUAGE_NOT_DUTCH"
@@ -75,7 +76,7 @@ export function hasVerifiedPublicBusinessProfile(candidate: Candidate) {
   return google || osm;
 }
 
-export function confirmedActiveStatus(candidate: Candidate) {
+export function confirmedActiveStatus(candidate: Candidate, verification?: WebsiteVerificationResult) {
   if (isPermanentlyClosed(candidate) || isTemporarilyClosed(candidate)) return { active: false, confidence: 100, status: "closed" as const };
   const status = normalizeBusinessStatusText(candidate.businessStatus);
   const sourceStatusConfirmed = candidate.source === "GOOGLE_PLACES" || candidate.googleBusinessStatusVerified === true || candidate.source === "OPENSTREETMAP";
@@ -90,6 +91,18 @@ export function confirmedActiveStatus(candidate: Candidate) {
   }, Number.isFinite(sourceTime) && currentSource ? 1 : 0);
   if (sourceStatusConfirmed && currentSource && activityScore >= 2 && hasRecentSourceEvidence(candidate)) {
     return { active: true, confidence: Math.min(90, 75 + activityScore * 3), status: "likely_active" as const };
+  }
+  const currentReachableWebsiteEvidence = verification
+    && ["WEBSITE_OUTDATED", "IMPROVABLE_WEBSITE"].includes(verification.status)
+    && verification.confidence >= 80
+    && Boolean(verification.website)
+    && candidate.emailMxVerified === true
+    && Boolean(candidate.emailSourceUrl?.trim())
+    && normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length > 0
+    && hasVerifiedPublicBusinessProfile(candidate)
+    && hasRecentSourceEvidence(candidate);
+  if (currentReachableWebsiteEvidence) {
+    return { active: true, confidence: 88, status: "likely_active" as const };
   }
   return { active: false, confidence: 0, status: "insufficient" as const };
 }
@@ -108,7 +121,7 @@ export function validateStrictLead(
   const reasons: StrictLeadReason[] = [];
   const blocked = detectBlockedLocation(candidate as Candidate & Record<string, unknown>);
   const language = detectDutchBusinessLanguage(candidate);
-  const active = confirmedActiveStatus(candidate);
+  const active = confirmedActiveStatus(candidate, verification);
   if (blocked.area === "BRUSSELS") reasons.push("BLOCKED_BRUSSELS");
   if (blocked.area === "GHENT") reasons.push("BLOCKED_GHENT");
   if (options.requirePhone !== false && !normalizePhones([candidate.internationalPhoneNumber, candidate.phoneNumber, ...(candidate.phoneNumbers ?? [])], candidate.country).length) reasons.push("PHONE_REQUIRED");
@@ -140,4 +153,9 @@ export function validateStrictLeadBeforeContactEnrichment(candidate: Candidate) 
 
 export function isStatusVerificationRetry(reasons: StrictLeadReason[]) {
   return reasons.length > 0 && reasons.every((reason) => reason === "BUSINESS_NOT_CONFIRMED_ACTIVE");
+}
+
+/** A current website audit can supply activity evidence that is unavailable in an older OSM edit. */
+export function canDeferActiveVerificationToWebsite(candidate: Candidate, reasons: StrictLeadReason[]) {
+  return isStatusVerificationRetry(reasons) && determineWebsiteStatus(candidate).status === "has_website";
 }

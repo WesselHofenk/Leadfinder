@@ -6,7 +6,7 @@ import { candidateDedupeKeys, fingerprintValues, RunDeduplicator, strongIdentity
 import { isPermanentlyClosed, isTemporarilyClosed } from "@/lib/leads/company-status";
 import { validateCandidateBasics, type Candidate } from "@/lib/leads/eligibility";
 import { enrichCandidateAddress } from "@/lib/leads/address-enrichment";
-import { hasReadableAddress, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
+import { canDeferActiveVerificationToWebsite, hasReadableAddress, isStatusVerificationRetry, validateStrictLead, validateStrictLeadBeforeContactEnrichment, validateStrictLeadBeforeLocation, type StrictLeadReason } from "@/lib/leads/strict-validation";
 import { validatePublicBusinessEmail } from "@/lib/leads/business-email";
 import { detectBlockedLocation } from "@/lib/leads/blocked-location";
 import { evaluateNewLeadGate } from "@/lib/leads/intake-gate";
@@ -29,6 +29,7 @@ import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } fro
 import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
 import { publishQualifiedDrafts } from "./qualified-draft-publication";
 import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
+import { getLeadBufferSnapshot } from "./lead-buffer";
 
 type Stats = {
   found: number;
@@ -77,6 +78,16 @@ type Stats = {
 const terminalStatuses = new Set<JobStatus>(terminalGenerationStatuses as readonly JobStatus[]);
 const errorMessage = (error: unknown) => error instanceof Error ? error.message.slice(0, 300) : "Onbekende bronfout";
 const stringArray = (value: Prisma.JsonValue): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+
+async function leadfinderSearchAllowed(runId: string) {
+  const [task, run] = await Promise.all([
+    prisma.leadfinderTask.findUnique({ where: { id: LEADFINDER_TASK_ID }, select: { enabled: true } }),
+    prisma.generationRun.findUnique({ where: { id: runId }, select: { status: true, cancelRequested: true } }),
+  ]);
+  return task?.enabled === true
+    && run?.cancelRequested === false
+    && (run.status === JobStatus.PENDING || run.status === JobStatus.RUNNING);
+}
 
 export class DuplicateIdentityError extends Error {
   constructor(readonly fingerprint: string, readonly existingLeadId: string) {
@@ -1600,6 +1611,9 @@ export async function processGenerationBatch(runId: string) {
       if (Date.now() >= runDeadline) {
         return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
       }
+      if (!await leadfinderSearchAllowed(runId)) {
+        return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De Leadfinder is handmatig gestopt vóór een nieuwe bronzoekopdracht.");
+      }
       try {
         const result = await adapter.searchBusinesses({
           country: area.country, city: area.city, latitude: Number(area.latitude), longitude: Number(area.longitude),
@@ -1788,7 +1802,7 @@ export async function processGenerationBatch(runId: string) {
       // Reject deterministic failures and known identities before spending a
       // remote request on contact enrichment or the nationwide location lookup.
       const preliminary = validateStrictLeadBeforeContactEnrichment(candidate);
-      if (!preliminary.valid) {
+      if (!preliminary.valid && !canDeferActiveVerificationToWebsite(candidate, preliminary.reasons)) {
         if (isStatusVerificationRetry(preliminary.reasons)) {
           if (row.attempts === 0) stats.manualReview += 1;
           retriedThisBatch += 1;
@@ -1899,7 +1913,7 @@ export async function processGenerationBatch(runId: string) {
         await sourceRecord(candidate);
       }
       const contactComplete = validateStrictLeadBeforeLocation(candidate);
-      if (!contactComplete.valid) {
+      if (!contactComplete.valid && !canDeferActiveVerificationToWebsite(candidate, contactComplete.reasons)) {
         const reason = contactComplete.reasons[0];
         stats.rejected += 1;
         stats.cheapRejected += 1;
@@ -1951,6 +1965,10 @@ export async function processGenerationBatch(runId: string) {
       await releaseQueueItems(locationWork.map(({ row }) => row.id), "De tienminutentermijn is verstreken vóór de vestigingscontrole.");
       return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
     }
+    if (locationWork.length && !await leadfinderSearchAllowed(runId)) {
+      await releaseQueueItems(locationWork.map(({ row }) => row.id), "Handmatig gestopt vóór de vestigingscontrole.");
+      return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De Leadfinder is handmatig gestopt vóór nieuwe vestigingscontroles.");
+    }
     const locationStarted = Date.now();
     const locationResults = await Promise.allSettled(locationWork.map(({ candidate }) => verifySingleLocationForRun(runId, candidate)));
     validationDurationMs += Date.now() - locationStarted;
@@ -2001,13 +2019,17 @@ export async function processGenerationBatch(runId: string) {
         await releaseQueueItems(verificationWork.map(({ row }) => row.id), "De tienminutentermijn is verstreken vóór de websitecontrole.");
         return finishGenerationRun(runId, `De zoekrun van ${env.GENERATION_MAX_RUN_MINUTES} minuten is afgerond.`);
       }
+      if (!await leadfinderSearchAllowed(runId)) {
+        await releaseQueueItems(verificationWork.map(({ row }) => row.id), "Handmatig gestopt vóór de websitecontrole.");
+        return terminalRun(runId, JobStatus.CANCELLED, stats, places, errors, warnings, "De Leadfinder is handmatig gestopt vóór nieuwe websitecontroles.");
+      }
       stats.websitesChecked += verificationWork.length;
       await prisma.generationRun.update({ where: { id: runId }, data: {
         ...runData(stats, places, errors, warnings), currentPhase: "Websitebewijs controleren",
         progress: run.progress, message: `${verificationWork.length} websitecontroles draaien gelimiteerd en onafhankelijk van elkaar.`, heartbeatAt: new Date(),
       } });
       const validationStarted = Date.now();
-      const verificationResults = await Promise.allSettled(verificationWork.map(({ candidate }) => qualifyWebsiteCandidate(candidate)));
+      const verificationResults = await Promise.allSettled(verificationWork.map(({ candidate }) => qualifyWebsiteCandidate(candidate, { quick: true })));
       validationDurationMs += Date.now() - validationStarted;
 
       for (let index = 0; index < verificationWork.length; index += 1) {
@@ -2204,6 +2226,21 @@ export async function runGenerationWatchdog(now = new Date()) {
         },
       });
     }
+    if (!active) {
+      const buffer = await getLeadBufferSnapshot();
+      if (!buffer.needsRefill) {
+        await prisma.leadfinderTask.updateMany({
+          where: { id: LEADFINDER_TASK_ID, enabled: true },
+          data: {
+            status: "BUFFER_READY",
+            currentRunId: null,
+            lastHeartbeatAt: now,
+            lastError: null,
+          },
+        });
+        return { active: true, processed: false, reason: "buffer_ready", buffer };
+      }
+    }
     const recovering = Boolean(active && (active.status === JobStatus.PENDING || now.getTime() - active.updatedAt.getTime() > serverEnv().GENERATION_WATCHDOG_SECONDS * 1_000));
     if (!active) active = await createGenerationRun({ continuousRequested: true });
     else if (!active.continuousRequested || active.cancelRequested) {
@@ -2224,6 +2261,20 @@ export async function runGenerationWatchdog(now = new Date()) {
       : await processGenerationBatch(active.id);
 
     if (terminalStatuses.has(run.status)) {
+      const buffer = await getLeadBufferSnapshot();
+      if (!buffer.needsRefill) {
+        await prisma.leadfinderTask.updateMany({
+          where: { id: LEADFINDER_TASK_ID, enabled: true },
+          data: {
+            status: "BUFFER_READY",
+            currentRunId: null,
+            lastRunId: run.id,
+            lastHeartbeatAt: new Date(),
+            lastError: null,
+          },
+        });
+        return { active: true, processed: true, runId: run.id, status: run.status, reason: "buffer_ready", buffer };
+      }
       const next = await createGenerationRun({ continuousRequested: true });
       const continued = await prisma.leadfinderTask.updateMany({
         where: { id: LEADFINDER_TASK_ID, enabled: true },
