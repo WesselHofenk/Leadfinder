@@ -2,6 +2,7 @@ import { JobStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/prisma";
 import { getLeadBufferSnapshot } from "./lead-buffer";
+import { isGenerationWorkerHeartbeatHealthy } from "./generation-worker";
 
 export const LEADFINDER_TASK_ID = "leadfinder-continuous";
 export const LEADFINDER_TASK_NAME = "Leadfinder doorlopend zoeken";
@@ -56,8 +57,7 @@ export async function getLeadfinderTaskSnapshot() {
     .sort((left, right) => right.count - left.count || left.code.localeCompare(right.code))
     .slice(0, 3);
   const leadBuffer = await getLeadBufferSnapshot();
-  const heartbeatAgeMs = task.lastHeartbeatAt ? Date.now() - task.lastHeartbeatAt.getTime() : null;
-  const workerHealthy = Boolean(task.enabled && heartbeatAgeMs !== null && heartbeatAgeMs < 90_000);
+  const workerHealthy = task.enabled && isGenerationWorkerHeartbeatHealthy(task.lastHeartbeatAt);
   const operationalStatus = !task.enabled
     ? "PAUSED"
     : task.status === "BUFFER_READY"

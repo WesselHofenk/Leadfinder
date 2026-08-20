@@ -74,13 +74,17 @@ export function availableColdEmailSlots(
   if (normal.length >= count) return normal.slice(0, count);
 
   const availableMs = end.getTime() - earliest.getTime();
-  if (availableMs < count * minimumCatchUpSpacingMs) return [];
+  const catchUpCount = Math.min(
+    count,
+    Math.max(normal.length, Math.floor(availableMs / minimumCatchUpSpacingMs)),
+  );
+  if (catchUpCount <= 0) return [];
   const catchUp: Date[] = [];
-  for (let index = 0; index < count; index += 1) {
-    const slot = new Date(earliest.getTime() + Math.floor(((index + 0.5) * availableMs) / count));
+  for (let index = 0; index < catchUpCount; index += 1) {
+    const slot = new Date(earliest.getTime() + Math.floor(((index + 0.5) * availableMs) / catchUpCount));
     if (!occupiedTimes.has(slot.getTime())) catchUp.push(slot);
   }
-  return catchUp.length === count ? catchUp : normal.slice(0, count);
+  return catchUp.length === catchUpCount ? catchUp : normal.slice(0, catchUpCount);
 }
 
 export function coldEmailBatchDayKey(

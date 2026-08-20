@@ -27,9 +27,14 @@ describe("automatische dagelijkse cold-emailbatch", () => {
     expect(new Set(slots.map((slot) => slot.getTime())).size).toBe(10);
   });
 
-  it("propt geen volledige dagbatch in de laatste minuten van het venster", () => {
+  it("benut laat op de dag alleen de resterende veilig gespreide capaciteit", () => {
     const now = fromZonedTime("2026-08-05T16:39:00", timeZone);
-    expect(remainingColdEmailSlots("2026-08-05", 10, now, timeZone, 20)).toEqual([]);
+    const slots = remainingColdEmailSlots("2026-08-05", 10, now, timeZone, 20);
+
+    expect(slots).toHaveLength(6);
+    expect(slots.every((slot) => slot > now)).toBe(true);
+    expect(slots.every((slot) => formatInTimeZone(slot, timeZone, "HH:mm") < "17:00")).toBe(true);
+    expect(slots.slice(1).every((slot, index) => slot.getTime() - slots[index].getTime() >= 3 * 60_000)).toBe(true);
     expect(coldEmailBatchDayKey(now, timeZone, 10, 20)).toBe("2026-08-06");
   });
 

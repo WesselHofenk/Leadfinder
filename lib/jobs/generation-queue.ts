@@ -25,6 +25,6 @@ export async function handleGenerationQueueMessage(message: unknown, metadata: M
 
   await triggerGenerationWorker(
     generationQueueKey(snapshot.run.id, snapshot.run.batchNumber),
-    generationContinuationDelaySeconds(snapshot.run.lastError),
+    generationContinuationDelaySeconds(),
   );
 }
