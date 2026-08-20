@@ -43,7 +43,7 @@ describe("handmatig geactiveerde generatie-worker", () => {
     process.env.VERCEL = "1";
     send.mockResolvedValue({ messageId: "message-1" });
     await expect(triggerGenerationWorker("manual-key")).resolves.toBe(true);
-    expect(send).toHaveBeenCalledWith("lead-generation", { taskId: "leadfinder-continuous" }, {
+    expect(send).toHaveBeenCalledWith("lead-generation-v2", { taskId: "leadfinder-continuous" }, {
       idempotencyKey: "manual-key",
       retentionSeconds: 86_400,
     });

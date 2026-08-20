@@ -2,7 +2,7 @@ import "server-only";
 
 import { DuplicateMessageError, send } from "@vercel/queue";
 
-export const GENERATION_QUEUE_TOPIC = "lead-generation";
+export const GENERATION_QUEUE_TOPIC = "lead-generation-v2";
 export const GENERATION_CONTINUATION_DELAY_SECONDS = 5 * 60;
 export const GENERATION_RECOVERY_GRACE_SECONDS = 2 * 60;
 

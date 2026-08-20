@@ -11,7 +11,7 @@
       "experimentalTriggers": [
         {
           "type": "queue/v2beta",
-          "topic": "lead-generation",
+          "topic": "lead-generation-v2",
           "retryAfterSeconds": 15,
           "initialDelaySeconds": 0
         }
