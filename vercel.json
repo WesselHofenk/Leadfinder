@@ -23,6 +23,7 @@
         {
           "type": "queue/v2beta",
           "topic": "cold-email-delivery",
+          "maxConcurrency": 1,
           "retryAfterSeconds": 30,
           "initialDelaySeconds": 0
         }
