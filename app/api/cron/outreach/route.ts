@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { secureCompare } from "@/lib/auth/session";
 import { ensureDailyColdEmailBatch } from "@/lib/email/campaign";
+import { reverifyLegacyColdEmailLeads } from "@/lib/email/legacy-reverification";
 import { processColdEmailQueue, rescheduleStaleColdEmails } from "@/lib/email/service";
 import { COLD_EMAIL_CAMPAIGN_ID, ensureColdEmailCampaignState } from "@/lib/email/state";
 import { getColdEmailTaskSnapshot } from "@/lib/jobs/cold-email-task";
@@ -49,6 +50,7 @@ export async function GET(request: NextRequest) {
     data: { status: "RUNNING", lastHeartbeatAt: now },
   });
   try {
+    const legacyEmailReverification = await reverifyLegacyColdEmailLeads();
     const recovery = await rescheduleStaleColdEmails(now);
     const delivery = await processColdEmailQueue(now);
     const campaign = await ensureDailyColdEmailBatch(now, {
@@ -67,7 +69,7 @@ export async function GET(request: NextRequest) {
         lastSuccessfulSentAt: latestSent?.smtpAcceptedAt,
       },
     });
-    return NextResponse.json({ recovery, campaign, delivery });
+    return NextResponse.json({ legacyEmailReverification, recovery, campaign, delivery });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Cold-emailtaak mislukt";
     await prisma.coldEmailCampaign.update({

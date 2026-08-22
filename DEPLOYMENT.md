@@ -36,6 +36,8 @@ De gratis GitHub Actions-scheduler roept iedere vijftien minuten de duurzame ver
 
 De automatische campagne gebruikt uitsluitend leads in `Nieuw` en bewaart de A/B-volgorde, reserveringen, dagsamenvattingen en deduplicatiesleutels in PostgreSQL. Na SMTP-acceptatie zoekt de applicatie eerst op Message-ID in de echte IMAP-map Verzonden items en voegt alleen een kopie toe wanneer de provider dat niet al heeft gedaan. Alleen na IMAP-bevestiging gaat de lead naar `Gemaild`. Een mislukte IMAP-poging verstuurt de mail niet opnieuw, maar probeert uitsluitend de archiefkopie opnieuw op te slaan.
 
+Leads die vóór de invoering van MX-validatie zijn opgeslagen, worden in begrensde batches opnieuw gecontroleerd. Alleen een adres met aantoonbare openbare herkomst én een actuele MX-bevestiging komt in de verzendbuffer; ontbrekende MX-records worden blijvend uitgesloten en tijdelijke DNS-fouten blijven veilig op `PENDING`.
+
 ## Veilig migreren
 
 `pnpm vercel-build` voert in deze volgorde uit:
