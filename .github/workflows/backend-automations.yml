@@ -6,6 +6,16 @@ on:
     - cron: "43 2 * * *"
     - cron: "7 3 * * *"
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Cold-emailactie
+        required: true
+        default: run
+        type: choice
+        options:
+          - run
+          - status
+          - catch-up
 
 permissions:
   contents: read
@@ -19,11 +29,16 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Voer de enige cold-emailtaak uit
-        run: >-
-          curl --fail-with-body --silent --show-error
-          --retry 2 --retry-all-errors
-          --header "Authorization: Bearer ${{ secrets.SITORA_CRON_SECRET }}"
-          https://leadfindersitora.nl/api/cron/outreach
+        env:
+          OPERATION: ${{ inputs.operation || 'run' }}
+        run: |
+          endpoint="https://leadfindersitora.nl/api/cron/outreach"
+          if [ "$OPERATION" = "status" ]; then endpoint="$endpoint?status=1"; fi
+          if [ "$OPERATION" = "catch-up" ]; then endpoint="$endpoint?catchUp=1"; fi
+          curl --fail-with-body --silent --show-error \
+            --retry 2 --retry-all-errors \
+            --header "Authorization: Bearer ${{ secrets.SITORA_CRON_SECRET }}" \
+            "$endpoint"
 
   reverify:
     if: github.event.schedule == '43 2 * * *'

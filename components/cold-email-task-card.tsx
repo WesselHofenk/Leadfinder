@@ -18,8 +18,8 @@ export function ColdEmailTaskCard({ snapshot }: { snapshot: Snapshot }) {
     </div>
     <div className="generation-metrics automation-metrics">
       <Metric label="Vandaag" value={`${snapshot.sentToday}/${snapshot.dailyLimit}`}/>
-      <Metric label="Weekniveau" value={`${snapshot.weekLevel} · ${snapshot.dailyLimit}/dag`}/>
-      <Metric label="Volgende week" value={`${snapshot.nextWeekLimit}/dag`}/>
+      <Metric label="Vast dagdoel" value={`${snapshot.dailyLimit}/dag`}/>
+      <Metric label="Campagneweek" value={snapshot.weekLevel}/>
       <Metric label="Beschikbare leads" value={snapshot.availableLeads}/>
       <Metric label="Mislukt vandaag" value={snapshot.failedToday}/>
       <Metric label="Tijdsvenster" value={`${String(task.windowStartHour).padStart(2, "0")}:00–${String(task.windowEndHour).padStart(2, "0")}:00`}/>

@@ -4,6 +4,7 @@ const isStatusCheck = process.argv.includes("--status");
 const isResend = process.argv.includes("--resend");
 const isOutdatedWebsite = process.argv.includes("--outdated-website");
 const isExtraOutdatedBatch = process.argv.includes("--extra-outdated-batch");
+const isCatchUp = process.argv.includes("--catch-up");
 const resultFileArg = process.argv.find((argument) => argument.startsWith("--result-file="));
 const resultFile = resultFileArg?.slice("--result-file=".length);
 const cronSecret = process.env.CRON_SECRET;
@@ -30,6 +31,9 @@ if (isOutdatedWebsite) {
 }
 if (isExtraOutdatedBatch) {
   endpoint.searchParams.set("extraOutdated", "1");
+}
+if (isCatchUp) {
+  endpoint.searchParams.set("catchUp", "1");
 }
 
 async function main() {

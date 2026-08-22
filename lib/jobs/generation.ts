@@ -26,7 +26,7 @@ import { MAX_CANDIDATES_PER_BATCH, MAX_CANDIDATES_PER_RUN } from "./generation-c
 import { exhaustedSearchAreasReason } from "./generation-summary";
 import { candidateReservationLimit, candidateRetryStatus, generationCompletionStatus, generationProgress, generationRetryImportLimit, isBatchDeadlineNear, isGenerationRunExpired, locationValidationBatchLimit, nextConsecutiveSourceFailures, phaseProgress, shouldStopForSourceOutage, sourceAttemptDelta, sourceFailureWarningDue, terminalGenerationStatuses, terminalStatusForStoredLeads } from "./generation-state";
 import { nextUnattemptedCursor, searchSpaceProgress, searchStrategySegment } from "./run-search-state";
-import { lowYieldCooldownMs, selectAdaptiveSearchArea } from "./search-selection";
+import { lowYieldCooldownMs, preferUnusedCities, selectAdaptiveSearchArea } from "./search-selection";
 import { publishQualifiedDrafts } from "./qualified-draft-publication";
 import { ensureLeadfinderTask, LEADFINDER_TASK_ID } from "./automation-tasks";
 import { getLeadBufferSnapshot } from "./lead-buffer";
@@ -1299,12 +1299,12 @@ async function nextSearchArea(attemptedSegments: ReadonlySet<string>) {
   const select = (candidateAreas: typeof areas, ignoreCooldowns = false) => selectAdaptiveSearchArea({
     areas: candidateAreas, categories: activeCategories, combinations, sequence, now, ignoreCooldowns,
   });
-  const unusedCities = availableAreas.filter((area) => !usedCityKeys.has(`${area.country}:${area.city}`));
-  // Historical yield and provider reliability lead. City spreading is only a
-  // tie-breaking pool after the productive combinations have had a chance.
-  const area = select(availableAreas)
-    ?? select(availableAreas, true)
-    ?? select(unusedCities, true);
+  const citySpreadAreas = preferUnusedCities(availableAreas, usedCityKeys);
+  // A run first spreads source calls over fresh cities. Historical yield then
+  // ranks the combinations inside that pool, preventing repeated low-yield
+  // Amsterdam segments from consuming the full request and compute budget.
+  const area = select(citySpreadAreas)
+    ?? select(citySpreadAreas, true);
   if (!area) throw new Error("Er resteert zoekruimte, maar er kon geen zoeksegment worden geselecteerd.");
   const combination = await prisma.searchCombination.upsert({
 

@@ -13,14 +13,13 @@ import { pipelineStages, toManualPipelineOptions } from "@/lib/leads/pipeline";
 const timeZone = "Europe/Amsterdam";
 
 describe("cold-emailopbouw en tijdslots", () => {
-  it("bouwt iedere zeven dagen op van twintig naar maximaal honderd", () => {
+  it("houdt vanaf de startdatum exact dertig mails per dag aan", () => {
     expect(coldEmailDailyLimit("2026-08-03", "2026-08-04")).toBe(0);
-    expect(coldEmailDailyLimit("2026-08-04", "2026-08-04")).toBe(20);
-    expect(coldEmailDailyLimit("2026-08-10", "2026-08-04")).toBe(20);
+    expect(coldEmailDailyLimit("2026-08-04", "2026-08-04")).toBe(30);
+    expect(coldEmailDailyLimit("2026-08-10", "2026-08-04")).toBe(30);
     expect(coldEmailDailyLimit("2026-08-11", "2026-08-04")).toBe(30);
-    expect(coldEmailDailyLimit("2026-09-22", "2026-08-04")).toBe(90);
-    expect(coldEmailDailyLimit("2026-09-29", "2026-08-04")).toBe(100);
-    expect(coldEmailDailyLimit("2027-08-04", "2026-08-04")).toBe(100);
+    expect(coldEmailDailyLimit("2026-09-22", "2026-08-04")).toBe(30);
+    expect(coldEmailDailyLimit("2027-08-04", "2026-08-04")).toBe(30);
     expect(coldEmailCampaignWeek("2026-08-10", "2026-08-04")).toBe(1);
     expect(coldEmailCampaignWeek("2026-08-11", "2026-08-04")).toBe(2);
   });

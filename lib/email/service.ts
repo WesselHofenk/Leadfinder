@@ -383,12 +383,16 @@ export async function deliverColdEmail(id: string, now = new Date()) {
     } else {
       let retryAt = email.scheduledFor;
       if (email.attempts < smtpRetryLimit) {
-        const campaign = await ensureColdEmailCampaignState(now).catch(() => null);
-        if (campaign) {
-          retryAt = await prisma.$transaction(
-            (tx) => nextScheduledSlot(tx, new Date(), campaign.startDayKey, config.COLD_EMAIL_TIME_ZONE, id),
-            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-          ).catch(() => retryAt);
+        if (email.allowOutsideWindow) {
+          retryAt = new Date(Date.now() + 60_000);
+        } else {
+          const campaign = await ensureColdEmailCampaignState(now).catch(() => null);
+          if (campaign) {
+            retryAt = await prisma.$transaction(
+              (tx) => nextScheduledSlot(tx, new Date(), campaign.startDayKey, config.COLD_EMAIL_TIME_ZONE, id),
+              { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+            ).catch(() => retryAt);
+          }
         }
       }
       await prisma.coldEmail.update({ where: { id }, data: {
@@ -449,9 +453,23 @@ export async function processColdEmailQueue(now = new Date()) {
       }
     }
     const config = coldEmailConfig();
-    if (withinColdEmailWindow(now, config.COLD_EMAIL_TIME_ZONE)) {
+    const normalWindowActive = withinColdEmailWindow(now, config.COLD_EMAIL_TIME_ZONE);
+    const outsideWindowCatchUpPending = !normalWindowActive && await prisma.coldEmail.count({
+      where: {
+        allowOutsideWindow: true,
+        status: { in: ["PENDING", "FAILED"] },
+        scheduledFor: { lte: now },
+        attempts: { lt: smtpRetryLimit },
+      },
+    }) > 0;
+    if (normalWindowActive || outsideWindowCatchUpPending) {
       const sendQueue = await prisma.coldEmail.findMany({
-        where: { status: { in: ["PENDING", "FAILED"] }, scheduledFor: { lte: now }, attempts: { lt: smtpRetryLimit } },
+        where: {
+          status: { in: ["PENDING", "FAILED"] },
+          scheduledFor: { lte: now },
+          attempts: { lt: smtpRetryLimit },
+          ...(!normalWindowActive ? { allowOutsideWindow: true } : {}),
+        },
         orderBy: { scheduledFor: "asc" },
         take: Math.max(0, 10 - archiveQueue.length),
       });
@@ -505,10 +523,12 @@ export async function rescheduleStaleColdEmails(now = new Date()) {
     });
     let rescheduled = 0;
     for (const email of stale) {
-      const scheduledFor = await prisma.$transaction(
-        (tx) => nextScheduledSlot(tx, now, campaign.startDayKey, config.COLD_EMAIL_TIME_ZONE),
-        { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
-      );
+      const scheduledFor = email.allowOutsideWindow
+        ? now
+        : await prisma.$transaction(
+          (tx) => nextScheduledSlot(tx, now, campaign.startDayKey, config.COLD_EMAIL_TIME_ZONE),
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
       const updated = await prisma.coldEmail.updateMany({
         where: {
           id: email.id,
@@ -518,7 +538,9 @@ export async function rescheduleStaleColdEmails(now = new Date()) {
         data: {
           status: "PENDING",
           scheduledFor,
-          campaignDayKey: localDayKey(scheduledFor, config.COLD_EMAIL_TIME_ZONE),
+          campaignDayKey: email.allowOutsideWindow
+            ? email.campaignDayKey
+            : localDayKey(scheduledFor, config.COLD_EMAIL_TIME_ZONE),
           lastError: null,
         },
       });

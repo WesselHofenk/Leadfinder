@@ -3,9 +3,10 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 
 export const COLD_EMAIL_WINDOW_START_MINUTE = 9 * 60;
 export const COLD_EMAIL_WINDOW_END_MINUTE = 17 * 60;
-export const COLD_EMAIL_INITIAL_DAILY = 20;
-export const COLD_EMAIL_WEEKLY_INCREMENT = 10;
-export const COLD_EMAIL_MAX_DAILY = 100;
+export const COLD_EMAIL_DAILY_LIMIT = 30;
+export const COLD_EMAIL_INITIAL_DAILY = COLD_EMAIL_DAILY_LIMIT;
+export const COLD_EMAIL_WEEKLY_INCREMENT = 0;
+export const COLD_EMAIL_MAX_DAILY = COLD_EMAIL_DAILY_LIMIT;
 
 export function coldEmailCampaignWeek(dayKey: string, startDayKey: string) {
   const elapsedDays = differenceInCalendarDays(parseISO(dayKey), parseISO(startDayKey));
@@ -14,8 +15,7 @@ export function coldEmailCampaignWeek(dayKey: string, startDayKey: string) {
 
 export function coldEmailDailyLimit(dayKey: string, startDayKey: string) {
   const week = coldEmailCampaignWeek(dayKey, startDayKey);
-  if (week === 0) return 0;
-  return Math.min(COLD_EMAIL_MAX_DAILY, COLD_EMAIL_INITIAL_DAILY + ((week - 1) * COLD_EMAIL_WEEKLY_INCREMENT));
+  return week === 0 ? 0 : COLD_EMAIL_DAILY_LIMIT;
 }
 
 export function localDayKey(date: Date, timeZone: string) {

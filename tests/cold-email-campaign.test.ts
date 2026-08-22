@@ -4,6 +4,7 @@ import { formatInTimeZone, fromZonedTime } from "date-fns-tz";
 vi.mock("server-only", () => ({}));
 import {
   availableColdEmailSlots,
+  coldEmailCatchUpSlots,
   coldEmailShortageReason,
   coldEmailBatchDayKey,
   remainingDailyColdEmailCapacity,
@@ -35,7 +36,16 @@ describe("automatische dagelijkse cold-emailbatch", () => {
     expect(slots.every((slot) => slot > now)).toBe(true);
     expect(slots.every((slot) => formatInTimeZone(slot, timeZone, "HH:mm") < "17:00")).toBe(true);
     expect(slots.slice(1).every((slot, index) => slot.getTime() - slots[index].getTime() >= 3 * 60_000)).toBe(true);
-    expect(coldEmailBatchDayKey(now, timeZone, 10, 20)).toBe("2026-08-06");
+    expect(coldEmailBatchDayKey(now, timeZone)).toBe("2026-08-05");
+  });
+
+  it("reserveert de expliciete naverzending vandaag in korte, unieke intervallen", () => {
+    const now = fromZonedTime("2026-08-05T18:00:00", timeZone);
+    const slots = coldEmailCatchUpSlots(3, now);
+    expect(slots).toHaveLength(3);
+    expect(slots[0]).toEqual(now);
+    expect(slots[1].getTime() - slots[0].getTime()).toBe(15_000);
+    expect(new Set(slots.map((slot) => slot.getTime())).size).toBe(3);
   });
 
   it("blijft tijdens een normale ochtendrun dezelfde dag inplannen", () => {

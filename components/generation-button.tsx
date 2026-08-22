@@ -4,6 +4,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Pause, Play, Radar } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { generationPollingDelay } from "@/lib/jobs/generation-polling";
 
 type LeadfinderTask = {
   name: string;
@@ -73,24 +74,41 @@ export function GenerationButton() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const stored = useRef(0);
+  const pollActive = useRef(false);
+  const pollingFailures = useRef(0);
 
   const refresh = useCallback(async () => {
     const response = await fetch("/api/generation", { cache: "no-store" }).catch(() => null);
     if (!response?.ok) {
+      pollingFailures.current += 1;
       setMessage("De backendstatus kon tijdelijk niet worden opgehaald.");
       return;
     }
     const next = await response.json() as Snapshot;
     if ((next.run?.stored ?? 0) > stored.current) router.refresh();
     stored.current = next.run?.stored ?? 0;
+    pollActive.current = next.task.enabled;
+    pollingFailures.current = 0;
     setSnapshot(next);
     setMessage("");
   }, [router]);
 
   useEffect(() => {
-    void refresh();
-    const timer = window.setInterval(() => void refresh(), 5_000);
-    return () => window.clearInterval(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      await refresh();
+      if (cancelled) return;
+      timer = window.setTimeout(
+        () => void poll(),
+        generationPollingDelay(document.hidden, pollingFailures.current, pollActive.current),
+      );
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [refresh]);
 
   async function toggle() {
@@ -101,6 +119,7 @@ export function GenerationButton() {
     else {
       const data = await response.json() as Snapshot & { message?: string };
       setSnapshot(data);
+      pollActive.current = data.task.enabled;
       setMessage(data.message ?? (enabled ? "De Leadfinder is gepauzeerd." : "De Leadfinder is gestart."));
     }
     setBusy(false);

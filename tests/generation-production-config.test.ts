@@ -9,7 +9,10 @@ describe("productieconfiguratie voor tienminutenruns", () => {
     };
     expect(config.env).toBeUndefined();
     expect(config.crons).toBeUndefined();
-    expect(readFileSync(".github/workflows/backend-automations.yml", "utf8")).toContain("/api/cron/outreach");
+    const workflow = readFileSync(".github/workflows/backend-automations.yml", "utf8");
+    expect(workflow).toContain("/api/cron/outreach");
+    expect(workflow).toContain("catchUp=1");
+    expect(workflow).toContain("status=1");
   });
 
   it("houdt de databasemigratie additief", () => {

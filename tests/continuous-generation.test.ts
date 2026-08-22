@@ -11,6 +11,7 @@ describe("doorlopende leadgeneratie", () => {
     expect(schema).toMatch(/enabled\s+Boolean\s+@default\(false\)/);
     expect(source).toContain("createGenerationRun({ continuousRequested: true })");
     expect(source).toContain('reason: "buffer_ready"');
+    expect(source).toContain("preferUnusedCities(availableAreas, usedCityKeys)");
     expect(source.match(/!await leadfinderSearchAllowed\(runId\)/g)).toHaveLength(3);
     expect(source).toContain("handmatig gestopt vóór een nieuwe bronzoekopdracht");
     expect(source).toContain("handmatig gestopt vóór nieuwe vestigingscontroles");

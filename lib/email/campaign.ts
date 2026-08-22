@@ -16,12 +16,13 @@ import {
   coldEmailDailyLimit,
   coldEmailSlot,
   localDayKey,
-  nextDayKey,
+  withinColdEmailWindow,
   zonedDayBounds,
 } from "./schedule";
 
 const minimumLeadTimeMs = 2 * 60_000;
 const minimumCatchUpSpacingMs = 3 * 60_000;
+const operatorCatchUpSpacingMs = 15_000;
 const smtpRetryLimit = 3;
 
 function normalizeRecipient(value: string) {
@@ -90,13 +91,14 @@ export function availableColdEmailSlots(
 export function coldEmailBatchDayKey(
   now: Date,
   timeZone: string,
-  required = 1,
-  dailyLimit = COLD_EMAIL_MAX_DAILY,
 ) {
-  const today = localDayKey(now, timeZone);
-  return remainingColdEmailSlots(today, required, now, timeZone, dailyLimit).length >= required
-    ? today
-    : nextDayKey(today);
+  return localDayKey(now, timeZone);
+}
+
+export function coldEmailCatchUpSlots(count: number, now: Date) {
+  return Array.from({ length: Math.max(0, count) }, (_, index) =>
+    new Date(now.getTime() + index * operatorCatchUpSpacingMs),
+  );
 }
 
 export async function summarizeColdEmailRun(dayKey: string, now = new Date()) {
@@ -153,13 +155,19 @@ export async function summarizeColdEmailRun(dayKey: string, now = new Date()) {
   };
 }
 
-export async function ensureDailyColdEmailBatch(now = new Date()) {
+export async function ensureDailyColdEmailBatch(
+  now = new Date(),
+  options: { operatorCatchUp?: boolean } = {},
+) {
   const config = coldEmailConfig();
   const initialState = await ensureColdEmailCampaignState(now);
   const today = localDayKey(now, config.COLD_EMAIL_TIME_ZONE);
   const initialDayKey = today < initialState.startDayKey
     ? initialState.startDayKey
-    : coldEmailBatchDayKey(now, config.COLD_EMAIL_TIME_ZONE);
+    : today;
+  if (options.operatorCatchUp && withinColdEmailWindow(now, config.COLD_EMAIL_TIME_ZONE)) {
+    return { dayKey: initialDayKey, scheduled: 0, totalForDay: 0, shortage: 0, skipped: true, reason: "normal-window-active" };
+  }
   const lock = await acquireJobLock(`cold-email-daily-batch:${initialDayKey}`, 5 * 60_000);
   if (!lock) return { dayKey: initialDayKey, scheduled: 0, totalForDay: 0, shortage: 0, skipped: true, reason: "locked" };
 
@@ -195,14 +203,16 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
       const reserved = successfulEmails.length + activeEmails.length;
       const missing = remainingDailyColdEmailCapacity(dailyLimit, successfulEmails.length, activeEmails.length);
       const occupied = [...successfulEmails, ...activeEmails].map((email) => email.scheduledFor);
-      const slots = availableColdEmailSlots(
-        dayKey,
-        missing,
-        now,
-        config.COLD_EMAIL_TIME_ZONE,
-        occupied,
-        dailyLimit,
-      );
+      const slots = options.operatorCatchUp
+        ? coldEmailCatchUpSlots(missing, now)
+        : availableColdEmailSlots(
+          dayKey,
+          missing,
+          now,
+          config.COLD_EMAIL_TIME_ZONE,
+          occupied,
+          dailyLimit,
+        );
       if (missing === 0 || slots.length === 0) {
         return { dayKey, dailyLimit, created: [], totalForDay: reserved, shortage: missing, reason: missing === 0 ? null : "no-safe-slots" };
       }
@@ -246,7 +256,7 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
         return true;
       }).slice(0, slots.length);
 
-      const batchKey = `automatic-${dayKey}`;
+      const batchKey = `${options.operatorCatchUp ? "operator-catch-up" : "automatic"}-${dayKey}`;
       const created = [];
       for (let index = 0; index < candidates.length; index += 1) {
         const lead = candidates[index];
@@ -270,7 +280,7 @@ export async function ensureDailyColdEmailBatch(now = new Date()) {
           subject: content.subject,
           bodyText: content.bodyText,
           scheduledFor: slots[index],
-          allowOutsideWindow: false,
+          allowOutsideWindow: options.operatorCatchUp === true,
         } }));
       }
       if (created.length > 0) {

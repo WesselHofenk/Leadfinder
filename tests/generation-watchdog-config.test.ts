@@ -24,7 +24,7 @@ describe("doorlopende generatieconfiguratie", () => {
     const vercel = readFileSync(resolve("vercel.json"), "utf8");
     const scheduler = readFileSync(resolve(".github/workflows/backend-automations.yml"), "utf8");
     expect(route).toContain("handleGenerationQueueMessage");
-    expect(vercel).toContain('"topic": "lead-generation"');
+    expect(vercel).toContain('"topic": "lead-generation-v2"');
     expect(scheduler).not.toContain('cron: "*/5 * * * *"');
     expect(scheduler).toContain('cron: "*/15 * * * *"');
     expect(scheduler).not.toContain("api/cron/generation");
